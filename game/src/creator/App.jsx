@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
-import { ALL_LEES } from '@obviouslee/shared/data/index.js';
+import { ALL_LEES } from '@lee/shared/data/index.js';
 import EditorTab  from './components/EditorTab.jsx';
 import RosterTab  from './components/RosterTab.jsx';
 
-const STORAGE_KEY = 'obviouslee-creator-roster';
+const STORAGE_KEY = 'lee-creator-roster';
 
 /** Load roster from localStorage, falling back to built-in starter Lees. */
 function loadRoster() {

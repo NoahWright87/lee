@@ -2,7 +2,7 @@ import { useState } from 'react';
 import LeeForm from './LeeForm.jsx';
 import LeeCard from './LeeCard.jsx';
 import MiniTestbed from './MiniTestbed.jsx';
-import { getTypeColor } from '@obviouslee/shared';
+import { getTypeColor } from '@lee/shared';
 
 function emptyLee() {
   return {

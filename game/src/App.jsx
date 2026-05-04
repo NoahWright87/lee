@@ -10,8 +10,8 @@ import {
   generateEnemies,
   getInitialDraftOptions,
   getBetweenRoundDraftOptions,
-} from '@obviouslee/shared';
-import { ALL_LEES } from '@obviouslee/shared/data/index.js';
+} from '@lee/shared';
+import { ALL_LEES } from '@lee/shared/data/index.js';
 
 import BattleField from './components/BattleField.jsx';
 import DraftScreen from './components/DraftScreen.jsx';

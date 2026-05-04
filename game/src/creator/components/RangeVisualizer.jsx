@@ -1,4 +1,4 @@
-import { chebyshev } from '@obviouslee/shared';
+import { chebyshev } from '@lee/shared';
 
 const CELL = 28;
 const GRID = 9; // 9×9 grid, unit in center at (4,4)

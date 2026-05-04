@@ -1,4 +1,4 @@
-import { getTypeColor } from '@obviouslee/shared';
+import { getTypeColor } from '@lee/shared';
 
 const TILE = 72;
 

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { tickField, createRuntimeUnit, getTypeColor } from '@obviouslee/shared';
+import { tickField, createRuntimeUnit, getTypeColor } from '@lee/shared';
 
 const TILE  = 56;
 const FIELD = { rows: 4, cols: 4, deployRows: 2 };

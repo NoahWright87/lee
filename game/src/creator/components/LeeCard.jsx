@@ -1,4 +1,4 @@
-import { getTypeColor, getTypeEmoji } from '@obviouslee/shared';
+import { getTypeColor, getTypeEmoji } from '@lee/shared';
 
 const TIER_LABEL = { 1: '', 2: '✦', 3: '✦✦' };
 
