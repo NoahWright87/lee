@@ -1,5 +1,6 @@
 /**
  * Build a lookup map from sorted pair key → result Lee id.
+ * `combineFrom` may be a single pair ["a","b"] (legacy) or an array of pairs [["a","b"],["c","d"]].
  * Call once at startup with all Lee definitions.
  *
  * @param {object[]} allLees
@@ -10,9 +11,16 @@ export function buildCombineMap(allLees) {
   allLees
     .filter(l => l.acquisition?.method === 'combine' || l.acquisition?.method === 'both')
     .forEach(lee => {
-      const [a, b] = lee.acquisition.combineFrom;
-      const key = [a, b].sort().join('+');
-      map[key] = lee.id;
+      const routes = lee.acquisition.combineFrom;
+      if (!routes?.length) return;
+      // Normalise: flat [a,b] → [[a,b]], already [[a,b],...] passes through
+      const pairs = Array.isArray(routes[0]) ? routes : [routes];
+      pairs.forEach(pair => {
+        const [a, b] = pair;
+        if (!a || !b) return;
+        const key = [a, b].sort().join('+');
+        map[key] = lee.id;
+      });
     });
   return map;
 }
@@ -21,7 +29,7 @@ export function buildCombineMap(allLees) {
  * @param {{id:string}} unitA
  * @param {{id:string}} unitB
  * @param {Record<string,string>} combineMap
- * @returns {string|null}  Result Lee id, or null if no recipe.
+ * @returns {string|null}
  */
 export function getCombineResult(unitA, unitB, combineMap) {
   const key = [unitA.id, unitB.id].sort().join('+');
@@ -32,7 +40,7 @@ export function getCombineResult(unitA, unitB, combineMap) {
  * Find all possible merges among a set of player units.
  * Each unit can only participate in one merge (greedy first-match).
  *
- * @param {object[]} playerUnits  Combined field + bench units
+ * @param {object[]} playerUnits
  * @param {Record<string,string>} combineMap
  * @returns {{ a: object, b: object, resultId: string }[]}
  */

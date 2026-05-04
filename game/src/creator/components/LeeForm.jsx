@@ -76,6 +76,7 @@ export default function LeeForm({ value: lee, onChange, existingLees = [] }) {
   };
   const labelStyle = { fontSize: 11, color: '#888', marginBottom: 3, display: 'block' };
   const rowStyle   = { display: 'flex', flexDirection: 'column', gap: 3 };
+  const actionMini = { background: '#1a1a1a', border: '1px solid #333', borderRadius: 4, color: '#aaa', padding: '3px 8px', cursor: 'pointer', fontFamily: 'monospace', fontSize: 11 };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
@@ -186,29 +187,46 @@ export default function LeeForm({ value: lee, onChange, existingLees = [] }) {
             </label>
           ))}
         </div>
-        {(lee.acquisition?.method === 'combine' || lee.acquisition?.method === 'both') && (
-          <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
-            {[0, 1].map(i => (
-              <div key={i} style={rowStyle}>
-                <label style={labelStyle}>Source {i + 1}</label>
-                <select
-                  style={{ ...inputStyle, width: 160 }}
-                  value={lee.acquisition?.combineFrom?.[i] || ''}
-                  onChange={e => {
-                    const cf = [...(lee.acquisition?.combineFrom || ['', ''])];
-                    cf[i] = e.target.value;
-                    onChange({ ...lee, acquisition: { ...lee.acquisition, combineFrom: cf } });
-                  }}
-                >
-                  <option value="">— pick a Lee —</option>
-                  {existingLees.filter(l => l.id !== lee.id).map(l => (
-                    <option key={l.id} value={l.id}>{l.name}</option>
+        {(lee.acquisition?.method === 'combine' || lee.acquisition?.method === 'both') && (() => {
+          // Normalise to array-of-pairs format: [[a,b], ...]
+          const raw = lee.acquisition?.combineFrom;
+          const pairs = !raw?.length ? [['', '']]
+            : Array.isArray(raw[0]) ? raw
+            : [raw];
+
+          function updatePairs(newPairs) {
+            onChange({ ...lee, acquisition: { ...lee.acquisition, combineFrom: newPairs } });
+          }
+
+          return (
+            <div style={{ marginTop: 10 }}>
+              {pairs.map((pair, pi) => (
+                <div key={pi} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
+                  {[0, 1].map(si => (
+                    <select
+                      key={si}
+                      style={{ ...inputStyle, flex: 1 }}
+                      value={pair[si] || ''}
+                      onChange={e => {
+                        const next = pairs.map((p, i) => i === pi ? [si === 0 ? e.target.value : p[0], si === 1 ? e.target.value : p[1]] : p);
+                        updatePairs(next);
+                      }}
+                    >
+                      <option value="">— source {si + 1} —</option>
+                      {existingLees.filter(l => l.id !== lee.id).map(l => (
+                        <option key={l.id} value={l.id}>{l.name}</option>
+                      ))}
+                    </select>
                   ))}
-                </select>
-              </div>
-            ))}
-          </div>
-        )}
+                  {pairs.length > 1 && (
+                    <button onClick={() => updatePairs(pairs.filter((_, i) => i !== pi))} style={{ ...actionMini, color: '#ff6666' }}>✕</button>
+                  )}
+                </div>
+              ))}
+              <button onClick={() => updatePairs([...pairs, ['', '']])} style={actionMini}>+ route</button>
+            </div>
+          );
+        })()}
       </section>
 
       {/* Abilities */}

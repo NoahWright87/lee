@@ -22,6 +22,20 @@ import GameOver from './components/GameOver.jsx';
 const FIELD_CONFIG = { rows: 8, cols: 4, deployRows: 2 };
 const TICK_MS = 1000 / 60;
 
+const CreatorLink = () => (
+  <a href="/creator" style={{
+    position: 'fixed', bottom: 12, right: 14,
+    color: '#2a2a2a', fontSize: 11, textDecoration: 'none',
+    fontFamily: 'monospace', letterSpacing: 0.5,
+    transition: 'color 0.2s',
+  }}
+    onMouseEnter={e => e.target.style.color = '#666'}
+    onMouseLeave={e => e.target.style.color = '#2a2a2a'}
+  >
+    designer ↗
+  </a>
+);
+
 const COMBINE_MAP = buildCombineMap(ALL_LEES);
 
 export default function App() {
@@ -237,6 +251,7 @@ export default function App() {
   if (screen === 'initial-draft') {
     return (
       <div style={{ minHeight: '100vh', background: '#080808' }}>
+        <CreatorLink />
         <DraftScreen
           options={draftOptions}
           pickCount={3}
@@ -251,6 +266,7 @@ export default function App() {
   if (screen === 'deploy') {
     return (
       <div style={{ minHeight: '100vh', background: '#080808' }}>
+        <CreatorLink />
         <DeployScreen
           initialDeployed={fieldUnits.filter(u => u.side === 'player')}
           bench={bench}
@@ -268,6 +284,7 @@ export default function App() {
 
     return (
       <div style={{ minHeight: '100vh', background: '#080808', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: 24, gap: 16 }}>
+        <CreatorLink />
         {/* HUD */}
         <div style={{ display: 'flex', gap: 32, color: '#888', fontSize: 13 }}>
           <span>Round {round}</span>
@@ -320,6 +337,7 @@ export default function App() {
   if (screen === 'merge' && pendingMerges.length > 0) {
     return (
       <div style={{ minHeight: '100vh', background: '#080808' }}>
+        <CreatorLink />
         <MergeScreen
           merge={pendingMerges[0]}
           allLeeDefs={ALL_LEES}
@@ -334,6 +352,7 @@ export default function App() {
   if (screen === 'between-draft') {
     return (
       <div style={{ minHeight: '100vh', background: '#080808' }}>
+        <CreatorLink />
         <DraftScreen
           options={draftOptions}
           pickCount={1}

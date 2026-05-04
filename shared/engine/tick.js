@@ -129,6 +129,7 @@ function updateUnit(unit, allUnits, dt, events, fieldConfig) {
 
   // Charge each ability's cast bar independently
   const chargeRate = inRange ? 1.0 : moveMult;
+  unit.aims = {};
   activeAbilities.forEach(ability => {
     const key = ability.id;
     if (unit.castBars[key] === undefined) unit.castBars[key] = 0;
@@ -139,6 +140,10 @@ function updateUnit(unit, allUnits, dt, events, fieldConfig) {
     if (unit.castBars[key] >= 1) {
       unit.castBars[key] = 0;
       fireAbility(unit, ability, allUnits, events);
+    } else if (inRange && unit.castBars[key] > 0) {
+      // Track where this ability is aimed so the field can show a targeting indicator
+      const abilityTarget = findAbilityTarget(unit, ability, allUnits);
+      if (abilityTarget) unit.aims[key] = { row: abilityTarget.row, col: abilityTarget.col };
     }
   });
 }
@@ -168,12 +173,16 @@ function fireAbility(unit, ability, allUnits, events) {
 
   // melee, missile, mortar — commit a pending attack
   const isMelee = ability.type === 'melee';
+  const totalTime = ability.attackDelay || 0.001;
   unit.pendingAttacks.push({
     abilityId: ability.id,
     abilityType: ability.type,
     targetRow: abilityTarget.row,
     targetCol: abilityTarget.col,
-    timeLeft: ability.attackDelay || 0,
+    originRow: unit.row,
+    originCol: unit.col,
+    timeLeft: totalTime,
+    totalTime,
     dmg: ability.damage || 0,
     aoeRadius: ability.aoeRadius || 0,
     isMelee,

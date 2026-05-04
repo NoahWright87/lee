@@ -34,25 +34,18 @@ function emptyLee() {
   };
 }
 
-/**
- * @param {{
- *   roster: object[],
- *   editingLee: object|null,
- *   onSave: (lee: object) => void,
- *   onNew: () => void,
- * }} props
- */
 export default function EditorTab({ roster, editingLee, onSave, onNew }) {
   const [lee, setLee] = useState(() => editingLee || emptyLee());
   const [saved, setSaved] = useState(false);
+  const [testbedOpen, setTestbedOpen] = useState(false);
 
-  // Sync when parent wants us to edit a specific Lee
   const lastEditId = editingLee?.id;
   const [trackedId, setTrackedId] = useState(lastEditId);
   if (lastEditId !== trackedId) {
     setLee(editingLee || emptyLee());
     setTrackedId(lastEditId);
     setSaved(false);
+    setTestbedOpen(false);
   }
 
   function handleSave() {
@@ -95,7 +88,6 @@ export default function EditorTab({ roster, editingLee, onSave, onNew }) {
 
         <LeeForm value={lee} onChange={setLee} existingLees={roster} />
 
-        {/* Actions */}
         <div style={{ display: 'flex', gap: 8, marginTop: 20, flexWrap: 'wrap' }}>
           <button
             onClick={handleSave}
@@ -115,19 +107,45 @@ export default function EditorTab({ roster, editingLee, onSave, onNew }) {
         </div>
       </div>
 
-      {/* Right: preview + testbed */}
-      <div style={{ flex: 1, overflowY: 'auto', padding: 20, display: 'flex', flexDirection: 'column', gap: 24 }}>
-        {/* Card preview */}
-        <div>
-          <div style={{ fontSize: 12, color: '#555', marginBottom: 10, textTransform: 'uppercase', letterSpacing: 1 }}>Preview</div>
-          <LeeCard lee={lee} />
+      {/* Right: card + attack pattern + testbed */}
+      <div style={{ flex: 1, overflowY: 'auto', padding: 20, display: 'flex', flexDirection: 'column', gap: 20 }}>
+
+        {/* Card + Play button + Attack pattern side by side */}
+        <div style={{ display: 'flex', gap: 20, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+          {/* Card preview + Play button stacked */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div style={{ fontSize: 12, color: '#555', textTransform: 'uppercase', letterSpacing: 1 }}>Preview</div>
+            <LeeCard lee={lee} />
+            <button
+              onClick={() => setTestbedOpen(o => !o)}
+              style={{
+                padding: '10px 16px',
+                background: testbedOpen ? '#1a3a1a' : '#0e1e0e',
+                border: `1px solid ${testbedOpen ? '#449944' : '#224422'}`,
+                borderRadius: 6,
+                color: testbedOpen ? '#88ee88' : '#449944',
+                fontFamily: 'monospace', fontSize: 13,
+                cursor: 'pointer', width: '100%',
+                transition: 'background 0.2s, color 0.2s',
+              }}
+            >
+              {testbedOpen ? '⏹ Close Testbed' : '▶ Play — Test in Battle'}
+            </button>
+          </div>
+
+          {/* Attack pattern preview */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ fontSize: 12, color: '#555', textTransform: 'uppercase', letterSpacing: 1 }}>Attack Pattern</div>
+            <AttackPatternPreview lee={lee} typeColor={typeColor} />
+          </div>
         </div>
 
-        {/* Zone preview */}
-        <ZonePreview lee={lee} typeColor={typeColor} />
-
-        {/* Mini testbed */}
-        <MiniTestbed leeDef={lee.name ? lee : null} />
+        {/* Testbed — expands on Play click */}
+        {testbedOpen && (
+          <div style={{ borderTop: '1px solid #1a1a1a', paddingTop: 16 }}>
+            <MiniTestbed leeDef={lee.name ? lee : null} autoPlay />
+          </div>
+        )}
       </div>
     </div>
   );
@@ -139,33 +157,94 @@ const actionBtn = {
   fontFamily: 'monospace', fontSize: 13,
 };
 
-/** Small static grid showing attack/heal ranges. */
-function ZonePreview({ lee, typeColor }) {
-  const CELL = 24;
-  const GRID = 7;
-  const CENTER = Math.floor(GRID / 2);
-  const abilities = (lee.abilities || []).filter(a => a.type !== 'thorns');
+// ---------------------------------------------------------------------------
+// Attack Pattern Preview
+// Shows WHERE abilities land rather than a raw range circle:
+//   melee / missile / mortar — impact tile at max range (north), AOE splash lighter
+//   heal / buff / shield (aura) — all tiles in range shaded green
+//   thorns — the unit's own tile in amber (passive retaliation)
+// ---------------------------------------------------------------------------
+const CELL = 26;
+const GRID = 9;
+const CX   = Math.floor(GRID / 2);
+const CY   = Math.floor(GRID / 2);
+
+function getAbilityTiles(ability) {
+  const { type, range = 1, aoeRadius = 0 } = ability;
+  const tiles = [];
+
+  if (type === 'thorns') {
+    tiles.push({ dr: 0, dc: 0, intensity: 0.8, color: '#ffaa33' });
+    return tiles;
+  }
+
+  const isSupport = type === 'heal' || type === 'buff' || type === 'shield';
+  if (isSupport) {
+    for (let dr = -range; dr <= range; dr++) {
+      for (let dc = -range; dc <= range; dc++) {
+        if (Math.max(Math.abs(dr), Math.abs(dc)) <= range && !(dr === 0 && dc === 0)) {
+          tiles.push({ dr, dc, intensity: 0.55, color: '#44cc88' });
+        }
+      }
+    }
+    return tiles;
+  }
+
+  // Damaging: impact at max range straight ahead (north = -dr)
+  const impactDr = -Math.min(range, CY);
+  tiles.push({ dr: impactDr, dc: 0, intensity: 1.0, color: '#ff4444' });
+  if (aoeRadius > 0) {
+    for (let dr = -aoeRadius; dr <= aoeRadius; dr++) {
+      for (let dc = -aoeRadius; dc <= aoeRadius; dc++) {
+        if (!(dr === 0 && dc === 0)) {
+          tiles.push({ dr: impactDr + dr, dc, intensity: 0.3, color: '#ff4444' });
+        }
+      }
+    }
+  }
+  return tiles;
+}
+
+function hexToRgba(hex, alpha) {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+function AttackPatternPreview({ lee, typeColor }) {
+  const abilities = lee.abilities || [];
+  if (!abilities.length) return null;
+
+  const tileMap = new Map();
+  abilities.forEach(ab => {
+    getAbilityTiles(ab).forEach(({ dr, dc, intensity, color }) => {
+      const r = CY + dr;
+      const c = CX + dc;
+      if (r < 0 || r >= GRID || c < 0 || c >= GRID) return;
+      const key = `${r},${c}`;
+      const existing = tileMap.get(key);
+      if (!existing || intensity > existing.intensity) tileMap.set(key, { intensity, color });
+    });
+  });
 
   const cells = [];
   for (let r = 0; r < GRID; r++) {
     for (let c = 0; c < GRID; c++) {
-      const dist = Math.max(Math.abs(r - CENTER), Math.abs(c - CENTER));
-      const isCenter = r === CENTER && c === CENTER;
+      const isCenter = r === CY && c === CX;
+      const tile = tileMap.get(`${r},${c}`);
       let bg = '#111';
-      for (const ab of abilities) {
-        if (!isCenter && dist <= (ab.range || 1)) {
-          const isHeal = ab.type === 'heal' || ab.type === 'buff' || ab.type === 'shield';
-          bg = isHeal ? 'rgba(60,200,100,0.3)' : 'rgba(255,80,80,0.3)';
-        }
-      }
+      if (isCenter) bg = typeColor + '55';
+      else if (tile) bg = hexToRgba(tile.color, tile.intensity * 0.85);
+
       cells.push(
         <div key={`${r},${c}`} style={{
           width: CELL, height: CELL,
-          background: isCenter ? typeColor + '66' : bg,
+          background: bg,
           border: '1px solid #1a1a1a',
           boxSizing: 'border-box',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: isCenter ? 14 : 7,
+          fontSize: isCenter ? 14 : 8,
         }}>
           {isCenter ? (lee.emoji || '?') : ''}
         </div>
@@ -175,10 +254,10 @@ function ZonePreview({ lee, typeColor }) {
 
   return (
     <div>
-      <div style={{ fontSize: 12, color: '#555', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 1 }}>Zone Preview</div>
-      <div style={{ fontSize: 10, color: '#444', marginBottom: 6 }}>
-        <span style={{ color: '#ff5555' }}>■</span> attack range &nbsp;
-        <span style={{ color: '#44cc66' }}>■</span> heal range
+      <div style={{ fontSize: 10, color: '#444', marginBottom: 5 }}>
+        <span style={{ color: '#ff5555' }}>■</span> attack &nbsp;
+        <span style={{ color: '#44cc88' }}>■</span> heal/buff &nbsp;
+        <span style={{ color: '#ffaa33' }}>■</span> thorns
       </div>
       <div style={{
         display: 'grid',
@@ -187,6 +266,9 @@ function ZonePreview({ lee, typeColor }) {
         border: '1px solid #222', borderRadius: 4, overflow: 'hidden',
       }}>
         {cells}
+      </div>
+      <div style={{ fontSize: 10, color: '#444', marginTop: 4 }}>
+        Enemy side ↑. Impact shown at max range.
       </div>
     </div>
   );

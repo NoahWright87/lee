@@ -35,6 +35,7 @@ export function createRuntimeUnit(leeDef, side, row, col) {
         .map(a => [a.id, 0])
     ),
     pendingAttacks: [],
+    aims:  {},
     xp:    0,
     level: 1,
   };
