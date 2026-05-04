@@ -1,0 +1,9 @@
+[build]
+  command = "npm run build --workspace=game"
+  publish = "game/dist"
+
+# SPA fallback — all paths serve index.html so /creator route works
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
