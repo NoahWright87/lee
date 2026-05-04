@@ -1,0 +1,11 @@
+{
+  "name": "obviouslee",
+  "private": true,
+  "workspaces": ["shared", "game", "creator"],
+  "scripts": {
+    "dev:game": "npm run dev --workspace=game",
+    "dev:creator": "npm run dev --workspace=creator",
+    "build:game": "npm run build --workspace=game",
+    "build:creator": "npm run build --workspace=creator"
+  }
+}

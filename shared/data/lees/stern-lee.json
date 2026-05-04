@@ -1,0 +1,35 @@
+{
+  "id": "stern-lee",
+  "name": "Stern Lee",
+  "flavor": "He sternly told them to keep it down, and they did.",
+  "emoji": "🛡️",
+  "image": "placeholder.svg",
+  "tier": 1,
+  "type": "none",
+  "moveBehavior": "nearest-enemy",
+  "moveMult": 1.0,
+  "baseStats": {
+    "hp": 100,
+    "def": 8,
+    "armor": 2,
+    "moveSpeed": 0.7
+  },
+  "abilities": [
+    {
+      "id": "heavy-shove",
+      "type": "melee",
+      "label": "Shove",
+      "damage": 12,
+      "healAmount": 0,
+      "range": 1,
+      "aoeRadius": 0,
+      "actSpeed": 0.4,
+      "attackDelay": 0.15,
+      "targeting": "nearest-enemy"
+    }
+  ],
+  "acquisition": {
+    "method": "draft",
+    "combineFrom": null
+  }
+}

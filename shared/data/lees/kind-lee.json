@@ -1,0 +1,35 @@
+{
+  "id": "kind-lee",
+  "name": "Kind Lee",
+  "flavor": "She kindly offered to drive him to the appointment.",
+  "emoji": "💚",
+  "image": "placeholder.svg",
+  "tier": 1,
+  "type": "none",
+  "moveBehavior": "weakest-ally",
+  "moveMult": 0.5,
+  "baseStats": {
+    "hp": 50,
+    "def": 3,
+    "armor": 0,
+    "moveSpeed": 1.0
+  },
+  "abilities": [
+    {
+      "id": "gentle-heal",
+      "type": "heal",
+      "label": "Heal",
+      "damage": 0,
+      "healAmount": 20,
+      "range": 3,
+      "aoeRadius": 0,
+      "actSpeed": 0.4,
+      "attackDelay": 0,
+      "targeting": "lowest-hp-ally"
+    }
+  ],
+  "acquisition": {
+    "method": "draft",
+    "combineFrom": null
+  }
+}
