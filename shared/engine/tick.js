@@ -49,8 +49,8 @@ function resolvePendingAttacks(units, events, dt) {
 
       const { targetRow, targetCol, dmg, aoeRadius, isMelee, cleave, range, originRow, originCol } = attack;
 
-      const hitTiles = (isMelee && (cleave ?? 0) > 0)
-        ? getMeleeHitTiles(originRow, originCol, range || 1, cleave, attacker.side)
+      const hitTiles = isMelee
+        ? getMeleeHitTiles(originRow, originCol, range || 1, cleave || 0, attacker.side)
         : getHitTiles(targetRow, targetCol, aoeRadius || 0);
 
       let hitAny = false;
@@ -268,15 +268,29 @@ function getHitTiles(row, col, aoeRadius) {
   return tiles;
 }
 
-function getMeleeHitTiles(originRow, originCol, range, cleave, side) {
+function getMeleeHitTiles(originRow, originCol, range, cleaveAngle, side) {
+  const halfAngle = cleaveAngle / 2;
   const tiles = [];
-  // Strictly forward — never includes attacker's own row
-  const rowStart = side === 'player' ? originRow - range : originRow + 1;
-  const rowEnd   = side === 'player' ? originRow - 1    : originRow + range;
-  for (let r = rowStart; r <= rowEnd; r++) {
-    for (let dc = -cleave; dc <= cleave; dc++) {
-      tiles.push([r, originCol + dc]);
+
+  for (let dr = -range; dr <= range; dr++) {
+    for (let dc = -range; dc <= range; dc++) {
+      if (dr === 0 && dc === 0) continue;
+
+      // Euclidean radius; +0.5 buffer on Chebyshev-1 neighbours so range=1 always
+      // includes all 8 adjacent tiles (diagonal √2 ≈ 1.41 fits within 1.5)
+      const dist = Math.sqrt(dr * dr + dc * dc);
+      const isAdjacent = Math.max(Math.abs(dr), Math.abs(dc)) <= 1;
+      if (dist > range + (isAdjacent ? 0.5 : 0)) continue;
+
+      // Angle from the unit's forward direction (player faces up, enemy faces down)
+      const fwd = side === 'player' ? -dr : dr;
+      const angleDeg = Math.abs(Math.atan2(dc, fwd) * (180 / Math.PI));
+
+      if (angleDeg <= halfAngle + 0.001) {
+        tiles.push([originRow + dr, originCol + dc]);
+      }
     }
   }
+
   return tiles;
 }

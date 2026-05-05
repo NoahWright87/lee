@@ -274,7 +274,7 @@ function AbilityFields({ ab, index, setAbility, inputStyle, labelStyle, rowStyle
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <Slider label="Damage"            value={ab.damage       ?? 10}  min={0}   max={200} step={1}    onChange={v => s('damage', v)} />
           <Slider label="Range"             value={ab.range        ?? 1}   min={1}   max={10}  step={1}    onChange={v => s('range', v)} />
-          <Slider label="Cleave (each side)"value={ab.cleave       ?? 0}   min={0}   max={6}   step={1}    onChange={v => s('cleave', v)} />
+          <Slider label="Cleave"             value={ab.cleave       ?? 0}   min={0}   max={360} step={15}   onChange={v => s('cleave', v)} hint="°" />
           <Slider label="Action Speed"      value={ab.actSpeed     ?? 0.5} min={0.1} max={3.0} step={0.05} onChange={v => s('actSpeed', v)}    hint={`(cd: ${(1/(ab.actSpeed||0.5)).toFixed(1)}s)`} />
           <Slider label="Attack Delay (s)"  value={ab.attackDelay  ?? 0.1} min={0}   max={2.0} step={0.05} onChange={v => s('attackDelay', v)} />
           {targetRow(ENEMY_TARGETS)}

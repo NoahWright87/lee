@@ -304,10 +304,18 @@ function getAbilityTiles(ability) {
   if (type === 'thorns') return [];
 
   if (type === 'melee') {
-    // Strictly forward: rows -range to -1 (never unit's own row)
-    for (let dr = -range; dr <= -1; dr++) {
-      for (let dc = -cleave; dc <= cleave; dc++) {
-        tiles.push({ dr, dc, intensity: 1.0, color: '#ff4444' });
+    const halfAngle = cleave / 2;
+    for (let dr = -range; dr <= range; dr++) {
+      for (let dc = -range; dc <= range; dc++) {
+        if (dr === 0 && dc === 0) continue;
+        const dist = Math.sqrt(dr * dr + dc * dc);
+        const isAdj = Math.max(Math.abs(dr), Math.abs(dc)) <= 1;
+        if (dist > range + (isAdj ? 0.5 : 0)) continue;
+        // Preview is always from player perspective (facing up, so -dr is forward)
+        const angleDeg = Math.abs(Math.atan2(dc, -dr) * (180 / Math.PI));
+        if (angleDeg <= halfAngle + 0.001) {
+          tiles.push({ dr, dc, intensity: 1.0, color: '#ff4444' });
+        }
       }
     }
     return tiles;
@@ -351,17 +359,15 @@ function AttackPatternPreview({ lee, typeColor }) {
 
   const hasThorns = abilities.some(a => a.type === 'thorns');
 
-  let maxRange = 0, maxCleave = 0;
+  let maxRange = 0;
   abilities.forEach(ab => {
     if (ab.type === 'thorns') return;
-    maxRange  = Math.max(maxRange,  (ab.range || 1) + (ab.aoeRadius || 0));
-    if (ab.type === 'melee') maxCleave = Math.max(maxCleave, ab.cleave || 0);
-    if (ab.type === 'heal')  maxCleave = Math.max(maxCleave, ab.range  || 1);
+    maxRange = Math.max(maxRange, (ab.range || 1) + (ab.aoeRadius || 0));
   });
   if (maxRange === 0 && hasThorns) maxRange = 1;
 
   const ROWS = Math.max(5, maxRange + 2);
-  const COLS = Math.max(5, maxCleave * 2 + 5);
+  const COLS = Math.max(5, maxRange * 2 + 3);
   const UR   = ROWS - 2;
   const UC   = Math.floor(COLS / 2);
 
