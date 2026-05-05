@@ -135,7 +135,6 @@ export default function EditorTab({ roster, editingLee, onSave, onNew }) {
             <div style={sectionLabel}>{liveMode ? 'Live Battle' : 'Attack Pattern'}</div>
             <button
               onClick={() => setLiveMode(o => !o)}
-              disabled={!lee.name}
               style={{
                 padding: '4px 12px',
                 background: liveMode ? '#1a3a1a' : '#0e1e0e',
@@ -143,8 +142,9 @@ export default function EditorTab({ roster, editingLee, onSave, onNew }) {
                 borderRadius: 5,
                 color: liveMode ? '#88ee88' : '#449944',
                 fontFamily: 'monospace', fontSize: 12,
-                cursor: lee.name ? 'pointer' : 'not-allowed',
+                cursor: 'pointer',
                 transition: 'background 0.15s, color 0.15s',
+                touchAction: 'manipulation',
               }}
             >
               {liveMode ? '⏹ Stop' : '▶ Live'}
@@ -242,8 +242,8 @@ function LiveTestbed({ leeDef }) {
               <div key={`${r},${c}`} style={{
                 position: 'absolute', left: c * TILE, top: r * TILE,
                 width: TILE - 1, height: TILE - 1,
-                background: isEnemy ? 'rgba(255,60,60,0.05)' : isPlayer ? 'rgba(60,120,255,0.05)' : '#0e0e0e',
-                border: '1px solid #1a1a1a',
+                background: isEnemy ? 'rgba(255,60,60,0.1)' : isPlayer ? 'rgba(60,120,255,0.08)' : '#0e0e0e',
+                border: '1px solid #2c2c2c',
               }} />
             );
           })

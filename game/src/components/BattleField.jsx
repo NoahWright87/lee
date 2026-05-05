@@ -11,9 +11,10 @@ const TILE = 72;
  *   selectedUnit?: object|null,
  *   onTileClick?: (row:number, col:number) => void,
  *   onUnitClick?: (unit:object) => void,
+ *   previewUnits?: object[],
  * }} props
  */
-export default function BattleField({ units, fieldConfig, deployMode, selectedUnit, onTileClick, onUnitClick }) {
+export default function BattleField({ units, fieldConfig, deployMode, selectedUnit, onTileClick, onUnitClick, previewUnits = [] }) {
   const { rows, cols, deployRows } = fieldConfig;
   const W = cols * TILE;
   const H = rows * TILE;
@@ -57,11 +58,13 @@ export default function BattleField({ units, fieldConfig, deployMode, selectedUn
                 position: 'absolute',
                 left: c * TILE, top: r * TILE,
                 width: TILE - 1, height: TILE - 1,
-                background: isEnemyZone  ? 'rgba(255,60,60,0.06)'
-                          : isPlayerZone ? 'rgba(60,120,255,0.06)'
+                background: isEnemyZone                   ? 'rgba(255,60,60,0.1)'
+                          : (isPlayerZone && deployMode)  ? 'rgba(60,120,255,0.22)'
+                          : isPlayerZone                  ? 'rgba(60,120,255,0.07)'
                           : '#0e0e0e',
-                border: '1px solid #1a1a1a',
+                border: `1px solid ${isClickable ? '#2a4488' : '#2c2c2c'}`,
                 borderRadius: 3,
+                boxShadow: isClickable ? 'inset 0 0 10px rgba(60,120,255,0.25)' : undefined,
                 cursor: isClickable ? 'pointer' : 'default',
                 boxSizing: 'border-box',
               }}
@@ -149,6 +152,29 @@ export default function BattleField({ units, fieldConfig, deployMode, selectedUn
           }} />
         );
       })}
+
+      {/* Ghost enemy preview (deploy screen) */}
+      {previewUnits.map(unit => (
+        <div key={`preview-${unit.uid}`} style={{
+          position: 'absolute',
+          left: unit.col * TILE + 3, top: unit.row * TILE + 3,
+          width: TILE - 6, height: TILE - 6,
+          background: 'rgba(80,0,0,0.35)',
+          border: '1px dashed rgba(255,80,80,0.45)',
+          borderRadius: 5,
+          display: 'flex', flexDirection: 'column',
+          alignItems: 'center', justifyContent: 'center',
+          opacity: 0.55,
+          pointerEvents: 'none',
+          zIndex: 2,
+          overflow: 'hidden',
+        }}>
+          <div style={{ fontSize: 22, lineHeight: 1 }}>{unit.emoji || '🧍'}</div>
+          <div style={{ fontSize: 8, color: '#ffaaaa', marginTop: 1, textAlign: 'center' }}>
+            {(unit.name || '').split(' ')[0]}
+          </div>
+        </div>
+      ))}
 
       {/* Units */}
       {units.map(unit => (

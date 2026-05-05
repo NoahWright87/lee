@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import BattleField from './BattleField.jsx';
 import LeeCard from './LeeCard.jsx';
+import { generateEnemies } from '@lee/shared';
+import { ALL_LEES } from '@lee/shared/data/index.js';
 
 const TILE = 72;
 
@@ -26,6 +28,7 @@ export default function DeployScreen({ initialDeployed, bench: initialBench, fie
   );
   const [bench, setBench] = useState(() => initialBench.map(u => ({ ...u })));
   const [selected, setSelected] = useState(null); // uid of selected bench unit
+  const [previewEnemies] = useState(() => generateEnemies(ALL_LEES, round, fieldConfig));
 
   const deployZoneRows = Array.from({ length: deployRows }, (_, i) => rows - deployRows + i);
   const maxOnField = cols * deployRows;
@@ -62,8 +65,6 @@ export default function DeployScreen({ initialDeployed, bench: initialBench, fie
     setSelected(null);
   }
 
-  const allUnitsForField = deployed;
-
   return (
     <div style={{ display: 'flex', gap: 32, padding: 24, alignItems: 'flex-start', flexWrap: 'wrap', justifyContent: 'center' }}>
       {/* Left: field */}
@@ -71,13 +72,20 @@ export default function DeployScreen({ initialDeployed, bench: initialBench, fie
         <div style={{ color: '#888', fontSize: 12 }}>ROUND {round} — Place your Lees in the blue zone</div>
         <div style={{ position: 'relative' }}>
           <BattleField
-            units={allUnitsForField}
+            units={deployed}
+            previewUnits={previewEnemies}
             fieldConfig={fieldConfig}
             deployMode
             selectedUnit={null}
             onTileClick={handleTileClick}
             onUnitClick={handleDeployedClick}
           />
+          <div style={{ position: 'absolute', top: 4, left: 6, fontSize: 9, color: 'rgba(255,100,100,0.55)', pointerEvents: 'none', letterSpacing: 0.5 }}>
+            ENEMIES ↑
+          </div>
+          <div style={{ position: 'absolute', bottom: 4, left: 6, fontSize: 9, color: 'rgba(80,140,255,0.65)', pointerEvents: 'none', letterSpacing: 0.5 }}>
+            YOUR ZONE ↓
+          </div>
         </div>
         <div style={{ color: '#555', fontSize: 11 }}>
           {deployed.length} / {maxOnField} deployed · Click placed unit to recall · Click blue tile to deploy
