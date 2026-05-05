@@ -270,11 +270,11 @@ function getHitTiles(row, col, aoeRadius) {
 
 function getMeleeHitTiles(originRow, originCol, range, cleave, side) {
   const tiles = [];
-  const rowStart = side === 'player' ? originRow - range : originRow;
-  const rowEnd   = side === 'player' ? originRow        : originRow + range;
+  // Strictly forward — never includes attacker's own row
+  const rowStart = side === 'player' ? originRow - range : originRow + 1;
+  const rowEnd   = side === 'player' ? originRow - 1    : originRow + range;
   for (let r = rowStart; r <= rowEnd; r++) {
     for (let dc = -cleave; dc <= cleave; dc++) {
-      if (r === originRow && dc === 0) continue;
       tiles.push([r, originCol + dc]);
     }
   }
