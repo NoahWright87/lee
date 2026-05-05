@@ -22,6 +22,7 @@
       "damage": 12,
       "healAmount": 0,
       "range": 1,
+      "cleave": 0,
       "aoeRadius": 0,
       "actSpeed": 0.4,
       "attackDelay": 0.15,

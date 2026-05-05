@@ -159,46 +159,50 @@ const actionBtn = {
 
 // ---------------------------------------------------------------------------
 // Attack Pattern Preview
-// Shows WHERE abilities land rather than a raw range circle:
-//   melee / missile / mortar — impact tile at max range (north), AOE splash lighter
-//   heal / buff / shield (aura) — all tiles in range shaded green
-//   thorns — the unit's own tile in amber (passive retaliation)
+// Dynamic grid: unit at second-from-bottom row, attacks shown above.
+//
+//   melee:         rectangle (range rows up × cleave tiles each side), incl. unit's row sides
+//   missile/mortar: single impact tile at max range, lighter AoE splash ring
+//   heal/buff/shield: Chebyshev radius in green (both sides of unit)
+//   thorns:        unit tile amber only (passive — no outgoing hit tiles)
 // ---------------------------------------------------------------------------
-const CELL = 26;
-const GRID = 9;
-const CX   = Math.floor(GRID / 2);
-const CY   = Math.floor(GRID / 2);
+const CELL = 24;
 
 function getAbilityTiles(ability) {
-  const { type, range = 1, aoeRadius = 0 } = ability;
+  const { type, range = 1, cleave = 0, aoeRadius = 0 } = ability;
   const tiles = [];
 
-  if (type === 'thorns') {
-    tiles.push({ dr: 0, dc: 0, intensity: 0.8, color: '#ffaa33' });
+  if (type === 'thorns') return [];
+
+  if (type === 'melee') {
+    for (let dr = -range; dr <= 0; dr++) {
+      for (let dc = -cleave; dc <= cleave; dc++) {
+        if (dr === 0 && dc === 0) continue;
+        tiles.push({ dr, dc, intensity: 1.0, color: '#ff4444' });
+      }
+    }
     return tiles;
   }
 
-  const isSupport = type === 'heal' || type === 'buff' || type === 'shield';
-  if (isSupport) {
+  if (type === 'heal' || type === 'buff' || type === 'shield') {
     for (let dr = -range; dr <= range; dr++) {
       for (let dc = -range; dc <= range; dc++) {
-        if (Math.max(Math.abs(dr), Math.abs(dc)) <= range && !(dr === 0 && dc === 0)) {
-          tiles.push({ dr, dc, intensity: 0.55, color: '#44cc88' });
+        if (dr === 0 && dc === 0) continue;
+        if (Math.max(Math.abs(dr), Math.abs(dc)) <= range) {
+          tiles.push({ dr, dc, intensity: 0.6, color: '#44cc88' });
         }
       }
     }
     return tiles;
   }
 
-  // Damaging: impact at max range straight ahead (north = -dr)
-  const impactDr = -Math.min(range, CY);
-  tiles.push({ dr: impactDr, dc: 0, intensity: 1.0, color: '#ff4444' });
+  // missile, mortar, taunt — impact straight ahead
+  tiles.push({ dr: -range, dc: 0, intensity: 1.0, color: '#ff4444' });
   if (aoeRadius > 0) {
     for (let dr = -aoeRadius; dr <= aoeRadius; dr++) {
       for (let dc = -aoeRadius; dc <= aoeRadius; dc++) {
-        if (!(dr === 0 && dc === 0)) {
-          tiles.push({ dr: impactDr + dr, dc, intensity: 0.3, color: '#ff4444' });
-        }
+        if (dr === 0 && dc === 0) continue;
+        tiles.push({ dr: -range + dr, dc, intensity: 0.35, color: '#ff7722' });
       }
     }
   }
@@ -216,37 +220,57 @@ function AttackPatternPreview({ lee, typeColor }) {
   const abilities = lee.abilities || [];
   if (!abilities.length) return null;
 
+  const hasThorns = abilities.some(a => a.type === 'thorns');
+
+  // Compute dynamic grid size from all abilities
+  let maxRange = 0, maxCleave = 0;
+  abilities.forEach(ab => {
+    if (ab.type === 'thorns') return;
+    maxRange = Math.max(maxRange, (ab.range || 1) + (ab.aoeRadius || 0));
+    if (ab.type === 'melee') maxCleave = Math.max(maxCleave, ab.cleave || 0);
+    if (ab.type === 'heal' || ab.type === 'buff' || ab.type === 'shield') {
+      maxCleave = Math.max(maxCleave, ab.range || 1); // support fills both axes
+    }
+  });
+  if (maxRange === 0 && hasThorns) maxRange = 1;
+
+  const ROWS = Math.max(5, maxRange + 2);   // enough room above + unit row + 1 below
+  const COLS = Math.max(5, maxCleave * 2 + 5);
+  const UR = ROWS - 2;                       // unit row
+  const UC = Math.floor(COLS / 2);           // unit column
+
+  // Accumulate hit tiles
   const tileMap = new Map();
   abilities.forEach(ab => {
     getAbilityTiles(ab).forEach(({ dr, dc, intensity, color }) => {
-      const r = CY + dr;
-      const c = CX + dc;
-      if (r < 0 || r >= GRID || c < 0 || c >= GRID) return;
+      const r = UR + dr, c = UC + dc;
+      if (r < 0 || r >= ROWS || c < 0 || c >= COLS) return;
       const key = `${r},${c}`;
-      const existing = tileMap.get(key);
-      if (!existing || intensity > existing.intensity) tileMap.set(key, { intensity, color });
+      const ex = tileMap.get(key);
+      if (!ex || intensity > ex.intensity) tileMap.set(key, { intensity, color });
     });
   });
 
   const cells = [];
-  for (let r = 0; r < GRID; r++) {
-    for (let c = 0; c < GRID; c++) {
-      const isCenter = r === CY && c === CX;
-      const tile = tileMap.get(`${r},${c}`);
-      let bg = '#111';
-      if (isCenter) bg = typeColor + '55';
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const isUnit     = r === UR && c === UC;
+      const isEnemy    = r < UR;
+      const tile       = tileMap.get(`${r},${c}`);
+
+      let bg = isEnemy ? '#0d0d11' : '#0d110d';
+      if (isUnit) bg = hasThorns ? '#ffaa3344' : typeColor + '55';
       else if (tile) bg = hexToRgba(tile.color, tile.intensity * 0.85);
 
       cells.push(
         <div key={`${r},${c}`} style={{
-          width: CELL, height: CELL,
-          background: bg,
-          border: '1px solid #1a1a1a',
+          width: CELL, height: CELL, background: bg,
+          border: `1px solid ${isEnemy ? '#16161e' : '#161e16'}`,
           boxSizing: 'border-box',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: isCenter ? 14 : 8,
+          fontSize: isUnit ? 14 : 8,
         }}>
-          {isCenter ? (lee.emoji || '?') : ''}
+          {isUnit ? (lee.emoji || '?') : ''}
         </div>
       );
     }
@@ -254,21 +278,22 @@ function AttackPatternPreview({ lee, typeColor }) {
 
   return (
     <div>
-      <div style={{ fontSize: 10, color: '#444', marginBottom: 5 }}>
-        <span style={{ color: '#ff5555' }}>■</span> attack &nbsp;
-        <span style={{ color: '#44cc88' }}>■</span> heal/buff &nbsp;
-        <span style={{ color: '#ffaa33' }}>■</span> thorns
+      <div style={{ fontSize: 10, color: '#444', marginBottom: 4 }}>
+        <span style={{ color: '#ff5555' }}>■</span> damage &nbsp;
+        <span style={{ color: '#ff8833' }}>■</span> splash &nbsp;
+        <span style={{ color: '#44cc88' }}>■</span> heal/buff
+        {hasThorns && <> &nbsp;<span style={{ color: '#ffaa33' }}>■</span> thorns</>}
       </div>
       <div style={{
         display: 'grid',
-        gridTemplateColumns: `repeat(${GRID}, ${CELL}px)`,
-        gridTemplateRows:    `repeat(${GRID}, ${CELL}px)`,
-        border: '1px solid #222', borderRadius: 4, overflow: 'hidden',
+        gridTemplateColumns: `repeat(${COLS}, ${CELL}px)`,
+        gridTemplateRows:    `repeat(${ROWS}, ${CELL}px)`,
+        border: '1px solid #1e1e28', borderRadius: 4, overflow: 'hidden',
       }}>
         {cells}
       </div>
-      <div style={{ fontSize: 10, color: '#444', marginTop: 4 }}>
-        Enemy side ↑. Impact shown at max range.
+      <div style={{ fontSize: 10, color: '#333', marginTop: 3 }}>
+        ↑ enemy side &nbsp;|&nbsp; darker = player side
       </div>
     </div>
   );

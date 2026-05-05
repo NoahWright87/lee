@@ -47,8 +47,12 @@ function resolvePendingAttacks(units, events, dt) {
         return;
       }
 
-      const { targetRow, targetCol, dmg, aoeRadius, isMelee } = attack;
-      const hitTiles = getHitTiles(targetRow, targetCol, aoeRadius || 0);
+      const { targetRow, targetCol, dmg, aoeRadius, isMelee, cleave, range, originRow, originCol } = attack;
+
+      const hitTiles = (isMelee && (cleave ?? 0) > 0)
+        ? getMeleeHitTiles(originRow, originCol, range || 1, cleave, attacker.side)
+        : getHitTiles(targetRow, targetCol, aoeRadius || 0);
+
       let hitAny = false;
 
       hitTiles.forEach(([hr, hc]) => {
@@ -186,6 +190,8 @@ function fireAbility(unit, ability, allUnits, events) {
     dmg: ability.damage || 0,
     aoeRadius: ability.aoeRadius || 0,
     isMelee,
+    cleave: isMelee ? (ability.cleave || 0) : 0,
+    range: ability.range || 1,
     attackerUid: unit.uid,
   });
   events.push({
@@ -198,7 +204,7 @@ function fireAbility(unit, ability, allUnits, events) {
 }
 
 function findAbilityTarget(unit, ability, allUnits) {
-  const { targeting, range = 1 } = ability;
+  const { targeting, range = 1, minRange = 0 } = ability;
   const isSupport = ability.type === 'heal' || ability.type === 'buff' || ability.type === 'shield';
   const targetSide = isSupport ? unit.side : (unit.side === 'player' ? 'enemy' : 'player');
 
@@ -206,7 +212,8 @@ function findAbilityTarget(unit, ability, allUnits) {
     u.alive &&
     u.side === targetSide &&
     (!isSupport || u.uid !== unit.uid) &&
-    chebyshev(unit, u) <= range
+    chebyshev(unit, u) <= range &&
+    chebyshev(unit, u) >= minRange
   );
 
   if (!candidates.length) return null;
@@ -256,6 +263,19 @@ function getHitTiles(row, col, aoeRadius) {
   for (let dr = -aoeRadius; dr <= aoeRadius; dr++) {
     for (let dc = -aoeRadius; dc <= aoeRadius; dc++) {
       tiles.push([row + dr, col + dc]);
+    }
+  }
+  return tiles;
+}
+
+function getMeleeHitTiles(originRow, originCol, range, cleave, side) {
+  const tiles = [];
+  const rowStart = side === 'player' ? originRow - range : originRow;
+  const rowEnd   = side === 'player' ? originRow        : originRow + range;
+  for (let r = rowStart; r <= rowEnd; r++) {
+    for (let dc = -cleave; dc <= cleave; dc++) {
+      if (r === originRow && dc === 0) continue;
+      tiles.push([r, originCol + dc]);
     }
   }
   return tiles;
