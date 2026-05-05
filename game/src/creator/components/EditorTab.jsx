@@ -7,13 +7,41 @@ import { getTypeColor, tickField, createRuntimeUnit } from '@lee/shared';
 const LIVE_FIELD = { rows: 6, cols: 4, deployRows: 2 };
 const TICK_MS    = 1000 / 60;
 
-const DUMMY_DEF = {
-  id: 'training-dummy', name: 'Dummy', emoji: '🪵', type: 'none',
-  tier: 1, moveBehavior: 'nearest-enemy', moveMult: 0,
-  baseStats: { hp: 200, def: 0, armor: 0, moveSpeed: 0 },
-  abilities: [],
-  acquisition: { method: 'draft', combineFrom: null },
-};
+function makeDummyDef(behavior) {
+  const base = {
+    name: 'Dummy', emoji: '🪵', type: 'none', tier: 1,
+    acquisition: { method: 'draft', combineFrom: null },
+    baseStats: { hp: 200, def: 0, armor: 0, moveSpeed: 0.7 },
+    abilities: [],
+  };
+  if (behavior === 'chase') {
+    return { ...base, id: 'dummy-chase', moveBehavior: 'nearest-enemy', moveMult: 1.0 };
+  }
+  if (behavior === 'attack') {
+    return { ...base, id: 'dummy-attack', moveBehavior: 'nearest-enemy', moveMult: 1.0,
+      abilities: [{ id: 'dummy-punch', type: 'melee', label: 'Punch', damage: 8,
+        range: 1, cleave: 0, aoeRadius: 0, actSpeed: 0.5, attackDelay: 0.1, targeting: 'nearest-enemy' }],
+    };
+  }
+  if (behavior === 'flee') {
+    return { ...base, id: 'dummy-flee', moveBehavior: 'flee-enemy', moveMult: 1.0,
+      baseStats: { ...base.baseStats, moveSpeed: 1.1 } };
+  }
+  // 'still' (default)
+  return { ...base, id: 'dummy-still', moveBehavior: 'nearest-enemy', moveMult: 0,
+    baseStats: { ...base.baseStats, moveSpeed: 0 } };
+}
+
+function randomFreePos(occupiedSet, minRow, maxRow, cols) {
+  const candidates = [];
+  for (let r = minRow; r <= maxRow; r++) {
+    for (let c = 0; c < cols; c++) {
+      if (!occupiedSet.has(`${r},${c}`)) candidates.push([r, c]);
+    }
+  }
+  if (!candidates.length) return [minRow, Math.floor(cols / 2)];
+  return candidates[Math.floor(Math.random() * candidates.length)];
+}
 
 function emptyLee() {
   return {
@@ -166,32 +194,79 @@ const sectionLabel = { fontSize: 12, color: '#555', textTransform: 'uppercase', 
 
 // ── Live Testbed ───────────────────────────────────────────────────────────
 
-const TILE = 56;
+const TILE         = 56;
+const PLAYER_MIN_R = LIVE_FIELD.rows - LIVE_FIELD.deployRows;
+const DUMMY_MAX_R  = LIVE_FIELD.rows - LIVE_FIELD.deployRows - 1;
 
-function initLiveUnits(leeDef) {
-  const midCol = Math.floor(LIVE_FIELD.cols / 2);
-  const lee    = createRuntimeUnit(leeDef, 'player', LIVE_FIELD.rows - 1, midCol);
-  const dummy  = createRuntimeUnit(DUMMY_DEF, 'enemy', 0, midCol);
-  return [lee, dummy];
+function initLiveUnits(leeDef, dummyCount, dummyBehavior) {
+  const occ = new Set();
+  const [pr, pc] = randomFreePos(occ, PLAYER_MIN_R, LIVE_FIELD.rows - 1, LIVE_FIELD.cols);
+  occ.add(`${pr},${pc}`);
+  const lee = createRuntimeUnit(leeDef, 'player', pr, pc);
+
+  const def = makeDummyDef(dummyBehavior);
+  const dummies = [];
+  for (let i = 0; i < dummyCount; i++) {
+    const [dr, dc] = randomFreePos(occ, 0, DUMMY_MAX_R, LIVE_FIELD.cols);
+    occ.add(`${dr},${dc}`);
+    dummies.push(createRuntimeUnit({ ...def, id: `dummy-${i}` }, 'enemy', dr, dc));
+  }
+  return [lee, ...dummies];
 }
 
-function LiveTestbed({ leeDef }) {
-  const [units, setUnits] = useState(() => initLiveUnits(leeDef));
-  const defRef = useRef(leeDef);
-  defRef.current = leeDef;
+function respawnDummies(units, count, behavior) {
+  const players = units.filter(u => u.side === 'player');
+  const occ = new Set(players.filter(u => u.alive).map(u => `${u.row},${u.col}`));
+  const def = makeDummyDef(behavior);
+  const newDummies = [];
+  for (let i = 0; i < count; i++) {
+    const [dr, dc] = randomFreePos(occ, 0, DUMMY_MAX_R, LIVE_FIELD.cols);
+    occ.add(`${dr},${dc}`);
+    newDummies.push(createRuntimeUnit({ ...def, id: `dummy-${i}` }, 'enemy', dr, dc));
+  }
+  return [...players, ...newDummies];
+}
 
-  // Full reset when switching to a different Lee definition
+function respawnLee(units, leeDef) {
+  const enemies = units.filter(u => u.side === 'enemy');
+  const occ = new Set(enemies.filter(u => u.alive).map(u => `${u.row},${u.col}`));
+  const [pr, pc] = randomFreePos(occ, PLAYER_MIN_R, LIVE_FIELD.rows - 1, LIVE_FIELD.cols);
+  return [createRuntimeUnit(leeDef, 'player', pr, pc), ...enemies];
+}
+
+const BEHAVIORS = [
+  { id: 'still',  label: 'Still'  },
+  { id: 'chase',  label: 'Chase'  },
+  { id: 'attack', label: 'Attack' },
+  { id: 'flee',   label: 'Flee'   },
+];
+
+function LiveTestbed({ leeDef }) {
+  const [dummyCount,    setDummyCount]    = useState(1);
+  const [dummyBehavior, setDummyBehavior] = useState('still');
+  const [units, setUnits] = useState(() => initLiveUnits(leeDef, 1, 'still'));
+
+  const defRef      = useRef(leeDef);
+  const countRef    = useRef(dummyCount);
+  const behaviorRef = useRef(dummyBehavior);
+  defRef.current      = leeDef;
+  countRef.current    = dummyCount;
+  behaviorRef.current = dummyBehavior;
+
   useEffect(() => {
-    setUnits(initLiveUnits(defRef.current));
+    setUnits(initLiveUnits(defRef.current, countRef.current, behaviorRef.current));
   }, [leeDef?.id]);
 
-  // Tick loop — always running while mounted
+  useEffect(() => {
+    setUnits(initLiveUnits(defRef.current, dummyCount, dummyBehavior));
+  }, [dummyCount, dummyBehavior]);
+
   useEffect(() => {
     const id = setInterval(() => {
       setUnits(prev => {
         const cur = defRef.current;
 
-        // Sync Lee's current abilities so slider edits take effect in real-time
+        // Sync Lee's abilities from current def so slider changes take effect live
         const synced = prev.map(u => {
           if (u.side !== 'player' || !u.alive) return u;
           const abilities = cur.abilities.map(a => ({ ...a }));
@@ -204,36 +279,54 @@ function LiveTestbed({ leeDef }) {
 
         const { next } = tickField(synced, TICK_MS / 1000, LIVE_FIELD);
 
-        // Respawn dummy when defeated
-        if (!next.some(u => u.side === 'enemy' && u.alive)) {
-          const col   = Math.floor(Math.random() * LIVE_FIELD.cols);
-          const dummy = createRuntimeUnit(DUMMY_DEF, 'enemy', 0, col);
-          return [...next.filter(u => u.side === 'player'), dummy];
-        }
+        if (!next.some(u => u.side === 'enemy'  && u.alive))
+          return respawnDummies(next, countRef.current, behaviorRef.current);
 
-        // Respawn Lee if somehow defeated (thorns edge case)
-        if (!next.some(u => u.side === 'player' && u.alive)) {
-          const midCol = Math.floor(LIVE_FIELD.cols / 2);
-          const newLee = createRuntimeUnit(cur, 'player', LIVE_FIELD.rows - 1, midCol);
-          return [newLee, ...next.filter(u => u.side === 'enemy')];
-        }
+        if (!next.some(u => u.side === 'player' && u.alive))
+          return respawnLee(next, cur);
 
         return next;
       });
     }, TICK_MS);
     return () => clearInterval(id);
-  }, []);  // intentionally empty — defRef stays current
+  }, []); // intentionally empty — refs stay current
 
   const W = LIVE_FIELD.cols * TILE;
   const H = LIVE_FIELD.rows * TILE;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-      <div style={{ fontSize: 10, color: '#444' }}>
-        Dummies respawn. Adjust sliders above to see changes live.
+
+      {/* Dummy controls */}
+      <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap', rowGap: 4 }}>
+        <span style={{ fontSize: 10, color: '#555', marginRight: 2 }}>Dummies:</span>
+        {[1, 2, 3, 4].map(n => (
+          <button key={n} onClick={() => setDummyCount(n)} style={{
+            padding: '2px 8px',
+            background: dummyCount === n ? '#1e2a3a' : '#111',
+            border: `1px solid ${dummyCount === n ? '#3355aa' : '#2a2a2a'}`,
+            borderRadius: 4,
+            color: dummyCount === n ? '#88aaee' : '#444',
+            fontFamily: 'monospace', fontSize: 12, cursor: 'pointer',
+            touchAction: 'manipulation',
+          }}>{n}</button>
+        ))}
+        <span style={{ color: '#2a2a2a', margin: '0 2px' }}>|</span>
+        {BEHAVIORS.map(({ id, label }) => (
+          <button key={id} onClick={() => setDummyBehavior(id)} style={{
+            padding: '2px 8px',
+            background: dummyBehavior === id ? '#2a1a10' : '#111',
+            border: `1px solid ${dummyBehavior === id ? '#774422' : '#2a2a2a'}`,
+            borderRadius: 4,
+            color: dummyBehavior === id ? '#ffaa77' : '#444',
+            fontFamily: 'monospace', fontSize: 11, cursor: 'pointer',
+            touchAction: 'manipulation',
+          }}>{label}</button>
+        ))}
       </div>
+
+      {/* Field */}
       <div style={{ position: 'relative', width: W, height: H, border: '1px solid #222', borderRadius: 4, overflow: 'hidden' }}>
-        {/* Grid tiles */}
         {Array.from({ length: LIVE_FIELD.rows }, (_, r) =>
           Array.from({ length: LIVE_FIELD.cols }, (_, c) => {
             const isEnemy  = r < LIVE_FIELD.deployRows;
@@ -249,15 +342,12 @@ function LiveTestbed({ leeDef }) {
           })
         )}
 
-        {/* Units */}
         {units.map(unit => {
-          const hpPct    = Math.max(0, unit.hp / (unit.maxHp || 1));
-          const hpColor  = hpPct > 0.5 ? '#44cc44' : hpPct > 0.25 ? '#ffcc00' : '#ff4444';
-          const tc       = getTypeColor(unit.type || 'none');
-          const isDummy  = unit.side === 'enemy';
-          const border   = isDummy ? '#555' : tc;
-          const g        = 2;
-          const sz       = TILE - g * 2;
+          const hpPct   = Math.max(0, unit.hp / (unit.maxHp || 1));
+          const hpColor = hpPct > 0.5 ? '#44cc44' : hpPct > 0.25 ? '#ffcc00' : '#ff4444';
+          const tc      = getTypeColor(unit.type || 'none');
+          const border  = unit.side === 'enemy' ? '#555' : tc;
+          const g = 2, sz = TILE - g * 2;
           const activeAb = (unit.abilities || []).filter(a => a.type !== 'thorns');
           return (
             <div key={unit.uid} style={{
@@ -283,6 +373,10 @@ function LiveTestbed({ leeDef }) {
             </div>
           );
         })}
+      </div>
+
+      <div style={{ fontSize: 10, color: '#444' }}>
+        Both sides respawn randomly. Adjust sliders above to see changes live.
       </div>
     </div>
   );

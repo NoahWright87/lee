@@ -30,6 +30,17 @@ export function findMovementTarget(unit, allUnits) {
   const allies  = allUnits.filter(u => u.alive && u.side === unit.side && u.uid !== unit.uid);
 
   switch (moveBehavior) {
+    case 'flee-enemy': {
+      if (!enemies.length) return null;
+      const nearest = enemies.reduce((a, b) =>
+        manhattan(unit, a) <= manhattan(unit, b) ? a : b
+      );
+      const dr = unit.row - nearest.row;
+      const dc = unit.col - nearest.col;
+      if (dr === 0 && dc === 0) return null;
+      // Virtual target far in the opposite direction — stepToward clamps to field bounds
+      return { row: unit.row + Math.sign(dr) * 99, col: unit.col + Math.sign(dc) * 99 };
+    }
     case 'weakest-enemy': {
       if (!enemies.length) return null;
       return enemies.reduce((a, b) => a.hp <= b.hp ? a : b);
