@@ -220,7 +220,7 @@ export default function BattleField({
           });
         })}
 
-        {/* Melee swing — stroke-based arc; strokeLinecap="round" tapers ends naturally */}
+        {/* Melee swing — fill-based crescent: outer arc + quadratic bezier inner edge */}
         {inFlight.filter(atk => atk.isMelee).map((atk, i) => {
           const progress = 1 - atk.timeLeft / (atk.totalTime || 0.001);
 
@@ -233,35 +233,54 @@ export default function BattleField({
           const halfRad = Math.max(cleave / 2 * Math.PI / 180, 20 * Math.PI / 180);
           const effectiveHalf = Math.min(halfRad, Math.PI - 0.01);
 
-          // Inner radius always sits in the adjacent tile, outer extends to range edge
-          const innerR = TILE * 0.7;
-          const outerR = (range + 0.4) * TILE;
-          const midR   = (innerR + outerR) / 2;
-          const strokeW = outerR - innerR;
+          // Outer edge covers to range boundary; inner edge always in the adjacent tile
+          const outerR = (range + 0.5) * TILE;
+          const innerR = TILE * 0.85;
 
-          // Comet-tail sweep: leading edge advances, 35% tail trails behind
+          // Comet tail: 50% of arc is visible at once, sweeping from start to end
           const totalArc = 2 * effectiveHalf;
           const leadAngle  = fwdAngle - effectiveHalf + totalArc * progress;
-          const trailAngle = Math.max(fwdAngle - effectiveHalf, leadAngle - totalArc * 0.35);
+          const trailAngle = Math.max(fwdAngle - effectiveHalf, leadAngle - totalArc * 0.5);
           const sweepLen = leadAngle - trailAngle;
           if (sweepLen < 0.01) return null;
 
           const sweepLargeArc = sweepLen > Math.PI ? 1 : 0;
-          const f = n => n.toFixed(2);
-          const sx1 = cx + midR * Math.cos(trailAngle), sy1 = cy + midR * Math.sin(trailAngle);
-          const sx2 = cx + midR * Math.cos(leadAngle),  sy2 = cy + midR * Math.sin(leadAngle);
+          const halfSweep = sweepLen / 2;
+          const midAngle  = trailAngle + halfSweep;
 
-          // Quick rise, hold, sharp fade at end
-          const alpha = Math.min(1, progress * 5) * Math.max(0, 1 - Math.max(0, progress - 0.8) * 5) * 0.92;
+          // The two crescent "horn" tips, on the outer arc
+          const f  = n => n.toFixed(2);
+          const tx1 = cx + outerR * Math.cos(trailAngle), ty1 = cy + outerR * Math.sin(trailAngle);
+          const tx2 = cx + outerR * Math.cos(leadAngle),  ty2 = cy + outerR * Math.sin(leadAngle);
+
+          // Quadratic bezier control point for the inner edge.
+          // "innerMid" is where we want the inner edge to reach (innerR, midAngle).
+          // "lineMid" is the midpoint of the straight line between the two tip points.
+          // The bezier apex sits halfway between the control and lineMid, so we
+          // set ctrlPt = 2*innerMid - lineMid to hit innerR exactly at the midpoint.
+          const innerMidX = cx + innerR * Math.cos(midAngle);
+          const innerMidY = cy + innerR * Math.sin(midAngle);
+          const lineMidX  = cx + outerR * Math.cos(midAngle) * Math.cos(halfSweep);
+          const lineMidY  = cy + outerR * Math.sin(midAngle) * Math.cos(halfSweep);
+          const ctrlX = 2 * innerMidX - lineMidX;
+          const ctrlY = 2 * innerMidY - lineMidY;
+
+          const d = [
+            `M ${f(tx1)} ${f(ty1)}`,
+            `A ${f(outerR)} ${f(outerR)} 0 ${sweepLargeArc} 1 ${f(tx2)} ${f(ty2)}`,
+            `Q ${f(ctrlX)} ${f(ctrlY)} ${f(tx1)} ${f(ty1)}`,
+            'Z',
+          ].join(' ');
+
+          const alpha = Math.sin(Math.PI * progress) * 0.88;
 
           return (
             <path
               key={`swing-${i}`}
-              d={`M ${f(sx1)} ${f(sy1)} A ${f(midR)} ${f(midR)} 0 ${sweepLargeArc} 1 ${f(sx2)} ${f(sy2)}`}
-              fill="none"
-              stroke={`rgba(255,220,60,${alpha.toFixed(3)})`}
-              strokeWidth={f(strokeW)}
-              strokeLinecap="round"
+              d={d}
+              fill={`rgba(255,220,60,${alpha.toFixed(3)})`}
+              stroke={`rgba(255,245,120,${(alpha * 0.5).toFixed(3)})`}
+              strokeWidth={1.5}
             />
           );
         })}
