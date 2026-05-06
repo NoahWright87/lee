@@ -220,47 +220,48 @@ export default function BattleField({
           });
         })}
 
-        {/* Melee swing crescents */}
+        {/* Melee swing — stroke-based arc; strokeLinecap="round" tapers ends naturally */}
         {inFlight.filter(atk => atk.isMelee).map((atk, i) => {
           const progress = 1 - atk.timeLeft / (atk.totalTime || 0.001);
-          const alpha = Math.sin(Math.PI * progress) * 0.9;
 
           const cx = atk.attackerCol * TILE + TILE / 2;
           const cy = atk.attackerRow * TILE + TILE / 2;
-          const dx = atk.targetCol - atk.attackerCol;
-          const dy = atk.targetRow - atk.attackerRow;
-          const fwdAngle = Math.atan2(dy, dx);
+          const fwdAngle = Math.atan2(atk.targetRow - atk.attackerRow, atk.targetCol - atk.attackerCol);
 
           const range = atk.range || 1;
           const cleave = atk.cleave || 0;
-          // Minimum visual half-angle so even a cleave=0 stab shows a sliver
-          const halfRad = Math.max(cleave / 2 * Math.PI / 180, 18 * Math.PI / 180);
-          // Cap just under π so start/end points never coincide (full-circle issue)
+          const halfRad = Math.max(cleave / 2 * Math.PI / 180, 20 * Math.PI / 180);
           const effectiveHalf = Math.min(halfRad, Math.PI - 0.01);
 
-          const outerR = range * TILE - TILE * 0.08;
-          const innerR = Math.max((range - 0.65) * TILE, TILE * 0.18);
+          // Inner radius always sits in the adjacent tile, outer extends to range edge
+          const innerR = TILE * 0.7;
+          const outerR = (range + 0.4) * TILE;
+          const midR   = (innerR + outerR) / 2;
+          const strokeW = outerR - innerR;
 
-          const startA = fwdAngle - effectiveHalf;
-          const endA   = fwdAngle + effectiveHalf;
-          const largeArc = effectiveHalf > Math.PI / 2 ? 1 : 0;
+          // Comet-tail sweep: leading edge advances, 35% tail trails behind
+          const totalArc = 2 * effectiveHalf;
+          const leadAngle  = fwdAngle - effectiveHalf + totalArc * progress;
+          const trailAngle = Math.max(fwdAngle - effectiveHalf, leadAngle - totalArc * 0.35);
+          const sweepLen = leadAngle - trailAngle;
+          if (sweepLen < 0.01) return null;
 
+          const sweepLargeArc = sweepLen > Math.PI ? 1 : 0;
           const f = n => n.toFixed(2);
-          const ox1 = cx + outerR * Math.cos(startA), oy1 = cy + outerR * Math.sin(startA);
-          const ox2 = cx + outerR * Math.cos(endA),   oy2 = cy + outerR * Math.sin(endA);
-          const ix1 = cx + innerR * Math.cos(startA), iy1 = cy + innerR * Math.sin(startA);
-          const ix2 = cx + innerR * Math.cos(endA),   iy2 = cy + innerR * Math.sin(endA);
+          const sx1 = cx + midR * Math.cos(trailAngle), sy1 = cy + midR * Math.sin(trailAngle);
+          const sx2 = cx + midR * Math.cos(leadAngle),  sy2 = cy + midR * Math.sin(leadAngle);
 
-          const d = `M ${f(ox1)} ${f(oy1)} A ${f(outerR)} ${f(outerR)} 0 ${largeArc} 1 ${f(ox2)} ${f(oy2)} L ${f(ix2)} ${f(iy2)} A ${f(innerR)} ${f(innerR)} 0 ${largeArc} 0 ${f(ix1)} ${f(iy1)} Z`;
+          // Quick rise, hold, sharp fade at end
+          const alpha = Math.min(1, progress * 5) * Math.max(0, 1 - Math.max(0, progress - 0.8) * 5) * 0.92;
 
           return (
             <path
               key={`swing-${i}`}
-              d={d}
-              fill={`rgba(255,220,60,${(alpha * 0.5).toFixed(3)})`}
-              stroke={`rgba(255,245,100,${alpha.toFixed(3)})`}
-              strokeWidth={2}
-              strokeLinejoin="round"
+              d={`M ${f(sx1)} ${f(sy1)} A ${f(midR)} ${f(midR)} 0 ${sweepLargeArc} 1 ${f(sx2)} ${f(sy2)}`}
+              fill="none"
+              stroke={`rgba(255,220,60,${alpha.toFixed(3)})`}
+              strokeWidth={f(strokeW)}
+              strokeLinecap="round"
             />
           );
         })}

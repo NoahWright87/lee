@@ -301,15 +301,10 @@ function getMeleeHitTiles(originRow, originCol, range, cleaveAngle, side, target
   const fwdDr = (targetRow != null) ? (targetRow - originRow) : (side === 'player' ? -1 : 1);
   const fwdDc = (targetCol != null) ? (targetCol - originCol) : 0;
 
+  // Loop bounds enforce Chebyshev(dr,dc) ≤ range, consistent with all other range checks
   for (let dr = -range; dr <= range; dr++) {
     for (let dc = -range; dc <= range; dc++) {
       if (dr === 0 && dc === 0) continue;
-
-      // Euclidean radius; +0.5 buffer on Chebyshev-1 neighbours so range=1 always
-      // includes all 8 adjacent tiles (diagonal √2 ≈ 1.41 fits within 1.5)
-      const dist = Math.sqrt(dr * dr + dc * dc);
-      const isAdjacent = Math.max(Math.abs(dr), Math.abs(dc)) <= 1;
-      if (dist > range + (isAdjacent ? 0.5 : 0)) continue;
 
       // Angle between this tile offset and the forward direction
       const dot      = dr * fwdDr + dc * fwdDc;
