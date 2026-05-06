@@ -72,7 +72,7 @@ function resolvePendingAttacks(units, events, dt) {
           attacker.xp = (attacker.xp || 0) + 30;
         }
 
-        events.push({ type: 'hit', uid: victim.uid, dmg: dmgDealt, died: victim.hp === 0 });
+        events.push({ type: 'hit', uid: victim.uid, dmg: dmgDealt, died: victim.hp === 0, row: victim.row, col: victim.col });
 
         // Thorns: passive flat retaliation — only triggers on melee attacks
         if (isMelee) {
@@ -82,10 +82,14 @@ function resolvePendingAttacks(units, events, dt) {
             attacker.hp = Math.max(0, attacker.hp - thornDmg);
             attacker.flash = 1;
             if (attacker.hp === 0) attacker.alive = false;
-            events.push({ type: 'hit', uid: attacker.uid, dmg: thornDmg, died: attacker.hp === 0 });
+            events.push({ type: 'hit', uid: attacker.uid, dmg: thornDmg, died: attacker.hp === 0, row: attacker.row, col: attacker.col });
           }
         }
       });
+
+      if ((aoeRadius || 0) > 0) {
+        events.push({ type: 'detonate', row: targetRow, col: targetCol, aoeRadius });
+      }
 
       if (!hitAny) {
         events.push({ type: 'miss', uid: attacker.uid });
@@ -164,8 +168,8 @@ function fireAbility(unit, ability, allUnits, events) {
     const healAmt = ability.healAmount || 0;
     const cap = abilityTarget.maxHp || abilityTarget.baseStats?.hp || 9999;
     abilityTarget.hp = Math.min(cap, abilityTarget.hp + healAmt);
-    events.push({ type: 'heal', uid: abilityTarget.uid, amt: healAmt });
-    events.push({ type: 'fire', uid: unit.uid, abilityId: ability.id, targetRow: abilityTarget.row, targetCol: abilityTarget.col });
+    events.push({ type: 'heal', uid: abilityTarget.uid, amt: healAmt, row: abilityTarget.row, col: abilityTarget.col });
+    events.push({ type: 'fire', uid: unit.uid, abilityId: ability.id, targetRow: abilityTarget.row, targetCol: abilityTarget.col, fromRow: unit.row, fromCol: unit.col, isHeal: true });
     return;
   }
 
@@ -178,6 +182,9 @@ function fireAbility(unit, ability, allUnits, events) {
   // melee, missile, mortar — commit a pending attack
   const isMelee = ability.type === 'melee';
   const totalTime = ability.attackDelay || 0.001;
+  const hitTiles = isMelee
+    ? getMeleeHitTiles(unit.row, unit.col, ability.range || 1, ability.cleave || 0, unit.side)
+    : [];
   unit.pendingAttacks.push({
     abilityId: ability.id,
     abilityType: ability.type,
@@ -193,6 +200,7 @@ function fireAbility(unit, ability, allUnits, events) {
     cleave: isMelee ? (ability.cleave || 0) : 0,
     range: ability.range || 1,
     attackerUid: unit.uid,
+    hitTiles,
   });
   events.push({
     type: 'fire',

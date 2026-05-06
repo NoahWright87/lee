@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import LeeForm from './LeeForm.jsx';
 import LeeCard from './LeeCard.jsx';
 import { getTypeColor, tickField, createRuntimeUnit } from '@lee/shared';
+import BattleField from '../../components/BattleField.jsx';
 
 // ── Constants ──────────────────────────────────────────────────────────────
 const LIVE_FIELD = { rows: 6, cols: 4, deployRows: 2 };
@@ -245,6 +246,8 @@ function LiveTestbed({ leeDef }) {
   const [dummyCount,    setDummyCount]    = useState(1);
   const [dummyBehavior, setDummyBehavior] = useState('still');
   const [units, setUnits] = useState(() => initLiveUnits(leeDef, 1, 'still'));
+  const [lastEvents, setLastEvents] = useState([]);
+  const pendingEventsRef = useRef([]);
 
   const defRef      = useRef(leeDef);
   const countRef    = useRef(dummyCount);
@@ -277,7 +280,8 @@ function LiveTestbed({ leeDef }) {
           return { ...u, abilities, castBars };
         });
 
-        const { next } = tickField(synced, TICK_MS / 1000, LIVE_FIELD);
+        const { next, events } = tickField(synced, TICK_MS / 1000, LIVE_FIELD);
+        if (events.length) pendingEventsRef.current = events;
 
         if (!next.some(u => u.side === 'enemy'  && u.alive))
           return respawnDummies(next, countRef.current, behaviorRef.current);
@@ -291,8 +295,13 @@ function LiveTestbed({ leeDef }) {
     return () => clearInterval(id);
   }, []); // intentionally empty — refs stay current
 
-  const W = LIVE_FIELD.cols * TILE;
-  const H = LIVE_FIELD.rows * TILE;
+  // Flush tick events for VFX
+  useEffect(() => {
+    if (pendingEventsRef.current.length) {
+      setLastEvents(pendingEventsRef.current);
+      pendingEventsRef.current = [];
+    }
+  }, [units]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -325,55 +334,12 @@ function LiveTestbed({ leeDef }) {
         ))}
       </div>
 
-      {/* Field */}
-      <div style={{ position: 'relative', width: W, height: H, border: '1px solid #222', borderRadius: 4, overflow: 'hidden' }}>
-        {Array.from({ length: LIVE_FIELD.rows }, (_, r) =>
-          Array.from({ length: LIVE_FIELD.cols }, (_, c) => {
-            const isEnemy  = r < LIVE_FIELD.deployRows;
-            const isPlayer = r >= LIVE_FIELD.rows - LIVE_FIELD.deployRows;
-            return (
-              <div key={`${r},${c}`} style={{
-                position: 'absolute', left: c * TILE, top: r * TILE,
-                width: TILE - 1, height: TILE - 1,
-                background: isEnemy ? 'rgba(255,60,60,0.1)' : isPlayer ? 'rgba(60,120,255,0.08)' : '#0e0e0e',
-                border: '1px solid #2c2c2c',
-              }} />
-            );
-          })
-        )}
-
-        {units.map(unit => {
-          const hpPct   = Math.max(0, unit.hp / (unit.maxHp || 1));
-          const hpColor = hpPct > 0.5 ? '#44cc44' : hpPct > 0.25 ? '#ffcc00' : '#ff4444';
-          const tc      = getTypeColor(unit.type || 'none');
-          const border  = unit.side === 'enemy' ? '#555' : tc;
-          const g = 2, sz = TILE - g * 2;
-          const activeAb = (unit.abilities || []).filter(a => a.type !== 'thorns');
-          return (
-            <div key={unit.uid} style={{
-              position: 'absolute',
-              left: unit.col * TILE + g, top: unit.row * TILE + g,
-              width: sz, height: sz,
-              background: unit.flash > 0 ? `rgba(255,80,80,${unit.flash * 0.7})` : '#1a1a1a',
-              border: `2px solid ${border}`,
-              borderRadius: 5,
-              display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-start',
-              padding: 2, opacity: unit.alive ? 1 : 0.2,
-              transition: 'left 0.1s, top 0.1s', boxSizing: 'border-box', overflow: 'hidden',
-            }}>
-              <div style={{ fontSize: 18, lineHeight: 1 }}>{unit.emoji || '?'}</div>
-              <div style={{ width: '100%', height: 3, background: '#333', borderRadius: 2, marginTop: 2 }}>
-                <div style={{ width: `${hpPct * 100}%`, height: '100%', background: hpColor, borderRadius: 2 }} />
-              </div>
-              {activeAb.map(ab => (
-                <div key={ab.id} style={{ width: '100%', height: 2, background: '#333', borderRadius: 2, marginTop: 1 }}>
-                  <div style={{ width: `${(unit.castBars?.[ab.id] || 0) * 100}%`, height: '100%', background: tc, borderRadius: 2 }} />
-                </div>
-              ))}
-            </div>
-          );
-        })}
-      </div>
+      <BattleField
+        units={units}
+        fieldConfig={LIVE_FIELD}
+        events={lastEvents}
+        tileSize={TILE}
+      />
 
       <div style={{ fontSize: 10, color: '#444' }}>
         Both sides respawn randomly. Adjust sliders above to see changes live.

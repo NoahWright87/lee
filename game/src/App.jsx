@@ -46,6 +46,8 @@ export default function App() {
   const [draftOptions, setDraftOptions]   = useState(() => getInitialDraftOptions(ALL_LEES, 5));
   const [pendingMerges, setPendingMerges] = useState([]);
   const [paused, setPaused]               = useState(false);
+  const [lastEvents, setLastEvents]       = useState([]);
+  const pendingEventsRef                  = useRef([]);
   const [victor, setVictor]               = useState(null); // 'player' | 'enemy'
 
   // Refs to avoid stale closures in the battle interval
@@ -66,7 +68,8 @@ export default function App() {
       if (pausedRef.current) return;
 
       setFieldUnits(prev => {
-        const { next, events: _events } = tickField(prev, TICK_MS / 1000, FIELD_CONFIG);
+        const { next, events } = tickField(prev, TICK_MS / 1000, FIELD_CONFIG);
+        if (events.length) pendingEventsRef.current = events;
 
         const playerAlive = next.some(u => u.side === 'player' && u.alive);
         const enemyAlive  = next.some(u => u.side === 'enemy'  && u.alive);
@@ -84,6 +87,14 @@ export default function App() {
 
     return () => clearInterval(id);
   }, [screen]);
+
+  // Flush tick events for VFX — runs after each fieldUnits update
+  useEffect(() => {
+    if (pendingEventsRef.current.length) {
+      setLastEvents(pendingEventsRef.current);
+      pendingEventsRef.current = [];
+    }
+  }, [fieldUnits]);
 
   // -------------------------------------------------------------------
   // Post-battle transition
@@ -302,7 +313,7 @@ export default function App() {
           </button>
         </div>
 
-        <BattleField units={fieldUnits} fieldConfig={FIELD_CONFIG} />
+        <BattleField units={fieldUnits} fieldConfig={FIELD_CONFIG} events={lastEvents} />
 
         {/* Bench display */}
         {bench.length > 0 && (

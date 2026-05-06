@@ -1,12 +1,15 @@
+import { useRef } from 'react';
 import { getTypeColor } from '@lee/shared';
 import UnitToken from './UnitToken.jsx';
 
-const TILE = 72;
+let _vfxId = 0;
 
 /**
  * @param {{
  *   units: object[],
  *   fieldConfig: {rows:number,cols:number,deployRows:number},
+ *   events?: object[],
+ *   tileSize?: number,
  *   deployMode?: boolean,
  *   selectedUnit?: object|null,
  *   onTileClick?: (row:number, col:number) => void,
@@ -14,7 +17,12 @@ const TILE = 72;
  *   previewUnits?: object[],
  * }} props
  */
-export default function BattleField({ units, fieldConfig, deployMode, selectedUnit, onTileClick, onUnitClick, previewUnits = [] }) {
+export default function BattleField({
+  units, fieldConfig, events,
+  deployMode, selectedUnit, onTileClick, onUnitClick,
+  previewUnits = [], tileSize = 72,
+}) {
+  const TILE = tileSize;
   const { rows, cols, deployRows } = fieldConfig;
   const W = cols * TILE;
   const H = rows * TILE;
@@ -22,18 +30,47 @@ export default function BattleField({ units, fieldConfig, deployMode, selectedUn
   const playerZoneRows = Array.from({ length: deployRows }, (_, i) => rows - deployRows + i);
   const enemyZoneRows  = Array.from({ length: deployRows }, (_, i) => i);
 
-  // ── Aimed-tile indicators (cast bar charging → target) ─────────────────
-  const aimedTiles = new Map(); // `r,c` → typeColor of earliest aimer
+  // ── VFX accumulation (ref — mutations here don't trigger re-renders) ─────
+  const vfxRef = useRef([]);
+  const lastEventsRef = useRef(null);
+
+  if (events && events !== lastEventsRef.current && events.length > 0) {
+    lastEventsRef.current = events;
+    const now = Date.now();
+    events.forEach(ev => {
+      if (ev.type === 'hit' && ev.row != null) {
+        vfxRef.current.push({ id: ++_vfxId, type: 'dmg-num', value: ev.dmg, died: ev.died, row: ev.row, col: ev.col, born: now, ttl: 750 });
+      }
+      if (ev.type === 'heal' && ev.row != null) {
+        vfxRef.current.push({ id: ++_vfxId, type: 'heal-num', value: ev.amt, row: ev.row, col: ev.col, born: now, ttl: 750 });
+        vfxRef.current.push({ id: ++_vfxId, type: 'heal-pop', row: ev.row, col: ev.col, born: now, ttl: 500 });
+      }
+      if (ev.type === 'fire' && ev.isHeal) {
+        vfxRef.current.push({ id: ++_vfxId, type: 'heal-proj', fromRow: ev.fromRow, fromCol: ev.fromCol, toRow: ev.targetRow, toCol: ev.targetCol, born: now, ttl: 300 });
+      }
+      if (ev.type === 'detonate') {
+        vfxRef.current.push({ id: ++_vfxId, type: 'explosion', row: ev.row, col: ev.col, aoeRadius: ev.aoeRadius, born: now, ttl: 450 });
+      }
+    });
+  }
+
+  const now = Date.now();
+  vfxRef.current = vfxRef.current.filter(e => now - e.born < e.ttl);
+  const activeFx = vfxRef.current.map(e => ({ ...e, t: (now - e.born) / e.ttl }));
+
+  // ── Aimed-tile indicators ─────────────────────────────────────────────────
+  const aimedTiles = new Map();
   units.forEach(u => {
     if (!u.alive || !u.aims) return;
-    const color = getTypeColor(u.type || 'none');
-    Object.values(u.aims).forEach(({ row, col }) => {
+    Object.entries(u.aims).forEach(([abilityId, { row, col }]) => {
+      const ability = u.abilities?.find(a => a.id === abilityId);
+      const color = ability?.type === 'heal' ? '#44ff88' : getTypeColor(u.type || 'none');
       const key = `${row},${col}`;
       if (!aimedTiles.has(key)) aimedTiles.set(key, color);
     });
   });
 
-  // ── In-flight attacks ───────────────────────────────────────────────────
+  // ── In-flight attacks ─────────────────────────────────────────────────────
   const inFlight = [];
   units.forEach(u => {
     (u.pendingAttacks || []).forEach(atk => {
@@ -58,9 +95,9 @@ export default function BattleField({ units, fieldConfig, deployMode, selectedUn
                 position: 'absolute',
                 left: c * TILE, top: r * TILE,
                 width: TILE - 1, height: TILE - 1,
-                background: isEnemyZone                   ? 'rgba(255,60,60,0.1)'
-                          : (isPlayerZone && deployMode)  ? 'rgba(60,120,255,0.22)'
-                          : isPlayerZone                  ? 'rgba(60,120,255,0.07)'
+                background: isEnemyZone                  ? 'rgba(255,60,60,0.1)'
+                          : (isPlayerZone && deployMode) ? 'rgba(60,120,255,0.22)'
+                          : isPlayerZone                 ? 'rgba(60,120,255,0.07)'
                           : '#0e0e0e',
                 border: `1px solid ${isClickable ? '#2a4488' : '#2c2c2c'}`,
                 borderRadius: 3,
@@ -73,16 +110,19 @@ export default function BattleField({ units, fieldConfig, deployMode, selectedUn
         })
       )}
 
-      {/* Aimed-tile dotted outlines (cast bar charging) */}
+      {/* Aimed-tile indicators — bright pulsing glow */}
       {Array.from(aimedTiles.entries()).map(([key, color]) => {
         const [r, c] = key.split(',').map(Number);
         return (
           <div key={`aim-${key}`} style={{
             position: 'absolute',
-            left: c * TILE + 3, top: r * TILE + 3,
-            width: TILE - 6, height: TILE - 6,
-            border: `2px dashed ${color}88`,
+            left: c * TILE + 2, top: r * TILE + 2,
+            width: TILE - 4, height: TILE - 4,
+            border: `2px solid ${color}dd`,
             borderRadius: 4,
+            background: `${color}22`,
+            boxShadow: `0 0 10px ${color}88, inset 0 0 8px ${color}22`,
+            animation: 'aimPulse 0.45s ease-in-out infinite alternate',
             pointerEvents: 'none',
             zIndex: 3,
           }} />
@@ -95,7 +135,7 @@ export default function BattleField({ units, fieldConfig, deployMode, selectedUn
           position: 'absolute',
           left: atk.targetCol * TILE + 2, top: atk.targetRow * TILE + 2,
           width: TILE - 4, height: TILE - 4,
-          border: '2px solid rgba(255,80,80,0.7)',
+          border: '2px solid rgba(255,80,80,0.8)',
           borderRadius: 4,
           animation: 'reticlePulse 0.5s ease-in-out infinite alternate',
           pointerEvents: 'none',
@@ -111,10 +151,7 @@ export default function BattleField({ units, fieldConfig, deployMode, selectedUn
         const tx = atk.targetCol * TILE + TILE / 2;
         const ty = atk.targetRow * TILE + TILE / 2;
         const px = ox + (tx - ox) * t;
-        // Mortar: parabolic arc; missile: straight
-        const arcLift = atk.abilityType === 'mortar'
-          ? Math.sin(Math.PI * t) * 48
-          : 0;
+        const arcLift = atk.abilityType === 'mortar' ? Math.sin(Math.PI * t) * 48 : 0;
         const py = oy + (ty - oy) * t - arcLift;
         const color = getTypeColor(atk.attackerType);
         const size  = atk.abilityType === 'mortar' ? 10 : 7;
@@ -125,32 +162,30 @@ export default function BattleField({ units, fieldConfig, deployMode, selectedUn
             width: size, height: size,
             background: color,
             borderRadius: '50%',
-            boxShadow: `0 0 5px ${color}`,
+            boxShadow: `0 0 6px ${color}`,
             pointerEvents: 'none',
             zIndex: 8,
           }} />
         );
       })}
 
-      {/* Melee impact flash — brief colored rectangle on target tile */}
-      {inFlight.filter(atk => atk.isMelee).map((atk, i) => {
+      {/* Melee swing — flash the full arc of hit tiles */}
+      {inFlight.filter(atk => atk.isMelee).flatMap((atk, i) => {
         const progress = 1 - atk.timeLeft / (atk.totalTime || 0.001);
-        const color = getTypeColor(atk.attackerType);
-        const opacity = Math.sin(Math.PI * progress) * 0.6;
-        return (
-          <div key={`melee-${i}`} style={{
+        const alpha = Math.sin(Math.PI * progress) * 0.85;
+        const tiles = atk.hitTiles?.length ? atk.hitTiles : [[atk.targetRow, atk.targetCol]];
+        return tiles.map(([r, c], j) => (
+          <div key={`melee-${i}-${j}`} style={{
             position: 'absolute',
-            left: atk.targetCol * TILE + TILE * 0.1,
-            top:  atk.targetRow * TILE + TILE * 0.1,
-            width:  TILE * 0.8,
-            height: TILE * 0.8,
-            background: `rgba(255,140,0,${opacity})`,
-            border: `2px solid ${color}`,
+            left: c * TILE + 2, top: r * TILE + 2,
+            width: TILE - 4, height: TILE - 4,
+            background: `rgba(255,210,60,${alpha * 0.6})`,
+            border: `2px solid rgba(255,230,80,${alpha})`,
             borderRadius: 4,
             pointerEvents: 'none',
             zIndex: 6,
           }} />
-        );
+        ));
       })}
 
       {/* Ghost enemy preview (deploy screen) */}
@@ -164,10 +199,7 @@ export default function BattleField({ units, fieldConfig, deployMode, selectedUn
           borderRadius: 5,
           display: 'flex', flexDirection: 'column',
           alignItems: 'center', justifyContent: 'center',
-          opacity: 0.55,
-          pointerEvents: 'none',
-          zIndex: 2,
-          overflow: 'hidden',
+          opacity: 0.55, pointerEvents: 'none', zIndex: 2, overflow: 'hidden',
         }}>
           <div style={{ fontSize: 22, lineHeight: 1 }}>{unit.emoji || '🧍'}</div>
           <div style={{ fontSize: 8, color: '#ffaaaa', marginTop: 1, textAlign: 'center' }}>
@@ -187,9 +219,124 @@ export default function BattleField({ units, fieldConfig, deployMode, selectedUn
         />
       ))}
 
+      {/* SVG debug targeting lines */}
+      <svg style={{ position: 'absolute', left: 0, top: 0, width: W, height: H, pointerEvents: 'none', zIndex: 7, overflow: 'visible' }}>
+        {units.flatMap(u => {
+          if (!u.alive || !u.aims) return [];
+          return Object.entries(u.aims).map(([abilityId, { row, col }]) => {
+            const ability = u.abilities?.find(a => a.id === abilityId);
+            const color = ability?.type === 'heal' ? '#44ff88' : '#ff5555';
+            return (
+              <line
+                key={`${u.uid}-${abilityId}`}
+                x1={u.col * TILE + TILE / 2} y1={u.row * TILE + TILE / 2}
+                x2={col * TILE + TILE / 2}   y2={row * TILE + TILE / 2}
+                stroke={color} strokeWidth={1.5} strokeDasharray="4,3" opacity={0.5}
+              />
+            );
+          });
+        })}
+      </svg>
+
+      {/* VFX overlay */}
+      {activeFx.map(fx => {
+        const alpha = 1 - fx.t;
+
+        if (fx.type === 'dmg-num') {
+          return (
+            <div key={fx.id} style={{
+              position: 'absolute',
+              left: fx.col * TILE + TILE * 0.2,
+              top:  fx.row * TILE + TILE * 0.1 - fx.t * 40,
+              fontSize: 12 + Math.round((1 - fx.t) * 3),
+              fontWeight: 'bold', fontFamily: 'monospace',
+              color: fx.died ? '#ff5555' : '#ffd700',
+              textShadow: '0 1px 4px rgba(0,0,0,0.9)',
+              opacity: alpha, pointerEvents: 'none', zIndex: 14,
+              whiteSpace: 'nowrap',
+            }}>
+              -{fx.value}
+            </div>
+          );
+        }
+
+        if (fx.type === 'heal-num') {
+          return (
+            <div key={fx.id} style={{
+              position: 'absolute',
+              left: fx.col * TILE + TILE * 0.2,
+              top:  fx.row * TILE + TILE * 0.1 - fx.t * 40,
+              fontSize: 12 + Math.round((1 - fx.t) * 3),
+              fontWeight: 'bold', fontFamily: 'monospace',
+              color: '#44ff88',
+              textShadow: '0 1px 4px rgba(0,0,0,0.9)',
+              opacity: alpha, pointerEvents: 'none', zIndex: 14,
+              whiteSpace: 'nowrap',
+            }}>
+              +{fx.value}
+            </div>
+          );
+        }
+
+        if (fx.type === 'heal-pop') {
+          return (
+            <div key={fx.id} style={{
+              position: 'absolute',
+              left: fx.col * TILE, top: fx.row * TILE,
+              width: TILE, height: TILE,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: 16 + fx.t * 10,
+              opacity: alpha, pointerEvents: 'none', zIndex: 10,
+              filter: `drop-shadow(0 0 6px rgba(80,255,150,${alpha}))`,
+            }}>
+              ✚
+            </div>
+          );
+        }
+
+        if (fx.type === 'heal-proj') {
+          const px = (fx.fromCol + (fx.toCol - fx.fromCol) * fx.t) * TILE + TILE / 2;
+          const py = (fx.fromRow + (fx.toRow - fx.fromRow) * fx.t) * TILE + TILE / 2;
+          return (
+            <div key={fx.id} style={{
+              position: 'absolute',
+              left: px - 5, top: py - 5,
+              width: 10, height: 10,
+              background: '#44ff88',
+              borderRadius: '50%',
+              boxShadow: '0 0 8px #44ff88, 0 0 3px rgba(255,255,255,0.8)',
+              opacity: 0.9, pointerEvents: 'none', zIndex: 9,
+            }} />
+          );
+        }
+
+        if (fx.type === 'explosion') {
+          const cx = fx.col * TILE + TILE / 2;
+          const cy = fx.row * TILE + TILE / 2;
+          const r  = fx.t * (fx.aoeRadius + 0.5) * TILE;
+          return (
+            <div key={fx.id} style={{
+              position: 'absolute',
+              left: cx - r, top: cy - r,
+              width: r * 2, height: r * 2,
+              border: `3px solid rgba(255,150,30,${alpha})`,
+              background: `radial-gradient(circle, rgba(255,100,0,${alpha * 0.3}) 0%, transparent 70%)`,
+              borderRadius: '50%',
+              pointerEvents: 'none', zIndex: 11,
+            }} />
+          );
+        }
+
+        return null;
+      })}
+
       <style>{`
         @keyframes reticlePulse {
-          from { opacity: 0.3; }
+          from { opacity: 0.35; }
+          to   { opacity: 1.0; }
+        }
+        @keyframes aimPulse {
+          from { opacity: 0.4; }
           to   { opacity: 1.0; }
         }
       `}</style>
