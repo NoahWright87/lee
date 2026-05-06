@@ -47,10 +47,10 @@ function resolvePendingAttacks(units, events, dt) {
         return;
       }
 
-      const { targetRow, targetCol, dmg, aoeRadius, isMelee, cleave, range, originRow, originCol } = attack;
+      const { targetRow, targetCol, dmg, aoeRadius, isMelee, cleave, range, originRow, originCol, hitTiles: storedHitTiles } = attack;
 
       const hitTiles = isMelee
-        ? getMeleeHitTiles(originRow, originCol, range || 1, cleave || 0, attacker.side)
+        ? (storedHitTiles?.length ? storedHitTiles : getMeleeHitTiles(originRow, originCol, range || 1, cleave || 0, attacker.side, targetRow, targetCol))
         : getHitTiles(targetRow, targetCol, aoeRadius || 0);
 
       let hitAny = false;
@@ -109,9 +109,26 @@ function updateUnit(unit, allUnits, dt, events, fieldConfig) {
   if (!target) return;
 
   const activeAbilities = unit.abilities.filter(a => a.type !== 'thorns');
-  const maxRange = activeAbilities.reduce((m, a) => Math.max(m, a.range || 1), 0);
   const distToTarget = chebyshev(unit, target);
-  const inRange = distToTarget <= maxRange;
+
+  // In range if any active ability can fire at the current distance
+  const canFire = activeAbilities.some(a =>
+    distToTarget <= (a.range || 1) && distToTarget >= (a.minRange || 0)
+  );
+  const inRange = canFire;
+
+  // If target is too close for every ability, back off instead of closing in
+  const tooClose = activeAbilities.length > 0 &&
+    activeAbilities.every(a => distToTarget < (a.minRange || 0));
+
+  let moveTarget = target;
+  if (!inRange && tooClose) {
+    const dr = unit.row - target.row;
+    const dc = unit.col - target.col;
+    if (dr !== 0 || dc !== 0) {
+      moveTarget = { row: unit.row + Math.sign(dr) * 99, col: unit.col + Math.sign(dc) * 99 };
+    }
+  }
 
   unit.moving = !inRange;
   const moveMult = unit.moveMult ?? 1.0;
@@ -120,7 +137,7 @@ function updateUnit(unit, allUnits, dt, events, fieldConfig) {
     unit.moveBar = (unit.moveBar || 0) + dt * (unit.baseStats?.moveSpeed ?? 1.0);
     if (unit.moveBar >= 1) {
       unit.moveBar -= 1;
-      const step = stepToward(unit, allUnits, target, fieldConfig);
+      const step = stepToward(unit, allUnits, moveTarget, fieldConfig);
       if (step) {
         unit.row = step[0];
         unit.col = step[1];
@@ -183,7 +200,7 @@ function fireAbility(unit, ability, allUnits, events) {
   const isMelee = ability.type === 'melee';
   const totalTime = ability.attackDelay || 0.001;
   const hitTiles = isMelee
-    ? getMeleeHitTiles(unit.row, unit.col, ability.range || 1, ability.cleave || 0, unit.side)
+    ? getMeleeHitTiles(unit.row, unit.col, ability.range || 1, ability.cleave || 0, unit.side, abilityTarget.row, abilityTarget.col)
     : [];
   unit.pendingAttacks.push({
     abilityId: ability.id,
@@ -276,9 +293,13 @@ function getHitTiles(row, col, aoeRadius) {
   return tiles;
 }
 
-function getMeleeHitTiles(originRow, originCol, range, cleaveAngle, side) {
+function getMeleeHitTiles(originRow, originCol, range, cleaveAngle, side, targetRow, targetCol) {
   const halfAngle = cleaveAngle / 2;
   const tiles = [];
+
+  // Forward direction: toward target when provided, else side-based default (up/down)
+  const fwdDr = (targetRow != null) ? (targetRow - originRow) : (side === 'player' ? -1 : 1);
+  const fwdDc = (targetCol != null) ? (targetCol - originCol) : 0;
 
   for (let dr = -range; dr <= range; dr++) {
     for (let dc = -range; dc <= range; dc++) {
@@ -290,9 +311,10 @@ function getMeleeHitTiles(originRow, originCol, range, cleaveAngle, side) {
       const isAdjacent = Math.max(Math.abs(dr), Math.abs(dc)) <= 1;
       if (dist > range + (isAdjacent ? 0.5 : 0)) continue;
 
-      // Angle from the unit's forward direction (player faces up, enemy faces down)
-      const fwd = side === 'player' ? -dr : dr;
-      const angleDeg = Math.abs(Math.atan2(dc, fwd) * (180 / Math.PI));
+      // Angle between this tile offset and the forward direction
+      const dot      = dr * fwdDr + dc * fwdDc;
+      const cross    = dr * fwdDc - dc * fwdDr;
+      const angleDeg = Math.abs(Math.atan2(cross, dot) * (180 / Math.PI));
 
       if (angleDeg <= halfAngle + 0.001) {
         tiles.push([originRow + dr, originCol + dc]);

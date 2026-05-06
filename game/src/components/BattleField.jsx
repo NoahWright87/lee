@@ -74,7 +74,7 @@ export default function BattleField({
   const inFlight = [];
   units.forEach(u => {
     (u.pendingAttacks || []).forEach(atk => {
-      inFlight.push({ ...atk, attackerType: u.type || 'none' });
+      inFlight.push({ ...atk, attackerType: u.type || 'none', attackerRow: u.row, attackerCol: u.col });
     });
   });
 
@@ -169,24 +169,6 @@ export default function BattleField({
         );
       })}
 
-      {/* Melee swing — flash the full arc of hit tiles */}
-      {inFlight.filter(atk => atk.isMelee).flatMap((atk, i) => {
-        const progress = 1 - atk.timeLeft / (atk.totalTime || 0.001);
-        const alpha = Math.sin(Math.PI * progress) * 0.85;
-        const tiles = atk.hitTiles?.length ? atk.hitTiles : [[atk.targetRow, atk.targetCol]];
-        return tiles.map(([r, c], j) => (
-          <div key={`melee-${i}-${j}`} style={{
-            position: 'absolute',
-            left: c * TILE + 2, top: r * TILE + 2,
-            width: TILE - 4, height: TILE - 4,
-            background: `rgba(255,210,60,${alpha * 0.6})`,
-            border: `2px solid rgba(255,230,80,${alpha})`,
-            borderRadius: 4,
-            pointerEvents: 'none',
-            zIndex: 6,
-          }} />
-        ));
-      })}
 
       {/* Ghost enemy preview (deploy screen) */}
       {previewUnits.map(unit => (
@@ -219,8 +201,9 @@ export default function BattleField({
         />
       ))}
 
-      {/* SVG debug targeting lines */}
+      {/* SVG: debug targeting lines + melee swing crescents */}
       <svg style={{ position: 'absolute', left: 0, top: 0, width: W, height: H, pointerEvents: 'none', zIndex: 7, overflow: 'visible' }}>
+        {/* Debug targeting lines */}
         {units.flatMap(u => {
           if (!u.alive || !u.aims) return [];
           return Object.entries(u.aims).map(([abilityId, { row, col }]) => {
@@ -235,6 +218,51 @@ export default function BattleField({
               />
             );
           });
+        })}
+
+        {/* Melee swing crescents */}
+        {inFlight.filter(atk => atk.isMelee).map((atk, i) => {
+          const progress = 1 - atk.timeLeft / (atk.totalTime || 0.001);
+          const alpha = Math.sin(Math.PI * progress) * 0.9;
+
+          const cx = atk.attackerCol * TILE + TILE / 2;
+          const cy = atk.attackerRow * TILE + TILE / 2;
+          const dx = atk.targetCol - atk.attackerCol;
+          const dy = atk.targetRow - atk.attackerRow;
+          const fwdAngle = Math.atan2(dy, dx);
+
+          const range = atk.range || 1;
+          const cleave = atk.cleave || 0;
+          // Minimum visual half-angle so even a cleave=0 stab shows a sliver
+          const halfRad = Math.max(cleave / 2 * Math.PI / 180, 18 * Math.PI / 180);
+          // Cap just under π so start/end points never coincide (full-circle issue)
+          const effectiveHalf = Math.min(halfRad, Math.PI - 0.01);
+
+          const outerR = range * TILE - TILE * 0.08;
+          const innerR = Math.max((range - 0.65) * TILE, TILE * 0.18);
+
+          const startA = fwdAngle - effectiveHalf;
+          const endA   = fwdAngle + effectiveHalf;
+          const largeArc = effectiveHalf > Math.PI / 2 ? 1 : 0;
+
+          const f = n => n.toFixed(2);
+          const ox1 = cx + outerR * Math.cos(startA), oy1 = cy + outerR * Math.sin(startA);
+          const ox2 = cx + outerR * Math.cos(endA),   oy2 = cy + outerR * Math.sin(endA);
+          const ix1 = cx + innerR * Math.cos(startA), iy1 = cy + innerR * Math.sin(startA);
+          const ix2 = cx + innerR * Math.cos(endA),   iy2 = cy + innerR * Math.sin(endA);
+
+          const d = `M ${f(ox1)} ${f(oy1)} A ${f(outerR)} ${f(outerR)} 0 ${largeArc} 1 ${f(ox2)} ${f(oy2)} L ${f(ix2)} ${f(iy2)} A ${f(innerR)} ${f(innerR)} 0 ${largeArc} 0 ${f(ix1)} ${f(iy1)} Z`;
+
+          return (
+            <path
+              key={`swing-${i}`}
+              d={d}
+              fill={`rgba(255,220,60,${(alpha * 0.5).toFixed(3)})`}
+              stroke={`rgba(255,245,100,${alpha.toFixed(3)})`}
+              strokeWidth={2}
+              strokeLinejoin="round"
+            />
+          );
         })}
       </svg>
 
