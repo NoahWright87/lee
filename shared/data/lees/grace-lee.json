@@ -1,0 +1,47 @@
+{
+  "id": "grace-lee",
+  "name": "Grace Lee",
+  "flavor": "She moved through the world without disturbing a single thing. Until she had to.",
+  "emoji": "🌸",
+  "image": "placeholder.svg",
+  "tier": 2,
+  "type": "none",
+  "moveBehavior": "weakest-ally",
+  "moveMult": 0.0,
+  "baseStats": {
+    "hp": 60,
+    "def": 3,
+    "armor": 0,
+    "moveSpeed": 1.0
+  },
+  "abilities": [
+    {
+      "id": "bloom",
+      "type": "heal",
+      "label": "Bloom",
+      "damage": 0,
+      "healAmount": 22,
+      "range": 4,
+      "aoeRadius": 0,
+      "actSpeed": 0.45,
+      "attackDelay": 0,
+      "targeting": "lowest-hp-ally"
+    },
+    {
+      "id": "thorn-shot",
+      "type": "missile",
+      "label": "Thorn Shot",
+      "damage": 16,
+      "healAmount": 0,
+      "range": 4,
+      "aoeRadius": 0,
+      "actSpeed": 0.3,
+      "attackDelay": 0.4,
+      "targeting": "nearest-enemy"
+    }
+  ],
+  "acquisition": {
+    "method": "combine",
+    "combineFrom": ["swift-lee", "kind-lee"]
+  }
+}

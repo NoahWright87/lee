@@ -1,0 +1,326 @@
+import { getDamageMultiplier } from './types.js';
+import { chebyshev, findMovementTarget, stepToward } from './pathfinding.js';
+
+/**
+ * Advance the battle by `dt` seconds.
+ * Pure function — does not mutate input.
+ *
+ * @param {object[]} units  Runtime unit array
+ * @param {number}   dt     Delta time in seconds
+ * @param {{rows:number,cols:number,deployRows:number}} fieldConfig
+ * @returns {{ next: object[], events: object[] }}
+ */
+export function tickField(units, dt, fieldConfig) {
+  // Shallow-clone each unit so we never mutate the previous state
+  const next = units.map(u => ({
+    ...u,
+    baseStats: { ...u.baseStats },
+    pendingAttacks: u.pendingAttacks ? u.pendingAttacks.map(a => ({ ...a })) : [],
+    castBars: { ...u.castBars },
+    flash: Math.max(0, (u.flash || 0) - dt * 6),
+  }));
+  const events = [];
+
+  resolvePendingAttacks(next, events, dt);
+
+  next.forEach(unit => {
+    if (!unit.alive) return;
+    updateUnit(unit, next, dt, events, fieldConfig);
+  });
+
+  return { next, events };
+}
+
+// ---------------------------------------------------------------------------
+// Pending attack resolution
+// ---------------------------------------------------------------------------
+
+function resolvePendingAttacks(units, events, dt) {
+  units.forEach(attacker => {
+    if (!attacker.pendingAttacks?.length) return;
+
+    const remaining = [];
+    attacker.pendingAttacks.forEach(attack => {
+      attack.timeLeft -= dt;
+      if (attack.timeLeft > 0) {
+        remaining.push(attack);
+        return;
+      }
+
+      const { targetRow, targetCol, dmg, aoeRadius, isMelee, cleave, range, originRow, originCol, hitTiles: storedHitTiles } = attack;
+
+      const hitTiles = isMelee
+        ? (storedHitTiles?.length ? storedHitTiles : getMeleeHitTiles(originRow, originCol, range || 1, cleave || 0, attacker.side, targetRow, targetCol))
+        : getHitTiles(targetRow, targetCol, aoeRadius || 0);
+
+      let hitAny = false;
+
+      hitTiles.forEach(([hr, hc]) => {
+        const victim = units.find(
+          v => v.alive && v.row === hr && v.col === hc && v.side !== attacker.side
+        );
+        if (!victim) return;
+        hitAny = true;
+
+        const dmgDealt = calculateDamage(attacker, dmg, victim);
+        victim.hp = Math.max(0, victim.hp - dmgDealt);
+        victim.flash = 1;
+
+        // XP for dealing damage; kill gives a bonus on top
+        attacker.xp = (attacker.xp || 0) + Math.ceil(dmgDealt / 4);
+        if (victim.hp === 0) {
+          victim.alive = false;
+          attacker.xp += 10;
+        }
+
+        events.push({ type: 'hit', uid: victim.uid, dmg: dmgDealt, died: victim.hp === 0, row: victim.row, col: victim.col });
+
+        // Thorns: passive flat retaliation — only triggers on melee attacks
+        if (isMelee) {
+          const thorns = victim.abilities?.find(a => a.type === 'thorns');
+          if (thorns?.damage > 0) {
+            const thornDmg = thorns.damage;
+            attacker.hp = Math.max(0, attacker.hp - thornDmg);
+            attacker.flash = 1;
+            if (attacker.hp === 0) attacker.alive = false;
+            events.push({ type: 'hit', uid: attacker.uid, dmg: thornDmg, died: attacker.hp === 0, row: attacker.row, col: attacker.col });
+          }
+        }
+      });
+
+      if ((aoeRadius || 0) > 0) {
+        events.push({ type: 'detonate', row: targetRow, col: targetCol, aoeRadius });
+      }
+
+      if (!hitAny) {
+        events.push({ type: 'miss', uid: attacker.uid });
+      }
+    });
+
+    attacker.pendingAttacks = remaining;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Per-unit update
+// ---------------------------------------------------------------------------
+
+function updateUnit(unit, allUnits, dt, events, fieldConfig) {
+  const target = findMovementTarget(unit, allUnits);
+  if (!target) return;
+
+  const activeAbilities = unit.abilities.filter(a => a.type !== 'thorns');
+  const distToTarget = chebyshev(unit, target);
+
+  // In range if any active ability can fire at the current distance
+  const canFire = activeAbilities.some(a =>
+    distToTarget <= (a.range || 1) && distToTarget >= (a.minRange || 0)
+  );
+  const inRange = canFire;
+
+  // If target is too close for every ability, back off instead of closing in
+  const tooClose = activeAbilities.length > 0 &&
+    activeAbilities.every(a => distToTarget < (a.minRange || 0));
+
+  let moveTarget = target;
+  if (!inRange && tooClose) {
+    const dr = unit.row - target.row;
+    const dc = unit.col - target.col;
+    if (dr !== 0 || dc !== 0) {
+      moveTarget = { row: unit.row + Math.sign(dr) * 99, col: unit.col + Math.sign(dc) * 99 };
+    }
+  }
+
+  unit.moving = !inRange;
+  const moveMult = unit.moveMult ?? 1.0;
+
+  if (!inRange) {
+    unit.moveBar = (unit.moveBar || 0) + dt * (unit.baseStats?.moveSpeed ?? 1.0);
+    if (unit.moveBar >= 1) {
+      unit.moveBar -= 1;
+      const step = stepToward(unit, allUnits, moveTarget, fieldConfig);
+      if (step) {
+        unit.row = step[0];
+        unit.col = step[1];
+        events.push({ type: 'move', uid: unit.uid, row: unit.row, col: unit.col });
+        // moveMult=0: must be stationary — reset all cast bars on every step
+        if (moveMult === 0) {
+          Object.keys(unit.castBars).forEach(k => { unit.castBars[k] = 0; });
+        }
+      }
+    }
+  } else {
+    unit.moveBar = 0;
+  }
+
+  // Charge each ability's cast bar independently
+  const chargeRate = inRange ? 1.0 : moveMult;
+  unit.aims = {};
+  activeAbilities.forEach(ability => {
+    const key = ability.id;
+    if (unit.castBars[key] === undefined) unit.castBars[key] = 0;
+    unit.castBars[key] = Math.min(
+      1,
+      unit.castBars[key] + dt * (ability.actSpeed || 1.0) * chargeRate
+    );
+    if (unit.castBars[key] >= 1) {
+      unit.castBars[key] = 0;
+      fireAbility(unit, ability, allUnits, events);
+    } else if (inRange && unit.castBars[key] > 0) {
+      // Track where this ability is aimed so the field can show a targeting indicator
+      const abilityTarget = findAbilityTarget(unit, ability, allUnits);
+      if (abilityTarget) unit.aims[key] = { row: abilityTarget.row, col: abilityTarget.col };
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Ability firing
+// ---------------------------------------------------------------------------
+
+function fireAbility(unit, ability, allUnits, events) {
+  const abilityTarget = findAbilityTarget(unit, ability, allUnits);
+  if (!abilityTarget) return;
+
+  if (ability.type === 'heal') {
+    const healAmt = ability.healAmount || 0;
+    const cap = abilityTarget.maxHp || abilityTarget.baseStats?.hp || 9999;
+    const prevHp = abilityTarget.hp;
+    abilityTarget.hp = Math.min(cap, prevHp + healAmt);
+    const actualHeal = abilityTarget.hp - prevHp;
+    // XP for actual HP restored (overheal gives no XP)
+    if (actualHeal > 0) unit.xp = (unit.xp || 0) + Math.ceil(actualHeal / 4);
+    events.push({ type: 'heal', uid: abilityTarget.uid, amt: actualHeal, row: abilityTarget.row, col: abilityTarget.col });
+    events.push({ type: 'fire', uid: unit.uid, abilityId: ability.id, targetRow: abilityTarget.row, targetCol: abilityTarget.col, fromRow: unit.row, fromCol: unit.col, isHeal: true });
+    return;
+  }
+
+  if (ability.type === 'buff' || ability.type === 'taunt' || ability.type === 'shield') {
+    // TODO: implement buff / taunt / shield ability types
+    events.push({ type: 'ability', uid: unit.uid, abilityId: ability.id });
+    return;
+  }
+
+  // melee, missile, mortar — commit a pending attack
+  const isMelee = ability.type === 'melee';
+  const totalTime = ability.attackDelay || 0.001;
+  const hitTiles = isMelee
+    ? getMeleeHitTiles(unit.row, unit.col, ability.range || 1, ability.cleave || 0, unit.side, abilityTarget.row, abilityTarget.col)
+    : [];
+  unit.pendingAttacks.push({
+    abilityId: ability.id,
+    abilityType: ability.type,
+    targetRow: abilityTarget.row,
+    targetCol: abilityTarget.col,
+    originRow: unit.row,
+    originCol: unit.col,
+    timeLeft: totalTime,
+    totalTime,
+    dmg: ability.damage || 0,
+    aoeRadius: ability.aoeRadius || 0,
+    isMelee,
+    cleave: isMelee ? (ability.cleave || 0) : 0,
+    range: ability.range || 1,
+    attackerUid: unit.uid,
+    hitTiles,
+  });
+  events.push({
+    type: 'fire',
+    uid: unit.uid,
+    abilityId: ability.id,
+    targetRow: abilityTarget.row,
+    targetCol: abilityTarget.col,
+  });
+}
+
+function findAbilityTarget(unit, ability, allUnits) {
+  const { targeting, range = 1, minRange = 0 } = ability;
+  const isSupport = ability.type === 'heal' || ability.type === 'buff' || ability.type === 'shield';
+  const targetSide = isSupport ? unit.side : (unit.side === 'player' ? 'enemy' : 'player');
+
+  const candidates = allUnits.filter(u =>
+    u.alive &&
+    u.side === targetSide &&
+    (!isSupport || u.uid !== unit.uid) &&
+    chebyshev(unit, u) <= range &&
+    chebyshev(unit, u) >= minRange
+  );
+
+  if (!candidates.length) return null;
+
+  switch (targeting) {
+    case 'lowest-hp-enemy':
+    case 'lowest-hp-ally':
+      return candidates.reduce((a, b) =>
+        (a.hp / (a.maxHp || 1)) <= (b.hp / (b.maxHp || 1)) ? a : b
+      );
+    case 'nearest-ally':
+      return candidates.reduce((a, b) =>
+        chebyshev(unit, a) <= chebyshev(unit, b) ? a : b
+      );
+    case 'random-enemy':
+      return candidates[Math.floor(Math.random() * candidates.length)];
+    case 'lowest-hp-col':
+      return (
+        candidates
+          .filter(u => u.col === unit.col)
+          .reduce((a, b) => (!a || b.hp < a.hp) ? b : a, null) || candidates[0]
+      );
+    case 'nearest-enemy':
+    case 'nearest':
+    default:
+      return candidates.reduce((a, b) =>
+        chebyshev(unit, a) <= chebyshev(unit, b) ? a : b
+      );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function calculateDamage(attacker, baseDmg, target) {
+  const defReduction = Math.floor((target.baseStats?.def || 0) / 3);
+  const base = Math.max(1, baseDmg - defReduction);
+  const typeMult = getDamageMultiplier(attacker.type || 'none', target.type || 'none');
+  const armor = target.baseStats?.armor || 0;
+  return Math.max(1, Math.round(base * typeMult) - armor);
+}
+
+function getHitTiles(row, col, aoeRadius) {
+  if (aoeRadius === 0) return [[row, col]];
+  const tiles = [];
+  for (let dr = -aoeRadius; dr <= aoeRadius; dr++) {
+    for (let dc = -aoeRadius; dc <= aoeRadius; dc++) {
+      tiles.push([row + dr, col + dc]);
+    }
+  }
+  return tiles;
+}
+
+function getMeleeHitTiles(originRow, originCol, range, cleaveAngle, side, targetRow, targetCol) {
+  const halfAngle = cleaveAngle / 2;
+  const tiles = [];
+
+  // Forward direction: toward target when provided, else side-based default (up/down)
+  const fwdDr = (targetRow != null) ? (targetRow - originRow) : (side === 'player' ? -1 : 1);
+  const fwdDc = (targetCol != null) ? (targetCol - originCol) : 0;
+
+  // Loop bounds enforce Chebyshev(dr,dc) ≤ range, consistent with all other range checks
+  for (let dr = -range; dr <= range; dr++) {
+    for (let dc = -range; dc <= range; dc++) {
+      if (dr === 0 && dc === 0) continue;
+
+      // Angle between this tile offset and the forward direction
+      const dot      = dr * fwdDr + dc * fwdDc;
+      const cross    = dr * fwdDc - dc * fwdDr;
+      const angleDeg = Math.abs(Math.atan2(cross, dot) * (180 / Math.PI));
+
+      if (angleDeg <= halfAngle + 0.001) {
+        tiles.push([originRow + dr, originCol + dc]);
+      }
+    }
+  }
+
+  return tiles;
+}

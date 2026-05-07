@@ -1,0 +1,36 @@
+{
+  "id": "quick-lee",
+  "name": "Quick Lee",
+  "flavor": "She was done before you'd thought she'd started.",
+  "emoji": "⚡",
+  "image": "placeholder.svg",
+  "tier": 2,
+  "type": "none",
+  "moveBehavior": "nearest-enemy",
+  "moveMult": 1.0,
+  "baseStats": {
+    "hp": 70,
+    "def": 3,
+    "armor": 0,
+    "moveSpeed": 2.0
+  },
+  "abilities": [
+    {
+      "id": "quick-strike",
+      "type": "melee",
+      "label": "Quick Strike",
+      "damage": 18,
+      "healAmount": 0,
+      "range": 1,
+      "cleave": 90,
+      "aoeRadius": 0,
+      "actSpeed": 1.0,
+      "attackDelay": 0.05,
+      "targeting": "nearest-enemy"
+    }
+  ],
+  "acquisition": {
+    "method": "combine",
+    "combineFrom": ["basic-lee", "swift-lee"]
+  }
+}

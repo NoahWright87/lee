@@ -1,0 +1,35 @@
+{
+  "id": "swift-lee",
+  "name": "Swift Lee",
+  "flavor": "She swiftly moved out of the way before the door could close.",
+  "emoji": "🏹",
+  "image": "placeholder.svg",
+  "tier": 1,
+  "type": "none",
+  "moveBehavior": "nearest-enemy",
+  "moveMult": 0.0,
+  "baseStats": {
+    "hp": 45,
+    "def": 2,
+    "armor": 0,
+    "moveSpeed": 1.0
+  },
+  "abilities": [
+    {
+      "id": "arrow-shot",
+      "type": "missile",
+      "label": "Arrow",
+      "damage": 22,
+      "healAmount": 0,
+      "range": 4,
+      "aoeRadius": 0,
+      "actSpeed": 0.5,
+      "attackDelay": 0.5,
+      "targeting": "nearest-enemy"
+    }
+  ],
+  "acquisition": {
+    "method": "draft",
+    "combineFrom": null
+  }
+}

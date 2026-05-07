@@ -1,0 +1,36 @@
+{
+  "id": "basic-lee",
+  "name": "Basic Lee",
+  "flavor": "She was basically done before anyone else had started.",
+  "emoji": "👊",
+  "image": "placeholder.svg",
+  "tier": 1,
+  "type": "none",
+  "moveBehavior": "nearest-enemy",
+  "moveMult": 1.0,
+  "baseStats": {
+    "hp": 60,
+    "def": 4,
+    "armor": 0,
+    "moveSpeed": 1.2
+  },
+  "abilities": [
+    {
+      "id": "basic-punch",
+      "type": "melee",
+      "label": "Punch",
+      "damage": 20,
+      "healAmount": 0,
+      "range": 1,
+      "cleave": 0,
+      "aoeRadius": 0,
+      "actSpeed": 0.67,
+      "attackDelay": 0.1,
+      "targeting": "nearest-enemy"
+    }
+  ],
+  "acquisition": {
+    "method": "draft",
+    "combineFrom": null
+  }
+}
