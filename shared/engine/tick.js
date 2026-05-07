@@ -66,10 +66,11 @@ function resolvePendingAttacks(units, events, dt) {
         victim.hp = Math.max(0, victim.hp - dmgDealt);
         victim.flash = 1;
 
+        // XP for dealing damage; kill gives a bonus on top
+        attacker.xp = (attacker.xp || 0) + Math.ceil(dmgDealt / 4);
         if (victim.hp === 0) {
           victim.alive = false;
-          // XP accumulates during battle; level-up is processed post-battle
-          attacker.xp = (attacker.xp || 0) + 30;
+          attacker.xp += 10;
         }
 
         events.push({ type: 'hit', uid: victim.uid, dmg: dmgDealt, died: victim.hp === 0, row: victim.row, col: victim.col });
@@ -184,8 +185,12 @@ function fireAbility(unit, ability, allUnits, events) {
   if (ability.type === 'heal') {
     const healAmt = ability.healAmount || 0;
     const cap = abilityTarget.maxHp || abilityTarget.baseStats?.hp || 9999;
-    abilityTarget.hp = Math.min(cap, abilityTarget.hp + healAmt);
-    events.push({ type: 'heal', uid: abilityTarget.uid, amt: healAmt, row: abilityTarget.row, col: abilityTarget.col });
+    const prevHp = abilityTarget.hp;
+    abilityTarget.hp = Math.min(cap, prevHp + healAmt);
+    const actualHeal = abilityTarget.hp - prevHp;
+    // XP for actual HP restored (overheal gives no XP)
+    if (actualHeal > 0) unit.xp = (unit.xp || 0) + Math.ceil(actualHeal / 4);
+    events.push({ type: 'heal', uid: abilityTarget.uid, amt: actualHeal, row: abilityTarget.row, col: abilityTarget.col });
     events.push({ type: 'fire', uid: unit.uid, abilityId: ability.id, targetRow: abilityTarget.row, targetCol: abilityTarget.col, fromRow: unit.row, fromCol: unit.col, isHeal: true });
     return;
   }

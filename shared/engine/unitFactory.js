@@ -72,7 +72,9 @@ export function generateEnemies(allLees, round, fieldConfig) {
   const maxCount = fieldConfig.cols * fieldConfig.deployRows;
   const count    = Math.min(2 + Math.floor(round * 0.6), maxCount);
 
-  const pool     = [...allLees].sort(() => Math.random() - 0.5);
+  // Gate enemy tiers by round: T1 only ≤ round 2, T2 unlocks round 3, T3 round 5
+  const maxTier = round <= 2 ? 1 : round <= 4 ? 2 : 3;
+  const pool     = [...allLees].filter(l => l.tier <= maxTier).sort(() => Math.random() - 0.5);
   const selected = pool.slice(0, Math.min(count, pool.length));
 
   return selected.map((lee, i) => {
