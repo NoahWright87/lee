@@ -41,6 +41,7 @@
       "targeting": "nearest-enemy"
     }
   ],
+  "cost": 8,
   "acquisition": {
     "method": "combine",
     "combineFrom": ["grace-lee", "whole-lee"]

@@ -284,7 +284,9 @@ function calculateDamage(attacker, baseDmg, target) {
   const base = Math.max(1, baseDmg - defReduction);
   const typeMult = getDamageMultiplier(attacker.type || 'none', target.type || 'none');
   const armor = target.baseStats?.armor || 0;
-  return Math.max(1, Math.round(base * typeMult) - armor);
+  const isCrit = (attacker.critChance || 0) > 0 && Math.random() < attacker.critChance;
+  const critMult = isCrit ? 2 : 1;
+  return Math.max(1, Math.round(base * typeMult * critMult) - armor);
 }
 
 function getHitTiles(row, col, aoeRadius) {

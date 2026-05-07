@@ -4,23 +4,27 @@ import {
   buildCombineMap,
   findMerges,
   getCombineResult,
-  processPostBattle,
+  calculateLevelUps,
+  applyPostBattleHealing,
   createRuntimeUnit,
   resetToHome,
   generateEnemies,
   getInitialDraftOptions,
   getBetweenRoundDraftOptions,
+  getRandomPerks,
 } from '@lee/shared';
 import { ALL_LEES } from '@lee/shared/data/index.js';
 
-import BattleField from './components/BattleField.jsx';
-import DraftScreen from './components/DraftScreen.jsx';
-import DeployScreen from './components/DeployScreen.jsx';
-import MergeScreen from './components/MergeScreen.jsx';
-import GameOver from './components/GameOver.jsx';
+import BattleField    from './components/BattleField.jsx';
+import DraftScreen    from './components/DraftScreen.jsx';
+import DeployScreen   from './components/DeployScreen.jsx';
+import MergeScreen    from './components/MergeScreen.jsx';
+import GameOver       from './components/GameOver.jsx';
+import VictoryScreen  from './components/VictoryScreen.jsx';
+import PerkSelection  from './components/PerkSelection.jsx';
 
 const FIELD_CONFIG = { rows: 8, cols: 4, deployRows: 2 };
-const TICK_MS = 1000 / 60;
+const TICK_MS      = 1000 / 60;
 
 const CreatorLink = () => (
   <a href="/creator" style={{
@@ -48,15 +52,25 @@ export default function App() {
   const [paused, setPaused]               = useState(false);
   const [lastEvents, setLastEvents]       = useState([]);
   const pendingEventsRef                  = useRef([]);
-  const [victor, setVictor]               = useState(null); // 'player' | 'enemy'
+  const [victor, setVictor]               = useState(null);
+
+  // Victory / perk-selection state
+  const [xpSnapshot, setXpSnapshot]           = useState({});   // uid → { xp, level }
+  const [levelUpResults, setLevelUpResults]   = useState([]);   // from calculateLevelUps
+  const [perkQueue, setPerkQueue]             = useState([]);   // flat list of picks
+  // Processed (leveled-up) units waiting for perk choices + healing before merge/draft
+  const [processedField, setProcessedField]   = useState([]);
+  const [processedBench, setProcessedBench]   = useState([]);
 
   // Refs to avoid stale closures in the battle interval
-  const benchRef   = useRef(bench);
-  const pausedRef  = useRef(paused);
-  const roundRef   = useRef(round);
-  benchRef.current  = bench;
-  pausedRef.current = paused;
-  roundRef.current  = round;
+  const benchRef         = useRef(bench);
+  const pausedRef        = useRef(paused);
+  const roundRef         = useRef(round);
+  const xpSnapshotRef    = useRef(xpSnapshot);
+  benchRef.current        = bench;
+  pausedRef.current       = paused;
+  roundRef.current        = round;
+  xpSnapshotRef.current   = xpSnapshot;
 
   // -------------------------------------------------------------------
   // Battle tick loop
@@ -88,7 +102,7 @@ export default function App() {
     return () => clearInterval(id);
   }, [screen]);
 
-  // Flush tick events for VFX — runs after each fieldUnits update
+  // Flush tick events for VFX
   useEffect(() => {
     if (pendingEventsRef.current.length) {
       setLastEvents(pendingEventsRef.current);
@@ -107,40 +121,91 @@ export default function App() {
       return;
     }
 
-    // Victory — process post-battle after a brief delay so the user sees the last frame
+    // Victory — brief pause so the user sees the final frame, then go to victory screen
     const t = setTimeout(() => {
       setFieldUnits(prev => {
-        const currentBench = benchRef.current;
+        const currentBench   = benchRef.current;
+        const currentSnapshot = xpSnapshotRef.current;
 
-        // Reset surviving player units to home positions
         const survivingField = prev
           .filter(u => u.side === 'player' && u.alive)
           .map(u => ({ ...resetToHome({ ...u }) }));
 
-        const { fieldUnits: processedField, benchUnits: processedBench } =
-          processPostBattle(survivingField, currentBench.map(u => ({ ...u })));
+        const { fieldUnits: leveled, benchUnits: leveledBench, levelUpResults: results } =
+          calculateLevelUps(survivingField, currentBench.map(u => ({ ...u })), currentSnapshot);
 
-        // Check for merges across all player units (field + bench)
-        const allPlayerUnits = [...processedField, ...processedBench];
-        const merges = findMerges(allPlayerUnits, COMBINE_MAP);
+        // Build the perk pick queue: one entry per (unit × level gained)
+        const queue = [];
+        leveled.forEach(unit => {
+          const result = results.find(r => r.uid === unit.uid);
+          if (!result || result.levelsGained === 0) return;
+          for (let i = 0; i < result.levelsGained; i++) {
+            queue.push({
+              uid:        unit.uid,
+              name:       unit.name,
+              emoji:      unit.emoji,
+              level:      unit.level,
+              pickIndex:  i,
+              totalPicks: result.levelsGained,
+              options:    getRandomPerks(unit, 3),
+            });
+          }
+        });
 
-        setBench(processedBench);
-        setPendingMerges(merges);
+        setLevelUpResults(results);
+        setPerkQueue(queue);
+        setProcessedField(leveled);
+        setProcessedBench(leveledBench);
+        setBench(leveledBench);
+        setScreen('victory');
 
-        if (merges.length > 0) {
-          setScreen('merge');
-        } else {
-          const opts = getBetweenRoundDraftOptions(ALL_LEES, 4);
-          setDraftOptions(opts);
-          setScreen('between-draft');
-        }
-
-        return processedField;
+        // Keep only player units visible on the field during victory screen
+        return leveled;
       });
-    }, 800);
+    }, 600);
 
     return () => clearTimeout(t);
   }, [screen, victor]);
+
+  // -------------------------------------------------------------------
+  // Victory screen → perk selection → merge/draft
+  // -------------------------------------------------------------------
+  function handleCollectRewards() {
+    if (perkQueue.length > 0) {
+      setScreen('perk-selection');
+    } else {
+      finalizePostBattle(processedField, processedBench);
+    }
+  }
+
+  function handlePerksDone(updatedUnitsMap) {
+    // Merge the perk-updated units back into the processed arrays
+    const newField = processedField.map(u => updatedUnitsMap[u.uid] || u);
+    const newBench = processedBench.map(u => updatedUnitsMap[u.uid] || u);
+    finalizePostBattle(newField, newBench);
+  }
+
+  function finalizePostBattle(field, bench) {
+    // Apply end-of-round healing (mutates in place — arrays are already copies)
+    const healedField = field.map(u => ({ ...u }));
+    const healedBench = bench.map(u => ({ ...u }));
+    applyPostBattleHealing(healedField, healedBench);
+
+    const allPlayerUnits = [...healedField, ...healedBench];
+    const merges = findMerges(allPlayerUnits, COMBINE_MAP);
+
+    setFieldUnits(healedField);
+    setBench(healedBench);
+    setPendingMerges(merges);
+
+    if (merges.length > 0) {
+      setScreen('merge');
+    } else {
+      const opts = getBetweenRoundDraftOptions(ALL_LEES, 4);
+      setDraftOptions(opts);
+      setScreen('between-draft');
+    }
+  }
 
   // -------------------------------------------------------------------
   // Draft handlers
@@ -158,9 +223,16 @@ export default function App() {
   }
 
   // -------------------------------------------------------------------
-  // Deploy handler
+  // Deploy handler — snapshot XP before the battle starts
   // -------------------------------------------------------------------
   function handleDeployStart(deployed, remainingBench) {
+    // Record each player unit's XP and level so the victory screen can animate from the right baseline
+    const snapshot = {};
+    deployed.forEach(u => {
+      snapshot[u.uid] = { xp: u.xp || 0, level: u.level || 1 };
+    });
+    setXpSnapshot(snapshot);
+
     const enemies = generateEnemies(ALL_LEES, roundRef.current, FIELD_CONFIG);
     setFieldUnits([...deployed, ...enemies]);
     setBench(remainingBench);
@@ -175,12 +247,8 @@ export default function App() {
   function handleMerge() {
     const merge = pendingMerges[0];
     const resultDef = ALL_LEES.find(l => l.id === merge.resultId);
-    if (!resultDef) {
-      advanceMerge();
-      return;
-    }
+    if (!resultDef) { advanceMerge(); return; }
 
-    // Place result where the first source was, inheriting the higher level
     const inheritLevel = Math.max(merge.a.level || 1, merge.b.level || 1);
     const resultUnit = {
       ...createRuntimeUnit(resultDef, 'player', merge.a.row, merge.a.col),
@@ -190,7 +258,6 @@ export default function App() {
       xp: 0,
     };
 
-    // Remove both sources from field and bench
     setFieldUnits(prev =>
       prev.filter(u => u.uid !== merge.a.uid && u.uid !== merge.b.uid).concat(
         resultUnit.row >= 0 ? [resultUnit] : []
@@ -198,7 +265,6 @@ export default function App() {
     );
     setBench(prev => {
       const filtered = prev.filter(u => u.uid !== merge.a.uid && u.uid !== merge.b.uid);
-      // If both sources were on bench, place result on bench
       const aOnBench = prev.some(u => u.uid === merge.a.uid);
       const bOnBench = prev.some(u => u.uid === merge.b.uid);
       if (aOnBench || bOnBench) {
@@ -210,9 +276,7 @@ export default function App() {
     advanceMerge();
   }
 
-  function handleMergeSkip() {
-    advanceMerge();
-  }
+  function handleMergeSkip() { advanceMerge(); }
 
   function advanceMerge() {
     setPendingMerges(prev => {
@@ -236,19 +300,16 @@ export default function App() {
     setPendingMerges([]);
     setVictor(null);
     setPaused(false);
+    setXpSnapshot({});
+    setLevelUpResults([]);
+    setPerkQueue([]);
+    setProcessedField([]);
+    setProcessedBench([]);
     setDraftOptions(getInitialDraftOptions(ALL_LEES, 5));
     setScreen('initial-draft');
   }
 
-  // Advance round after deploy confirm
-  function handleDeployStartWithRoundIncrement(deployed, remainingBench) {
-    if (screen === 'deploy' && round > 1) {
-      // round was already incremented when transitioning to deploy
-    }
-    handleDeployStart(deployed, remainingBench);
-  }
-
-  // Increment round when entering deploy after draft
+  // Increment round when entering deploy after a victory
   useEffect(() => {
     if (screen === 'deploy' && victor === 'player') {
       setRound(r => r + 1);
@@ -283,7 +344,7 @@ export default function App() {
           bench={bench}
           fieldConfig={FIELD_CONFIG}
           round={round}
-          onStart={handleDeployStartWithRoundIncrement}
+          onStart={handleDeployStart}
         />
       </div>
     );
@@ -296,7 +357,6 @@ export default function App() {
     return (
       <div style={{ minHeight: '100vh', background: '#080808', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: 24, gap: 16 }}>
         <CreatorLink />
-        {/* HUD */}
         <div style={{ display: 'flex', gap: 32, color: '#888', fontSize: 13 }}>
           <span>Round {round}</span>
           <span style={{ color: '#4488ff' }}>Your team: {playerAlive.length}</span>
@@ -315,7 +375,6 @@ export default function App() {
 
         <BattleField units={fieldUnits} fieldConfig={FIELD_CONFIG} events={lastEvents} />
 
-        {/* Bench display */}
         {bench.length > 0 && (
           <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
             <span style={{ color: '#555', fontSize: 11 }}>BENCH:</span>
@@ -329,18 +388,47 @@ export default function App() {
           </div>
         )}
 
-        {/* Victory overlay */}
-        {screen === 'battle-end' && victor === 'player' && (
+        {screen === 'battle-end' && victor === 'enemy' && (
           <div style={{
             position: 'fixed', inset: 0,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             background: 'rgba(0,0,0,0.6)',
-            fontSize: 56, fontWeight: 'bold', color: '#44ff88',
-            letterSpacing: 8,
+            fontSize: 56, fontWeight: 'bold', color: '#ff4444',
+            letterSpacing: 8, fontFamily: 'monospace',
           }}>
-            VICTORY
+            DEFEAT
           </div>
         )}
+      </div>
+    );
+  }
+
+  if (screen === 'victory') {
+    return (
+      <div style={{ minHeight: '100vh', background: '#080808' }}>
+        <CreatorLink />
+        <VictoryScreen
+          levelUpResults={levelUpResults}
+          round={round}
+          onCollect={handleCollectRewards}
+        />
+      </div>
+    );
+  }
+
+  if (screen === 'perk-selection' && perkQueue.length > 0) {
+    // Build a units map for PerkSelection so it can clone and apply perks
+    const unitsMap = {};
+    [...processedField, ...processedBench].forEach(u => { unitsMap[u.uid] = u; });
+
+    return (
+      <div style={{ minHeight: '100vh', background: '#080808' }}>
+        <CreatorLink />
+        <PerkSelection
+          queue={perkQueue}
+          units={unitsMap}
+          onComplete={handlePerksDone}
+        />
       </div>
     );
   }

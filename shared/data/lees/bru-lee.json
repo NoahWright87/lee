@@ -29,6 +29,7 @@
       "targeting": "nearest-enemy"
     }
   ],
+  "cost": 3,
   "acquisition": {
     "method": "combine",
     "combineFrom": ["basic-lee", "stern-lee"]

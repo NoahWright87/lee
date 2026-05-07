@@ -38,6 +38,7 @@ export function createRuntimeUnit(leeDef, side, row, col) {
     aims:  {},
     xp:    0,
     level: 1,
+    perks: [],
   };
 }
 
@@ -59,23 +60,55 @@ export function resetToHome(unit) {
 }
 
 /**
- * Generate a set of enemy units for the given round.
- * Stats are scaled up each round.
+ * Stat scaling by round. Starts at 60% round 1, reaches 100% by round 5.
+ */
+function enemyScale(round) {
+  return Math.min(1.0, 0.60 + (round - 1) * 0.10);
+}
+
+/**
+ * Enemy point budget for a given round.
+ * Slow start, steep ramp:
+ *   Round 1 → 3, Round 2 → 4, Round 3 → 6, Round 4 → 9, Round 5 → 14, Round 6 → 20 …
+ */
+function enemyBudget(round) {
+  return 3 + Math.floor(Math.pow(Math.max(0, round - 1), 1.8));
+}
+
+/**
+ * Generate a set of enemy units for the given round using a point-budget system.
+ *
+ * - Stats scale from 60% (round 1) up to 100% (round 5+).
+ * - Enemies are selected randomly until the budget is exhausted or the field is full.
+ * - Higher-tier units cost more points; healers are more expensive by design.
+ * - Tier gating: T1 only ≤ round 2, T2 unlocks round 3, T3 round 5.
  *
  * @param {object[]} allLees
- * @param {number} round        1-based round number
+ * @param {number}   round         1-based round number
  * @param {{rows:number,cols:number,deployRows:number}} fieldConfig
  * @returns {object[]}
  */
 export function generateEnemies(allLees, round, fieldConfig) {
-  const scale    = 0.65 + round * 0.10;
+  const scale    = enemyScale(round);
+  const budget   = enemyBudget(round);
   const maxCount = fieldConfig.cols * fieldConfig.deployRows;
-  const count    = Math.min(2 + Math.floor(round * 0.6), maxCount);
+  const maxTier  = round <= 2 ? 1 : round <= 4 ? 2 : 3;
 
-  // Gate enemy tiers by round: T1 only ≤ round 2, T2 unlocks round 3, T3 round 5
-  const maxTier = round <= 2 ? 1 : round <= 4 ? 2 : 3;
-  const pool     = [...allLees].filter(l => l.tier <= maxTier).sort(() => Math.random() - 0.5);
-  const selected = pool.slice(0, Math.min(count, pool.length));
+  const pool = allLees.filter(l => l.tier <= maxTier && (l.cost || 1) <= budget);
+
+  const selected = [];
+  let remaining  = budget;
+  let attempts   = 0;
+
+  while (remaining > 0 && selected.length < maxCount && attempts < 200) {
+    attempts++;
+    const affordable = pool.filter(l => (l.cost || 1) <= remaining);
+    if (!affordable.length) break;
+
+    const pick = affordable[Math.floor(Math.random() * affordable.length)];
+    selected.push(pick);
+    remaining -= pick.cost || 1;
+  }
 
   return selected.map((lee, i) => {
     const row = Math.floor(i / fieldConfig.cols);
@@ -134,7 +167,7 @@ export function getBetweenRoundDraftOptions(allLees, count = 4) {
   while (options.length < count && attempts < 200) {
     attempts++;
     const roll = Math.random();
-    let pool =
+    const pool =
       roll < 0.70 ? tier1 :
       roll < 0.95 ? (tier2.length ? tier2 : tier1) :
                     (tier3.length ? tier3 : tier1);

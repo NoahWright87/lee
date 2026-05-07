@@ -29,6 +29,7 @@
       "targeting": "nearest-enemy"
     }
   ],
+  "cost": 7,
   "acquisition": {
     "method": "combine",
     "combineFrom": ["quick-lee", "bru-lee"]
