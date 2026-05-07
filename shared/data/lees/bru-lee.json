@@ -1,0 +1,36 @@
+{
+  "id": "bru-lee",
+  "name": "Bru Lee",
+  "flavor": "He entered the room. He was asked to leave. He was not asked twice.",
+  "emoji": "🥋",
+  "image": "placeholder.svg",
+  "tier": 2,
+  "type": "none",
+  "moveBehavior": "nearest-enemy",
+  "moveMult": 1.0,
+  "baseStats": {
+    "hp": 110,
+    "def": 8,
+    "armor": 2,
+    "moveSpeed": 0.9
+  },
+  "abilities": [
+    {
+      "id": "spin-kick",
+      "type": "melee",
+      "label": "Spin Kick",
+      "damage": 28,
+      "healAmount": 0,
+      "range": 1,
+      "cleave": 270,
+      "aoeRadius": 0,
+      "actSpeed": 0.5,
+      "attackDelay": 0.2,
+      "targeting": "nearest-enemy"
+    }
+  ],
+  "acquisition": {
+    "method": "combine",
+    "combineFrom": ["basic-lee", "stern-lee"]
+  }
+}

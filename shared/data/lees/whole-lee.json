@@ -1,0 +1,48 @@
+{
+  "id": "whole-lee",
+  "name": "Whole Lee",
+  "flavor": "Whole Lee didn't ask questions. She just helped.",
+  "emoji": "✨",
+  "image": "placeholder.svg",
+  "tier": 2,
+  "type": "none",
+  "moveBehavior": "weakest-ally",
+  "moveMult": 1.0,
+  "baseStats": {
+    "hp": 100,
+    "def": 10,
+    "armor": 2,
+    "moveSpeed": 0.75
+  },
+  "abilities": [
+    {
+      "id": "lay-hands",
+      "type": "heal",
+      "label": "Lay Hands",
+      "damage": 0,
+      "healAmount": 18,
+      "range": 2,
+      "aoeRadius": 0,
+      "actSpeed": 0.45,
+      "attackDelay": 0,
+      "targeting": "lowest-hp-ally"
+    },
+    {
+      "id": "holy-shove",
+      "type": "melee",
+      "label": "Holy Shove",
+      "damage": 12,
+      "healAmount": 0,
+      "range": 1,
+      "cleave": 0,
+      "aoeRadius": 0,
+      "actSpeed": 0.4,
+      "attackDelay": 0.15,
+      "targeting": "nearest-enemy"
+    }
+  ],
+  "acquisition": {
+    "method": "combine",
+    "combineFrom": ["stern-lee", "kind-lee"]
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "id": "dead-lee",
+  "name": "Dead Lee",
+  "flavor": "Dead Lee had a reputation. The reputation was usually right.",
+  "emoji": "💀",
+  "image": "placeholder.svg",
+  "tier": 3,
+  "type": "none",
+  "moveBehavior": "nearest-enemy",
+  "moveMult": 1.0,
+  "baseStats": {
+    "hp": 150,
+    "def": 10,
+    "armor": 3,
+    "moveSpeed": 1.6
+  },
+  "abilities": [
+    {
+      "id": "death-whirl",
+      "type": "melee",
+      "label": "Death Whirl",
+      "damage": 42,
+      "healAmount": 0,
+      "range": 2,
+      "cleave": 360,
+      "aoeRadius": 0,
+      "actSpeed": 0.65,
+      "attackDelay": 0.15,
+      "targeting": "nearest-enemy"
+    }
+  ],
+  "acquisition": {
+    "method": "combine",
+    "combineFrom": ["quick-lee", "bru-lee"]
+  }
+}

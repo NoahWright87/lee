@@ -1,0 +1,48 @@
+{
+  "id": "dear-lee",
+  "name": "Dear Lee",
+  "flavor": "Dear Lee. I miss you every day. Please stop shelling the village.",
+  "emoji": "💖",
+  "image": "placeholder.svg",
+  "tier": 3,
+  "type": "none",
+  "moveBehavior": "weakest-ally",
+  "moveMult": 0.0,
+  "baseStats": {
+    "hp": 110,
+    "def": 7,
+    "armor": 1,
+    "moveSpeed": 0.9
+  },
+  "abilities": [
+    {
+      "id": "group-mend",
+      "type": "heal",
+      "label": "Group Mend",
+      "damage": 0,
+      "healAmount": 30,
+      "range": 5,
+      "aoeRadius": 0,
+      "actSpeed": 0.5,
+      "attackDelay": 0,
+      "targeting": "lowest-hp-ally"
+    },
+    {
+      "id": "love-bomb",
+      "type": "mortar",
+      "label": "Love Bomb",
+      "damage": 28,
+      "healAmount": 0,
+      "range": 5,
+      "minRange": 2,
+      "aoeRadius": 1,
+      "actSpeed": 0.35,
+      "attackDelay": 0.9,
+      "targeting": "nearest-enemy"
+    }
+  ],
+  "acquisition": {
+    "method": "combine",
+    "combineFrom": ["grace-lee", "whole-lee"]
+  }
+}
