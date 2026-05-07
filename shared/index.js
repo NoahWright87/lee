@@ -5,3 +5,4 @@ export * from './engine/combines.js';
 export * from './engine/postBattle.js';
 export * from './engine/unitFactory.js';
 export * from './engine/perks.js';
+export * from './engine/xp.js';
