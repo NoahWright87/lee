@@ -11,6 +11,9 @@ import {
   getInitialDraftOptions,
   getBetweenRoundDraftOptions,
   getRandomPerks,
+  applyItemToUnit,
+  getShopOptions,
+  goldRewardForRound,
 } from '@lee/shared';
 import { ALL_LEES } from '@lee/shared/data/index.js';
 
@@ -22,6 +25,7 @@ import GameOver         from './components/GameOver.jsx';
 import VictoryScreen    from './components/VictoryScreen.jsx';
 import PerkSelection    from './components/PerkSelection.jsx';
 import DifficultySelect from './components/DifficultySelect.jsx';
+import ShopScreen       from './components/ShopScreen.jsx';
 
 const FIELD_CONFIG = { rows: 8, cols: 4, deployRows: 2 };
 const TICK_MS      = 1000 / 60;
@@ -61,6 +65,11 @@ export default function App() {
   const [perkQueue, setPerkQueue]           = useState([]);
   const [processedField, setProcessedField] = useState([]);
   const [processedBench, setProcessedBench] = useState([]);
+
+  // Economy
+  const [gold, setGold]               = useState(0);
+  const [goldEarned, setGoldEarned]   = useState(0);
+  const [shopItems, setShopItems]     = useState([]);
 
   // Refs for stale-closure safety in the battle interval
   const benchRef          = useRef(bench);
@@ -158,6 +167,11 @@ export default function App() {
           }
         });
 
+        // Award gold for the victory
+        const earned = goldRewardForRound(roundRef.current);
+        setGold(g => g + earned);
+        setGoldEarned(earned);
+
         setLevelUpResults(results);
         setPerkQueue(queue);
         setProcessedField(leveled);
@@ -217,7 +231,28 @@ export default function App() {
 
   function handleBetweenDraftConfirm(picked) {
     setBench(prev => [...prev, createRuntimeUnit(picked[0], 'player', -1, -1)]);
-    setScreen('deploy');
+    setShopItems(getShopOptions(4));
+    setScreen('shop');
+  }
+
+  function handleShopBuy(unitUid, item) {
+    if (gold < item.price) return;
+    setGold(g => g - item.price);
+
+    function applyToUnit(unit) {
+      if (unit.uid !== unitUid) return unit;
+      const copy = {
+        ...unit,
+        abilities: unit.abilities.map(a => ({ ...a })),
+        baseStats: { ...unit.baseStats },
+        perks: [...(unit.perks || [])],
+      };
+      applyItemToUnit(copy, item);
+      return copy;
+    }
+
+    setFieldUnits(prev => prev.map(applyToUnit));
+    setBench(prev => prev.map(applyToUnit));
   }
 
   // -------------------------------------------------------------------
@@ -298,6 +333,9 @@ export default function App() {
     setPerkQueue([]);
     setProcessedField([]);
     setProcessedBench([]);
+    setGold(0);
+    setGoldEarned(0);
+    setShopItems([]);
     setDraftOptions(getInitialDraftOptions(ALL_LEES, 5));
     setScreen('difficulty');
   }
@@ -440,6 +478,26 @@ export default function App() {
           queue={perkQueue}
           units={unitsMap}
           onComplete={handlePerksDone}
+        />
+      </div>
+    );
+  }
+
+  if (screen === 'shop') {
+    const allPlayerUnits = [
+      ...fieldUnits.filter(u => u.side === 'player'),
+      ...bench,
+    ];
+    return (
+      <div style={{ minHeight: '100vh', background: '#080808' }}>
+        <CreatorLink />
+        <ShopScreen
+          gold={gold}
+          goldEarned={goldEarned}
+          shopItems={shopItems}
+          allUnits={allPlayerUnits}
+          onBuy={handleShopBuy}
+          onContinue={() => setScreen('deploy')}
         />
       </div>
     );
