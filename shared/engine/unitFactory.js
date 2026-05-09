@@ -93,34 +93,49 @@ function enemyBudget(round) {
 }
 
 /**
- * Generate enemy units for the given round, respecting difficulty settings.
+ * Generate enemy units for the given round.
  *
  * @param {object[]} allLees
- * @param {number}   round         1-based round number
+ * @param {number}   round          1-based round number
  * @param {{rows:number,cols:number,deployRows:number}} fieldConfig
  * @param {'easy'|'normal'|'hard'} [difficulty='normal']
+ * @param {'battle'|'elite'|'boss'} [nodeType='battle']  Extra stat multiplier for elite/boss nodes
+ * @param {string[]|null} [rosterIds=null]  Pre-selected Lee IDs from the map node preview
  * @returns {object[]}
  */
-export function generateEnemies(allLees, round, fieldConfig, difficulty = 'normal') {
-  const cfg     = DIFFICULTY_CONFIG[difficulty] || DIFFICULTY_CONFIG.normal;
-  const scale   = Math.min(1.0, cfg.statBase + (round - 1) * cfg.statRate);
-  const budget  = Math.max(1, Math.round(enemyBudget(round) * cfg.budgetMult));
+export function generateEnemies(
+  allLees, round, fieldConfig,
+  difficulty = 'normal', nodeType = 'battle', rosterIds = null,
+) {
+  const cfg      = DIFFICULTY_CONFIG[difficulty] || DIFFICULTY_CONFIG.normal;
+  const nodeMult = nodeType === 'elite' ? 1.35 : nodeType === 'boss' ? 1.70 : 1.00;
+  const scale    = Math.min(1.0, cfg.statBase + (round - 1) * cfg.statRate) * nodeMult;
   const maxCount = fieldConfig.cols * fieldConfig.deployRows;
   const maxTier  = round <= 2 ? 1 : round <= 4 ? 2 : 3;
 
-  const pool = allLees.filter(l => l.tier <= maxTier && (l.cost || 1) <= budget);
-
-  const selected = [];
-  let remaining  = budget;
-  let attempts   = 0;
-
-  while (remaining > 0 && selected.length < maxCount && attempts < 200) {
-    attempts++;
-    const affordable = pool.filter(l => (l.cost || 1) <= remaining);
-    if (!affordable.length) break;
-    const pick = affordable[Math.floor(Math.random() * affordable.length)];
-    selected.push(pick);
-    remaining -= pick.cost || 1;
+  let selected;
+  if (rosterIds && rosterIds.length > 0) {
+    // Use the pre-selected roster from the map node so the battle matches the preview
+    selected = rosterIds
+      .map(id => allLees.find(l => l.id === id))
+      .filter(Boolean)
+      .slice(0, maxCount);
+  } else {
+    // Budget-based selection
+    const budget = Math.max(1, Math.round(enemyBudget(round) * cfg.budgetMult));
+    const pool   = allLees.filter(l => l.tier <= maxTier && (l.cost || 1) <= budget);
+    const s      = [];
+    let remaining = budget;
+    let attempts  = 0;
+    while (remaining > 0 && s.length < maxCount && attempts < 200) {
+      attempts++;
+      const affordable = pool.filter(l => (l.cost || 1) <= remaining);
+      if (!affordable.length) break;
+      const pick = affordable[Math.floor(Math.random() * affordable.length)];
+      s.push(pick);
+      remaining -= pick.cost || 1;
+    }
+    selected = s;
   }
 
   return selected.map((lee, i) => {

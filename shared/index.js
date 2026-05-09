@@ -7,3 +7,4 @@ export * from './engine/unitFactory.js';
 export * from './engine/perks.js';
 export * from './engine/xp.js';
 export * from './engine/items.js';
+export * from './engine/mapGenerator.js';
