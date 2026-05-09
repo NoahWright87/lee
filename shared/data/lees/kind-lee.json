@@ -28,6 +28,7 @@
       "targeting": "lowest-hp-ally"
     }
   ],
+  "cost": 2,
   "acquisition": {
     "method": "draft",
     "combineFrom": null

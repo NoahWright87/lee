@@ -28,6 +28,7 @@
       "targeting": "nearest-enemy"
     }
   ],
+  "cost": 1,
   "acquisition": {
     "method": "draft",
     "combineFrom": null
