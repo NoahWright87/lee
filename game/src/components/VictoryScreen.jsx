@@ -135,7 +135,7 @@ function VictoryUnitCard({ result, onDone }) {
 
   return (
     <div style={{
-      minWidth: 200, maxWidth: 220,
+      minWidth: 160, maxWidth: 220, width: '42vw',
       background: '#111',
       border: `2px solid ${borderColor}`,
       borderRadius: 10,
@@ -262,10 +262,9 @@ export default function VictoryScreen({ levelUpResults, round, onCollect }) {
 
       {total > 0 ? (
         <div style={{
-          display: 'flex', gap: 14,
-          overflowX: 'auto', padding: '8px 4px',
-          maxWidth: '100%',
-          justifyContent: total <= 4 ? 'center' : 'flex-start',
+          display: 'flex', gap: 14, flexWrap: 'wrap',
+          padding: '8px 4px', maxWidth: '100%',
+          justifyContent: 'center',
         }}>
           {levelUpResults.map(result => (
             <VictoryUnitCard
