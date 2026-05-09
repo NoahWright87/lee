@@ -454,13 +454,10 @@ export default function App() {
     return (
       <div style={{ minHeight: '100vh', background: '#080808' }}>
         <CreatorLink />
-        <div style={{ padding: '20px 0 0', textAlign: 'center' }}>
-          <h2 style={{ color: '#eee', fontSize: 20, fontFamily: 'monospace', margin: 0 }}>
-            Choose Your Path
-          </h2>
-          <p style={{ color: '#444', fontSize: 11, fontFamily: 'monospace', margin: '4px 0 0' }}>
-            Click an available node to advance.
-          </p>
+        <div style={{ padding: '12px 16px 4px', textAlign: 'center' }}>
+          <span style={{ color: '#555', fontSize: 11, fontFamily: 'monospace', letterSpacing: 2 }}>
+            CHOOSE YOUR PATH
+          </span>
         </div>
         <SpireMap
           map={spireMap}

@@ -14,32 +14,36 @@ export default function MergeScreen({ merge, allLeeDefs, onMerge, onSkip, remain
   const resultDef = allLeeDefs.find(l => l.id === resultId);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 28, padding: 40 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 20, padding: '28px 16px' }}>
       <div style={{ textAlign: 'center' }}>
-        <h2 style={{ fontSize: 26, color: '#eee' }}>Merge Available!</h2>
+        <h2 style={{ fontSize: 24, color: '#eee' }}>Merge Available!</h2>
         <p style={{ color: '#888', fontSize: 13, marginTop: 6 }}>
           {remaining > 1 ? `${remaining} merges available` : '1 merge available'}
         </p>
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
+      {/* Cards row — wraps to column on narrow screens */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 12,
+        flexWrap: 'wrap', justifyContent: 'center', maxWidth: '100%',
+      }}>
         <LeeCard lee={a} />
 
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', color: '#888' }}>
-          <span style={{ fontSize: 28 }}>+</span>
-          <span style={{ fontSize: 11 }}>combine</span>
+          <span style={{ fontSize: 24 }}>+</span>
+          <span style={{ fontSize: 10 }}>combine</span>
         </div>
 
         <LeeCard lee={b} />
 
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', color: '#888' }}>
-          <span style={{ fontSize: 28 }}>→</span>
+          <span style={{ fontSize: 24 }}>→</span>
         </div>
 
         {resultDef ? (
           <LeeCard lee={resultDef} />
         ) : (
-          <div style={{ width: 180, height: 200, background: '#1a1a1a', border: '2px dashed #444', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#666', fontSize: 12 }}>
+          <div style={{ width: 160, height: 180, background: '#1a1a1a', border: '2px dashed #444', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#666', fontSize: 12 }}>
             Unknown: {resultId}
           </div>
         )}
