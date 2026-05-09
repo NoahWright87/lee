@@ -212,12 +212,21 @@ export default function App() {
     const healedBench = benchUnits.map(u => ({ ...u }));
     applyPostBattleHealing(healedField, healedBench);
 
+    const node = pendingNodeRef.current;
+
+    // Boss cleared — skip draft, go straight to the run-complete screen
+    if (node?.type === 'boss') {
+      setFieldUnits(healedField);
+      setBench(healedBench);
+      setScreen('run-complete');
+      return;
+    }
+
     const merges = findMerges([...healedField, ...healedBench], COMBINE_MAP);
     setFieldUnits(healedField);
     setBench(healedBench);
     setPendingMerges(merges);
 
-    const node       = pendingNodeRef.current;
     const draftCount = node?.type === 'elite' ? 2 : 1;
     setPendingDraftCount(draftCount);
 
@@ -646,6 +655,35 @@ export default function App() {
           }
           onConfirm={picks => handleBetweenDraftConfirm(picks)}
         />
+      </div>
+    );
+  }
+
+  if (screen === 'run-complete') {
+    return (
+      <div style={{
+        display: 'flex', flexDirection: 'column', alignItems: 'center',
+        justifyContent: 'center', height: '100vh', gap: 24, background: '#080808',
+        fontFamily: 'monospace',
+      }}>
+        <div style={{ fontSize: 64 }}>👑</div>
+        <h1 style={{ fontSize: 42, color: '#ffdd44', letterSpacing: 4, margin: 0 }}>
+          SPIRE CONQUERED
+        </h1>
+        <p style={{ color: '#888', fontSize: 16, margin: 0 }}>
+          You cleared all {spireMap?.totalFloors ?? 10} floors!
+        </p>
+        <button
+          onClick={handleRestart}
+          style={{
+            marginTop: 16, padding: '14px 40px',
+            background: '#3366ff', color: '#fff', border: 'none',
+            borderRadius: 8, fontSize: 16, fontFamily: 'monospace',
+            cursor: 'pointer', letterSpacing: 1,
+          }}
+        >
+          Play Again
+        </button>
       </div>
     );
   }
