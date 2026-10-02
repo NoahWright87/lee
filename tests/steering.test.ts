@@ -47,7 +47,7 @@ describe('steering', () => {
     w.player.target = target;
     const preview = predictPath(w.player.motion, target, motionParams(w.player, t), 3, 1);
     for (let i = 0; i < Math.round(3 / FIXED_DT); i++) {
-      w.enemy.target = null; // keep this about steering, not combat
+      w.enemies[0].target = null; // keep this about steering, not combat
       w.step(FIXED_DT);
     }
     const end = preview[preview.length - 1];

@@ -346,18 +346,24 @@ export class BattleScene extends Phaser.Scene {
     const world = this.ctl.world;
     const t = this.ctl.tuning.camera;
     const p = world.player.motion;
-    const e = world.enemy.motion;
+    // Frame you plus every enemy still on the water (sinking ones until they're under).
+    const others = world.enemies.filter((e) => world.sinkAnim(e) < 1).map((e) => e.motion);
+    const focus = others.length ? others : world.enemies.map((e) => e.motion);
+    const mean = focus.reduce((a, m) => ({ x: a.x + m.x / focus.length, y: a.y + m.y / focus.length }), { x: 0, y: 0 });
     const bias = clamp(t.enemyBias, 0, 1);
-    const cx = lerp(p.x, e.x, bias);
-    const cy = lerp(p.y, e.y, bias);
+    const cx = lerp(p.x, mean.x, bias);
+    const cy = lerp(p.y, mean.y, bias);
     const W = this.W;
     // Keep the top bar (buttons) clear: frame the boats in the area below it.
     const inset = TOP_INSET_CSS * this.dpr;
     const H = this.oceanH - inset;
-    const needH = Math.max(
-      2 * (Math.max(Math.abs(p.y - cy), Math.abs(e.y - cy)) + t.padding),
-      2 * (Math.max(Math.abs(p.x - cx), Math.abs(e.x - cx)) + t.padding) * (H / W),
-    );
+    let dx = Math.abs(p.x - cx);
+    let dy = Math.abs(p.y - cy);
+    for (const m of others) {
+      dx = Math.max(dx, Math.abs(m.x - cx));
+      dy = Math.max(dy, Math.abs(m.y - cy));
+    }
+    const needH = Math.max(2 * (dy + t.padding), 2 * (dx + t.padding) * (H / W));
     const visH = clamp(needH, t.minVisibleHeight, Math.max(t.minVisibleHeight, t.maxVisibleHeight));
     const zoom = H / visH;
     if (this.snapCamera) {
@@ -451,7 +457,7 @@ export class BattleScene extends Phaser.Scene {
       if (world.tuning.visuals.oceanReloadRings) this.drawReloadRings(g, world, b, px, 3);
       this.drawBoatPips(g, world, b, px);
     }
-    this.drawEnemyArrow(g, world);
+    for (const e of world.enemies) this.drawEnemyArrow(g, e);
   }
 
   private drawRings(g: Phaser.GameObjects.Graphics, px: (n: number) => number): void {
@@ -601,8 +607,8 @@ export class BattleScene extends Phaser.Scene {
     g.fillRect(x0, y0 + segH + px(2), totalW * w, px(3));
   }
 
-  private drawEnemyArrow(g: Phaser.GameObjects.Graphics, world: World): void {
-    const e = world.enemy;
+  /** Edge-of-screen arrow pointing at an off-screen enemy. */
+  private drawEnemyArrow(g: Phaser.GameObjects.Graphics, e: Boat): void {
     if (e.sinkingSince !== null) return;
     const view = this.oceanCam.worldView;
     const m = this.px(this.oceanCam, 18);
@@ -650,14 +656,15 @@ export class BattleScene extends Phaser.Scene {
       g.lineStyle(px(1), 0xffffff, 0.15);
       g.strokeCircle(b.motion.x, b.motion.y, ct.range);
     }
-    // Enemy's seek point and preferred range.
-    const seek = world.brain.seek;
-    if (seek) {
+    // Each enemy's seek point and preferred range.
+    for (const e of world.enemies) {
+      const brain = world.brains.get(e.id);
+      if (!brain?.seek) continue;
       g.lineStyle(px(1.5), 0xff60ff, 0.9);
-      g.lineBetween(world.enemy.motion.x, world.enemy.motion.y, seek.x, seek.y);
-      g.strokeCircle(seek.x, seek.y, px(6));
-      g.lineStyle(px(1), 0xff60ff, 0.3);
-      g.strokeCircle(world.player.motion.x, world.player.motion.y, world.tuning.enemyAI.preferredRange);
+      g.lineBetween(e.motion.x, e.motion.y, brain.seek.x, brain.seek.y);
+      g.strokeCircle(brain.seek.x, brain.seek.y, px(6));
+      g.lineStyle(px(1), 0xff60ff, 0.25);
+      g.strokeCircle(world.player.motion.x, world.player.motion.y, brain.range);
     }
     const t = world.player.target;
     if (t) {

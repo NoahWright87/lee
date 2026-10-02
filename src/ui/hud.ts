@@ -28,6 +28,11 @@ export class Hud {
   private result: HTMLDivElement;
   private resultBody: HTMLDivElement;
   private resultTitle: HTMLHeadingElement;
+  private resultSub: HTMLDivElement;
+  private primaryBtn: HTMLButtonElement;
+  private fightPill: HTMLDivElement;
+  /** performance.now() when the next fight auto-starts, or null. */
+  private autoNextAt: number | null = null;
   private waterFill: HTMLDivElement;
   private waterText: HTMLSpanElement;
   private gunsText: HTMLSpanElement;
@@ -56,7 +61,8 @@ export class Hud {
       right.append(b);
       return b;
     });
-    top.append(left, right);
+    this.fightPill = el('div', 'fight-pill');
+    top.append(left, this.fightPill, right);
 
     this.startBtn = el('button', 'start-btn', 'START');
     this.startBtn.onclick = () => ctl.start();
@@ -65,17 +71,24 @@ export class Hud {
     this.result = el('div', 'result hidden');
     const card = el('div', 'result-card');
     this.resultTitle = el('h1', 'result-title');
+    this.resultSub = el('div', 'result-sub');
     this.resultBody = el('div', 'result-stats');
     const buttons = el('div', 'result-buttons');
-    const again = el('button', 'big-btn primary', 'Again');
-    again.onclick = () => {
+    this.primaryBtn = el('button', 'big-btn primary', 'Again');
+    this.primaryBtn.onclick = () => {
       this.panel.close();
-      ctl.restart(true);
+      this.autoNextAt = null;
+      if (ctl.world.result?.winner === 'player') ctl.nextFight();
+      else ctl.restart(true);
     };
     const tune = el('button', 'big-btn', 'Tune');
-    tune.onclick = () => this.panel.open();
-    buttons.append(again, tune);
-    card.append(this.resultTitle, this.resultBody, buttons);
+    tune.onclick = () => {
+      this.autoNextAt = null; // tuning: wait for a tap
+      this.updatePrimaryLabel();
+      this.panel.open();
+    };
+    buttons.append(this.primaryBtn, tune);
+    card.append(this.resultTitle, this.resultSub, this.resultBody, buttons);
     this.result.append(card);
 
     this.panel = new TuningPanel(ctl);
@@ -117,6 +130,7 @@ export class Hud {
     } else {
       this.result.classList.add('hidden');
       this.shownResultFor = -1;
+      this.autoNextAt = null;
     }
   }
 
@@ -130,18 +144,49 @@ export class Hud {
     const online = p.cannons.filter((c) => cannonOnline(p, c, w.tuning)).length;
     this.gunsText.textContent = `${online}/${p.cannons.length}`;
     this.sinkBanner.classList.toggle('hidden', p.sinkingSince === null);
+    const live = w.liveEnemies().length;
+    this.fightPill.textContent = `Fight ${w.fight} · ${live}/${w.enemies.length} left`;
+
+    if (this.autoNextAt !== null) {
+      if (performance.now() >= this.autoNextAt) {
+        this.autoNextAt = null;
+        this.panel.close();
+        this.ctl.nextFight();
+      } else {
+        this.updatePrimaryLabel();
+      }
+    }
+  }
+
+  private updatePrimaryLabel(): void {
+    const won = this.ctl.world.result?.winner === 'player';
+    if (!won) {
+      this.primaryBtn.textContent = 'Again';
+      return;
+    }
+    const left = this.autoNextAt === null ? 0 : Math.ceil((this.autoNextAt - performance.now()) / 1000);
+    this.primaryBtn.textContent = left > 0 ? `Next fight (${left})` : 'Next fight';
   }
 
   private showResult(): void {
     const w = this.ctl.world;
     const r = w.result!;
     const won = r.winner === 'player';
+    const ctl = this.ctl;
     this.resultTitle.textContent = won ? 'Victory' : 'Sunk';
     this.resultTitle.className = `result-title ${won ? 'win' : 'lose'}`;
+    const sunk = ctl.shipsSunk();
+    this.resultSub.textContent = won
+      ? `Fight ${w.fight} cleared · ${sunk} ${sunk === 1 ? 'ship' : 'ships'} sunk this run`
+      : `Reached fight ${w.fight} · ${sunk} ${sunk === 1 ? 'ship' : 'ships'} sunk this run`;
+    const delay = w.tuning.campaign.nextFightDelay;
+    this.autoNextAt = won && delay > 0 ? performance.now() + delay * 1000 : null;
+    this.updatePrimaryLabel();
     const s: SideStats = w.stats.player;
     const pct = s.shellsFired ? Math.round((100 * s.shellsHit) / s.shellsFired) : 0;
     const rows: [string, string, boolean?][] = [
       ['Time', fmtTime(r.time)],
+      ['Ships sunk', `${w.enemies.filter((e) => e.sinkingSince !== null).length} of ${w.enemies.length}`],
       ['Shells fired / hit', `${s.shellsFired} / ${s.shellsHit} (${pct}%)`],
       ['Damage dealt / taken', `${Math.round(s.damageDealt)} / ${Math.round(s.damageTaken)}`],
       ['Shells dodged', `${s.shellsDodged} of ${w.stats.enemy.shellsFired}`, true],

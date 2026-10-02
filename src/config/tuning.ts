@@ -114,8 +114,40 @@ export function defaultTuning() {
       rangeCorrection: 1,
       /** How far ahead of itself the enemy places its seek point, m. Bigger = smoother, lazier. */
       lookAhead: 60,
+      /** Each ship's preferred range is randomly ± this much, so a pack spreads out, m. */
+      rangeJitter: 15,
+      /** Ships in a pack steer apart when closer than this, m. */
+      spacing: 70,
       /** 0 = pick the side needing the smaller turn at the start, 1 = clockwise, -1 = counter-clockwise. */
       orbitDirection: 0,
+    },
+    campaign: {
+      /** Enemy ships in the first fight. */
+      firstFightEnemies: 1,
+      /** Ships added per fight won (fractions accumulate: 0.5 = one more every other fight). */
+      enemiesAddedPerFight: 1,
+      /** Most enemy ships in one fight. */
+      maxEnemies: 5,
+      /**
+       * Each enemy's HP × (ships in the fight)^-this. 0 = every ship full strength;
+       * 0.8 = two ships at 57% each, three at 42%, five at 28%.
+       */
+      packHullScaling: 0.8,
+      /** Each enemy's reload time × (ships in the fight)^this. 0.8 = two ships reload 74% slower each, three 141%. */
+      packReloadScaling: 0.8,
+      /** Angle between neighboring enemy spawn points, degrees. */
+      spawnSpread: 28,
+      /** Fraction of your damage and water repaired between fights (1 = fresh boat each fight). */
+      repairBetweenFights: 1,
+      /** Seconds before the next fight starts on its own after a win. 0 = wait for a tap. */
+      nextFightDelay: 4,
+      /**
+       * Threat budget: most enemy shells in the air at once (0 = no limit). Loaded guns
+       * hold fire until a slot frees, so a pack stays dodgeable instead of a wall of X's.
+       */
+      maxIncomingShells: 3,
+      /** 1 = enemy shells can hit other enemies (crossfire), 0 = they pass through. */
+      friendlyFire: 1,
     },
     telegraph: {
       /** Enemy shells always give at least this much warning, s. */

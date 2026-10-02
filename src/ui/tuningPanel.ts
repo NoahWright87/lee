@@ -50,6 +50,18 @@ const RANGES: Record<string, Range> = {
   rangeCorrection: [0, 4, 0.1],
   lookAhead: [20, 200, 5],
   orbitDirection: [-1, 1, 1],
+  rangeJitter: [0, 60, 1],
+  spacing: [0, 200, 5],
+  firstFightEnemies: [1, 8, 1],
+  enemiesAddedPerFight: [0, 3, 0.25],
+  maxEnemies: [1, 10, 1],
+  spawnSpread: [0, 90, 1],
+  repairBetweenFights: [0, 1, 0.05],
+  nextFightDelay: [0, 10, 0.5],
+  friendlyFire: [0, 1, 1],
+  maxIncomingShells: [0, 10, 1],
+  packHullScaling: [0, 1.5, 0.05],
+  packReloadScaling: [0, 1.5, 0.05],
   minWarningTime: [0, 4, 0.05],
   ringStartRadius: [3, 60, 1],
   markerSize: [1, 15, 0.5],
@@ -67,19 +79,20 @@ const RANGES: Record<string, Range> = {
 };
 
 /** Keys read only when a fight is built. */
-const NEXT_RUN = /(^|\.)(parts\..*|cannons\.perSide|global\.enemyStart\w+)$/;
+const NEXT_RUN = /(^|\.)(parts\..*|cannons\.perSide|global\.enemyStart\w+|campaign\.(packHullScaling|firstFightEnemies|enemiesAddedPerFight|maxEnemies|spawnSpread|repairBetweenFights)|enemyAI\.rangeJitter)$/;
 
 const FOLDER_NAMES: Record<string, string> = {
   global: 'Global',
   player: 'Player boat',
   enemy: 'Enemy boat',
   enemyAI: 'Enemy AI',
+  campaign: 'Fights & progression',
   telegraph: 'Telegraph (red X)',
   camera: 'Camera',
   input: 'Input',
   visuals: 'Visuals',
   movement: 'Movement',
-  parts: 'Parts (next run)',
+  parts: 'Parts (next fight)',
   cannons: 'Cannons',
   function: 'Part function loss',
   flooding: 'Flooding & sinking',
@@ -141,7 +154,7 @@ export class TuningPanel {
       }
       if (typeof value !== 'number') continue;
       const [min, max, step] = RANGES[key] ?? autoRange(value);
-      const label = NEXT_RUN.test(p) && !p.includes('.parts.') ? `${key} (next run)` : key;
+      const label = NEXT_RUN.test(p) && !p.includes('.parts.') ? `${key} (next fight)` : key;
       gui
         .add(obj, key, Math.min(min, value), Math.max(max, value), step)
         .name(label)

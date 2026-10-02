@@ -32,8 +32,12 @@ export class Controller {
   debug = false;
   /** True while the rotate-your-phone overlay is up. */
   blocked = false;
-  /** Bumped on every restart so views know to rebuild. */
+  /** Bumped every time a new World is built so views know to rebuild. */
   runId = 0;
+  /** 1-based fight number in the current run. */
+  fight = 1;
+  /** Enemy ships sunk in earlier fights of this run. */
+  private sunkBefore = 0;
   private listeners = new Set<Listener>();
   private frameListeners = new Set<Listener>();
 
@@ -74,12 +78,31 @@ export class Controller {
     this.notify();
   }
 
-  /** New fight with the current tuning. `running` skips the START screen. */
+  /** New run from fight 1 with the current tuning. `running` skips the START screen. */
   restart(running = false): void {
-    this.world = new World(this.tuning);
+    this.fight = 1;
+    this.sunkBefore = 0;
+    this.world = new World(this.tuning, undefined, { fight: 1 });
     this.runId++;
     if (running) this.world.start();
     this.notify();
+  }
+
+  /** After a win: the next fight, with more ships. Your damage carries over minus repairs. */
+  nextFight(): void {
+    const w = this.world;
+    if (w.result?.winner !== 'player') return;
+    this.sunkBefore = this.shipsSunk();
+    this.fight++;
+    this.world = new World(this.tuning, undefined, { fight: this.fight, carry: w.playerCarry() });
+    this.runId++;
+    this.world.start();
+    this.notify();
+  }
+
+  /** Enemy ships sunk this run, including the current fight. */
+  shipsSunk(): number {
+    return this.sunkBefore + this.world.enemies.filter((e) => e.sinkingSince !== null).length;
   }
 
   setSpeed(s: 1 | 2): void {

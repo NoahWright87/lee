@@ -67,28 +67,55 @@ const emptyStats = (): SideStats => ({
 export interface Result {
   winner: Side;
   loser: Side;
-  /** Fight time when the loser crossed its sink line. */
+  /** Fight time when the fight was decided (last enemy or the player crossed its sink line). */
   time: number;
 }
 
 export interface EnemyBrain {
   /** +1 / -1 orbit direction around the player, chosen on the first think. */
   orbitDir: number;
+  /** This ship's own preferred range (base ± jitter, so a pack spreads out). */
+  range: number;
   /** The point it is currently seeking (debug overlay). */
   seek: Vec | null;
+}
+
+/** Player damage carried into the next fight (structure fraction and water per part). */
+export interface PlayerCarry {
+  hp: number[];
+  water: number[];
+}
+
+export interface WorldOptions {
+  /** 1-based fight number in the current run. */
+  fight?: number;
+  /** Override the number of enemy ships (otherwise derived from the fight number). */
+  enemies?: number;
+  /** Player damage from the previous fight; repaired by campaign.repairBetweenFights. */
+  carry?: PlayerCarry;
+  layout?: BoatLayout;
+}
+
+/** How many enemy ships fight N has. */
+export function enemiesForFight(t: Tuning, fight: number): number {
+  const c = t.campaign;
+  const n = Math.round(c.firstFightEnemies) + Math.floor(Math.max(0, fight - 1) * c.enemiesAddedPerFight);
+  return Math.max(1, Math.min(Math.max(1, Math.round(c.maxEnemies)), n));
 }
 
 export class World {
   readonly tuning: Tuning;
   readonly rng: Rng;
   readonly seed: number;
+  readonly fight: number;
   readonly boats: Boat[];
   readonly player: Boat;
-  readonly enemy: Boat;
+  readonly enemies: Boat[];
   readonly shells: Shell[] = [];
   readonly telegraphs = new TelegraphSystem();
   readonly stats: Record<Side, SideStats> = { player: emptyStats(), enemy: emptyStats() };
-  readonly brain: EnemyBrain = { orbitDir: 0, seek: null };
+  /** Per-enemy AI state, by boat id. */
+  readonly brains = new Map<number, EnemyBrain>();
   /** Events since the renderer last drained them. */
   events: WorldEvent[] = [];
   phase: Phase = 'ready';
@@ -99,14 +126,63 @@ export class World {
   resultAt: number | null = null;
   private nextShellId = 1;
 
-  constructor(tuning: Tuning, seed = (Math.random() * 2 ** 31) | 0, layout: BoatLayout = SLOOP) {
+  constructor(tuning: Tuning, seed = (Math.random() * 2 ** 31) | 0, opts: WorldOptions = {}) {
     this.tuning = tuning;
     this.seed = seed;
     this.rng = new Rng(seed);
-    const g = tuning.global;
+    this.fight = Math.max(1, opts.fight ?? 1);
+    const layout = opts.layout ?? SLOOP;
     this.player = createBoat(1, 'player', layout, tuning, { x: 0, y: 0 }, NORTH);
-    this.enemy = createBoat(2, 'enemy', layout, tuning, { x: g.enemyStartEast, y: -g.enemyStartNorth }, NORTH);
-    this.boats = [this.player, this.enemy];
+    if (opts.carry) this.applyCarry(opts.carry);
+
+    // Enemies fan out around the first spawn point, alternating sides of it.
+    const g = tuning.global;
+    const count = opts.enemies ?? enemiesForFight(tuning, this.fight);
+    const range = Math.hypot(g.enemyStartNorth, g.enemyStartEast);
+    const bearing = Math.atan2(-g.enemyStartNorth, g.enemyStartEast);
+    const spread = tuning.campaign.spawnSpread * DEG;
+    this.enemies = [];
+    for (let i = 0; i < count; i++) {
+      const k = i === 0 ? 0 : Math.ceil(i / 2) * (i % 2 ? 1 : -1);
+      const a = bearing + k * spread;
+      const e = createBoat(2 + i, 'enemy', layout, tuning, { x: Math.cos(a) * range, y: Math.sin(a) * range }, NORTH);
+      // Bigger packs field lighter hulls, so total enemy HP grows slower than ship count.
+      const hpScale = Math.pow(count, -Math.max(0, tuning.campaign.packHullScaling));
+      for (const part of e.parts) {
+        for (const layer of part.layers) {
+          layer.maxHp = Math.max(1, layer.maxHp * hpScale);
+          layer.hp = layer.maxHp;
+        }
+      }
+      this.enemies.push(e);
+      const jitter = tuning.enemyAI.rangeJitter;
+      this.brains.set(e.id, { orbitDir: 0, range: tuning.enemyAI.preferredRange + this.rng.range(-jitter, jitter), seek: null });
+    }
+    this.boats = [this.player, ...this.enemies];
+  }
+
+  /** Restore the player's damage from the last fight, minus the between-fight repair. */
+  private applyCarry(carry: PlayerCarry): void {
+    const repair = Math.min(1, Math.max(0, this.tuning.campaign.repairBetweenFights));
+    this.player.parts.forEach((part, i) => {
+      const s = part.layers[part.layers.length - 1];
+      const frac = carry.hp[i] ?? 1;
+      s.hp = s.maxHp * (frac + (1 - frac) * repair);
+      part.water = Math.min(part.capacity, (carry.water[i] ?? 0) * (1 - repair));
+    });
+  }
+
+  /** Snapshot of the player's damage, to carry into the next fight. */
+  playerCarry(): PlayerCarry {
+    return {
+      hp: this.player.parts.map((p) => structureFraction(p)),
+      water: this.player.parts.map((p) => p.water),
+    };
+  }
+
+  /** Enemy ships still afloat (not sinking). */
+  liveEnemies(): Boat[] {
+    return this.enemies.filter((e) => !this.isSinking(e));
   }
 
   start(): void {
@@ -134,19 +210,21 @@ export class World {
     if (this.phase === 'ready') return;
     this.time += dt;
 
-    this.thinkEnemy();
+    for (const e of this.enemies) this.thinkEnemy(e);
     for (const b of this.boats) {
       const target = this.isSinking(b) ? null : b.target;
       const params = motionParams(b, this.tuning);
-      // The enemy brain already places its seek point to hold range, so it seeks it directly.
-      if (b === this.enemy) params.orbitCapture = 0;
+      // Enemy brains already place their seek point to hold range, so they seek it directly.
+      if (b.side === 'enemy') params.orbitCapture = 0;
       stepMotion(b.motion, target, params, dt);
     }
-    for (const b of this.boats) this.stepCannons(b, dt);
+    // Once the fight is decided, guns go quiet and nobody else floods.
+    const decided = this.result !== null;
+    if (!decided) for (const b of this.boats) this.stepCannons(b, dt);
     this.stepShells(dt);
     this.telegraphs.step(dt);
     for (const b of this.boats) {
-      if (this.isSinking(b)) continue;
+      if (this.isSinking(b) || decided) continue;
       this.stats[b.side].waterTaken += stepFlooding(b, this.tuning, dt);
     }
     this.checkSinking();
@@ -155,33 +233,44 @@ export class World {
   // ------------------------------------------------------------ enemy brain
 
   /**
-   * Seek a spot that keeps the player on our beam at the preferred range: aim
+   * Seek a spot that keeps the player on our beam at our preferred range: aim
    * 90° off the bearing to the player, bent inward when too far and outward
-   * when too close. Same steering as the player; only the target differs.
+   * when too close, and nudged away from other ships in the pack. Same
+   * steering as the player; only the target differs.
    */
-  private thinkEnemy(): void {
-    const e = this.enemy;
+  private thinkEnemy(e: Boat): void {
+    const brain = this.brains.get(e.id)!;
     const p = this.player;
     if (this.isSinking(e)) {
       e.target = null;
+      brain.seek = null;
       return;
     }
     const ai = this.tuning.enemyAI;
     const bearing = Math.atan2(p.motion.y - e.motion.y, p.motion.x - e.motion.x);
     const d = dist(e.motion, p.motion);
-    if (ai.orbitDirection !== 0) this.brain.orbitDir = Math.sign(ai.orbitDirection);
-    else if (this.brain.orbitDir === 0) {
+    if (ai.orbitDirection !== 0) brain.orbitDir = Math.sign(ai.orbitDirection);
+    else if (brain.orbitDir === 0) {
       // Pick the side that needs the smaller turn from where we're heading now.
       const cw = Math.abs(wrapAngle(bearing - Math.PI / 2 - e.motion.heading));
       const ccw = Math.abs(wrapAngle(bearing + Math.PI / 2 - e.motion.heading));
-      this.brain.orbitDir = cw <= ccw ? 1 : -1;
+      brain.orbitDir = cw <= ccw ? 1 : -1;
     }
     // Offset from the bearing: 90° = pure broadside circle; less = close in; more = open out.
-    const offset = Math.min(120, Math.max(30, 90 - (d - ai.preferredRange) * ai.rangeCorrection)) * DEG;
-    const h = bearing - this.brain.orbitDir * offset;
+    const offset = Math.min(120, Math.max(30, 90 - (d - brain.range) * ai.rangeCorrection)) * DEG;
+    const h = bearing - brain.orbitDir * offset;
     const look = Math.max(20, ai.lookAhead);
     const seek = { x: e.motion.x + Math.cos(h) * look, y: e.motion.y + Math.sin(h) * look };
-    this.brain.seek = seek;
+    // Keep spacing from the rest of the pack.
+    for (const o of this.enemies) {
+      if (o === e || this.isSinking(o)) continue;
+      const od = dist(e.motion, o.motion);
+      if (od >= ai.spacing || od < 1e-3) continue;
+      const push = ((ai.spacing - od) / ai.spacing) * look;
+      seek.x += ((e.motion.x - o.motion.x) / od) * push;
+      seek.y += ((e.motion.y - o.motion.y) / od) * push;
+    }
+    brain.seek = seek;
     e.target = seek;
   }
 
@@ -244,13 +333,25 @@ export class World {
     return Math.abs(wrapAngle(a - this.cannonFacing(b, c))) <= ct.arc * DEG;
   }
 
+  /** Enemy shells currently in the air. */
+  incomingShells(): number {
+    let n = 0;
+    for (const s of this.shells) if (s.ownerSide !== 'player') n++;
+    return n;
+  }
+
   private stepCannons(b: Boat, dt: number): void {
     const ct = boatTuning(b.side, this.tuning).cannons;
-    const reload = Math.max(0.1, ct.reloadTime / advantageOf(b.side, this.tuning));
+    let reload = Math.max(0.1, ct.reloadTime / advantageOf(b.side, this.tuning));
+    // Bigger packs reload slower per ship, so total incoming fire grows slower than ship count.
+    if (b.side !== 'player') reload *= Math.pow(this.enemies.length, Math.max(0, this.tuning.campaign.packReloadScaling));
+    const cap = Math.round(this.tuning.campaign.maxIncomingShells);
     b.cannons.forEach((c, i) => {
       if (!cannonOnline(b, c, this.tuning)) return;
       c.load = Math.min(1, c.load + dt / reload);
       if (c.load < 1) return;
+      // Threat budget: a loaded enemy gun holds fire while enough red X's are already up.
+      if (b.side !== 'player' && cap > 0 && this.incomingShells() >= cap) return;
       const from = this.muzzle(b, c);
       const tgt = this.pickTarget(b, from);
       if (!tgt) return;
@@ -296,8 +397,10 @@ export class World {
   private resolveShell(s: Shell): void {
     let hitBoat: Boat | null = null;
     let hitPart: PartState | null = null;
+    const friendlyFire = this.tuning.campaign.friendlyFire > 0;
     for (const b of this.boats) {
       if (b.id === s.ownerId || this.isSinking(b)) continue; // shells pass through sinking boats
+      if (!friendlyFire && b.side === s.ownerSide) continue;
       const part = partAt(b, s.to, s.impactRadius);
       if (part) {
         hitBoat = b;
@@ -339,10 +442,18 @@ export class World {
       b.sinkingSince = this.time;
       b.target = null;
       this.events.push({ type: 'sinking', boatId: b.id });
-      if (!this.result) {
-        this.result = { loser: b.side, winner: b.side === 'player' ? 'enemy' : 'player', time: this.time };
+      if (this.result) continue;
+      // You lose when you sink; you win when the last enemy does. First decisive sinking wins.
+      const decided = b.side === 'player' ? 'enemy' : this.liveEnemies().length === 0 ? 'player' : null;
+      if (decided) {
+        this.result = { winner: decided, loser: decided === 'player' ? 'enemy' : 'player', time: this.time };
         const g = this.tuning.global;
         this.resultAt = this.time + g.sinkDuration + g.resultDelay;
+        if (decided === 'player') {
+          // You won: shells still in the air at you fall harmlessly short.
+          for (let i = this.shells.length - 1; i >= 0; i--) if (this.shells[i].ownerSide !== 'player') this.shells.splice(i, 1);
+          this.telegraphs.list.length = 0;
+        }
       }
     }
     if (this.result && this.resultAt !== null && this.time >= this.resultAt) this.phase = 'over';

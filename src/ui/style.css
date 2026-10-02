@@ -180,6 +180,25 @@ body {
   letter-spacing: 0.04em;
 }
 
+.result-sub {
+  margin: -6px 0 10px;
+  text-align: center;
+  font-size: 14px;
+  color: var(--ink-dim);
+}
+
+.fight-pill {
+  align-self: center;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 5px 10px;
+}
+
 .result-title.win {
   color: var(--win);
 }
