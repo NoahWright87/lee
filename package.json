@@ -1,11 +1,23 @@
 {
   "name": "lee",
   "private": true,
-  "workspaces": ["shared", "game"],
+  "version": "0.1.0",
+  "type": "module",
   "scripts": {
-    "dev:game": "npm run dev --workspace=game",
-    "dev:creator": "npm run dev --workspace=creator",
-    "build:game": "npm run build --workspace=game",
-    "build:creator": "npm run build --workspace=creator"
+    "dev": "vite --host",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "lil-gui": "^0.21.0",
+    "phaser": "^3.90.0"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vite": "^8.3.2",
+    "vitest": "^5.0.3"
   }
 }
