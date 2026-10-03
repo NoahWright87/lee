@@ -2,7 +2,7 @@
 // cannons, and the derived movement stats that damage, water and crew feed into.
 
 import type { BoatLayout, PartDef } from '../config/boats';
-import type { BoatTuning, Side, Tuning } from '../config/tuning';
+import type { BoatTuning, ShipTuning, Side, Tuning } from '../config/tuning';
 import type { CrewState } from './crew';
 import { buildGrid, type Grid } from './grid';
 import { clamp, DEG, distToPolygon, polygonCentroid, toLocal, type Vec } from './math';
@@ -59,6 +59,8 @@ export interface AimPlan {
 export interface Boat {
   id: number;
   side: Side;
+  /** Ship type (key into SHIP_TYPES / tuning.ships), or 'player'. */
+  type: string;
   layout: BoatLayout;
   motion: MotionState;
   throttle: number;
@@ -82,8 +84,21 @@ export function advantageOf(side: Side, t: Tuning): number {
   return side === 'player' ? Math.max(0.1, t.global.playerAdvantage) : 1;
 }
 
-export function boatTuning(side: Side, t: Tuning): BoatTuning {
-  return side === 'player' ? t.player : t.enemy;
+/** Something with a side and a ship type: a Boat, or a bare { side, type } (setup preview). */
+export interface Typed {
+  side: Side;
+  type: string;
+}
+
+/** The tuning block a boat reads: yours, or its enemy ship type's. */
+export function boatTuning(b: Typed, t: Tuning): BoatTuning {
+  if (b.side === 'player') return t.player;
+  return t.ships[b.type] ?? t.ships.standard ?? Object.values(t.ships)[0];
+}
+
+/** An enemy ship type's tuning (with its AI block). */
+export function shipTuning(b: Typed, t: Tuning): ShipTuning {
+  return t.ships[b.type] ?? t.ships.standard ?? Object.values(t.ships)[0];
 }
 
 export function createBoat(
@@ -93,8 +108,9 @@ export function createBoat(
   t: Tuning,
   pos: Vec,
   heading: number,
+  type = side === 'player' ? 'player' : 'standard',
 ): Boat {
-  const bt = boatTuning(side, t);
+  const bt = boatTuning({ side, type }, t);
   const adv = advantageOf(side, t);
   const parts: PartState[] = layout.parts.map((def, index) => {
     const s = bt.parts[def.stats];
@@ -137,6 +153,7 @@ export function createBoat(
   return {
     id,
     side,
+    type,
     layout,
     motion: {
       x: pos.x,
@@ -200,13 +217,13 @@ export function applyDamage(part: PartState, amount: number): DamageResult {
 
 /** How far this boat's guns reach right now, m (base range × lookout). */
 export function cannonRange(boat: Boat, t: Tuning): number {
-  return boatTuning(boat.side, t).cannons.range * boat.rangeBonus;
+  return boatTuning(boat, t).cannons.range * boat.rangeBonus;
 }
 
 export function cannonOnline(boat: Boat, cannon: CannonState, t: Tuning): boolean {
   if (boat.sinkingSince !== null) return false;
   const part = boat.parts[cannon.partIndex];
-  return structureFraction(part) > boatTuning(boat.side, t).function.cannonOfflineAt;
+  return structureFraction(part) > boatTuning(boat, t).function.cannonOfflineAt;
 }
 
 // ---------------------------------------------------------------- water
@@ -225,13 +242,13 @@ export function totalCapacity(boat: Boat): number {
 
 /** Water as a fraction of the sink line: 0 = dry, 1 = sinking. */
 export function sinkProgress(boat: Boat, t: Tuning): number {
-  const line = boatTuning(boat.side, t).flooding.sinkThreshold * totalCapacity(boat);
+  const line = boatTuning(boat, t).flooding.sinkThreshold * totalCapacity(boat);
   return line > 0 ? totalWater(boat) / line : 1;
 }
 
 /** Leak, spread, and bail. Returns water that leaked in this step. */
 export function stepFlooding(boat: Boat, t: Tuning, dt: number): number {
-  const f = boatTuning(boat.side, t).flooding;
+  const f = boatTuning(boat, t).flooding;
   let leaked = 0;
 
   for (const part of boat.parts) {
@@ -297,7 +314,7 @@ export function floodPart(boat: Boat, part: PartState, amount: number): number {
 
 /** Engine output multiplier from the engine part's HP. */
 export function engineFactor(boat: Boat, t: Tuning): number {
-  const min = boatTuning(boat.side, t).function.engineMinFactor;
+  const min = boatTuning(boat, t).function.engineMinFactor;
   let factor = 1;
   for (const p of boat.parts) {
     if (p.def.role === 'engine') factor = Math.min(factor, min + (1 - min) * structureFraction(p));
@@ -307,14 +324,14 @@ export function engineFactor(boat: Boat, t: Tuning): number {
 
 /** Speed and turn multipliers from water aboard. */
 export function waterFactors(boat: Boat, t: Tuning): { speed: number; turn: number } {
-  const f = boatTuning(boat.side, t).flooding;
+  const f = boatTuning(boat, t).flooding;
   const x = Math.pow(clamp(sinkProgress(boat, t), 0, 1), Math.max(0.1, f.waterCurveExponent));
   return { speed: 1 - clamp(f.waterSpeedPenalty, 0, 1) * x, turn: 1 - clamp(f.waterTurnPenalty, 0, 1) * x };
 }
 
 /** Current movement stats after advantage, engine damage, flooding and crew (oars, sails). */
 export function motionParams(boat: Boat, t: Tuning): MotionParams {
-  const m = boatTuning(boat.side, t).movement;
+  const m = boatTuning(boat, t).movement;
   const adv = advantageOf(boat.side, t);
   const engine = engineFactor(boat, t);
   const water = waterFactors(boat, t);
@@ -356,4 +373,40 @@ export function distanceToHull(boat: Boat, world: Vec): number {
   let best = Infinity;
   for (const p of boat.parts) best = Math.min(best, distToPolygon(local, p.def.polygon));
   return best;
+}
+
+/**
+ * The hull as a capsule in the boat's local frame: a segment along the keel and
+ * a radius of half the beam. Collisions, docking gaps and ram contact use it.
+ */
+export function hullCapsule(boat: Boat): { half: number; r: number } {
+  const r = boat.layout.beam / 2;
+  return { half: Math.max(0, boat.layout.length / 2 - r), r };
+}
+
+/** World endpoints of the keel segment. */
+export function keelSegment(boat: Boat): [Vec, Vec] {
+  const { half } = hullCapsule(boat);
+  const m = boat.motion;
+  const c = Math.cos(m.heading);
+  const s = Math.sin(m.heading);
+  return [
+    { x: m.x - c * half, y: m.y - s * half },
+    { x: m.x + c * half, y: m.y + s * half },
+  ];
+}
+
+/** The bow tip in the local frame (the forward-most point of the bow part, or of the hull). */
+export function bowTipLocal(boat: Boat): Vec {
+  let x = -Infinity;
+  for (const p of boat.parts) {
+    if (p.def.role !== 'bow') continue;
+    for (const v of p.def.polygon) x = Math.max(x, v.x);
+  }
+  return { x: Number.isFinite(x) ? x : boat.layout.length / 2, y: 0 };
+}
+
+/** A boat whose crew is all dead: it can't fire, row or bail, but it floats (and floods). */
+export function isDerelict(boat: Boat): boolean {
+  return boat.crew.lees.length > 0 && !boat.crew.lees.some((l) => l.alive);
 }

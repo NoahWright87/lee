@@ -25,11 +25,11 @@ const T = {
 };
 
 function quiet(t: Tuning): Tuning {
-  for (const b of [t.player, t.enemy]) {
+  for (const b of [t.player, ...Object.values(t.ships)]) {
     b.flooding.bilgeRate = 0;
     b.flooding.leakRate = 0;
   }
-  t.enemy.crew.size = 0; // enemy guns silent unless a test wants them
+  t.ships.standard.crew.size = 0; // enemy guns silent unless a test wants them
   return t;
 }
 
@@ -289,12 +289,12 @@ describe('crew damage', () => {
 describe('one crew AI, both boats', () => {
   test('the enemy crew runs on the same rules: no gunners, no fire', () => {
     const t = quiet(defaultTuning());
-    t.enemy.crew.size = 0;
+    t.ships.standard.crew.size = 0;
     const w = new World(t, 1, { enemies: 1 });
     w.start();
     for (let i = 0; i < 30 / FIXED_DT; i++) w.step(FIXED_DT);
     expect(w.stats.enemy.shellsFired).toBe(0);
-    t.enemy.crew.size = 4;
+    t.ships.standard.crew.size = 4;
     const w2 = new World(t, 1, { enemies: 1 });
     expect(w2.enemies[0].crew.lees).toHaveLength(4);
   });
@@ -304,7 +304,7 @@ describe('one crew AI, both boats', () => {
     const fight = (seed: number) => {
       const t = defaultTuning();
       t.player.cannons.reloadTime = 1e9;
-      t.enemy.cannons.reloadTime = 1e9;
+      t.ships.standard.cannons.reloadTime = 1e9;
       t.enemyAI.rangeJitter = 0;
       const w = new World(t, seed);
       w.start();

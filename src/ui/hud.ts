@@ -3,7 +3,8 @@
 // Reads the Controller; the canvas never draws UI chrome.
 
 import { ACTIVITY_KINDS, type ActivityKind } from '../config/lees';
-import { advantageOf, cannonOnline, motionParams, sinkProgress } from '../sim/boat';
+import { shipName } from '../config/ships';
+import { advantageOf, cannonOnline, motionParams, sinkProgress, type Boat } from '../sim/boat';
 import { DEG } from '../sim/math';
 import { roleName } from '../sim/crew';
 import type { Controller } from '../game/Controller';
@@ -19,6 +20,10 @@ const ACTIVITY_LABEL: Record<ActivityKind, string> = {
   lookout: 'Lookout',
   repair: 'Repairing',
   bail: 'Bailing',
+  board: 'Boarding',
+  repel: 'Repelling',
+  melee: 'Sword fight',
+  swing: 'Swinging',
   walk: 'Walking',
   idle: 'Idle',
 };
@@ -62,6 +67,8 @@ export class Hud {
   private sinkBanner: HTMLDivElement;
   private panel: TuningPanel;
   private shownResultFor = -1;
+  /** One Disengage button per boat attached to yours, keyed by boat id. */
+  private disengage = new Map<number, HTMLButtonElement>();
 
   constructor(root: HTMLElement, ctl: Controller) {
     this.ctl = ctl;
@@ -162,10 +169,64 @@ export class Hud {
     this.gauges = gauges;
     this.sinkBanner = el('div', 'sink-banner hidden', 'SINKING');
     strip.append(gauges, this.sinkBanner);
+    this.root.append(this.disengageLayer);
 
     ctl.onChange(() => this.sync());
     ctl.onFrame(() => this.frame());
     this.sync();
+  }
+
+  private disengageLayer = el('div', 'disengage-layer');
+
+  /**
+   * Disengage buttons: one per attached boat, beside its deck in the strip,
+   * kept out of the bottom of the screen where a resting thumb sits.
+   */
+  private syncDisengage(): void {
+    const w = this.ctl.world;
+    const proj = this.ctl.stripProjection;
+    const attached = w.phase === 'running' && !w.result ? w.attachedTo(w.player) : [];
+    const keep = new Set(attached.map((b) => b.id));
+    for (const [id, btn] of this.disengage) {
+      if (keep.has(id)) continue;
+      btn.remove();
+      this.disengage.delete(id);
+    }
+    if (!proj) return;
+    const H = this.root.clientHeight || window.innerHeight;
+    const W = this.root.clientWidth || window.innerWidth;
+    const used: number[] = [];
+    for (const b of attached) {
+      let btn = this.disengage.get(b.id);
+      if (!btn) {
+        btn = el('button', 'disengage-btn');
+        const target: Boat = b;
+        btn.onclick = (ev) => {
+          ev.stopPropagation();
+          this.ctl.world.disengage(target);
+        };
+        this.disengageLayer.append(btn);
+        this.disengage.set(b.id, btn);
+      }
+      const link = w.links.linkBetween(w.player, b);
+      const breaking = link?.breakAt != null;
+      const label = breaking ? `Casting off… ${Math.max(0, link!.breakAt! - w.time).toFixed(1)}s` : `Disengage\n${shipName(b.type)}`;
+      if (btn.textContent !== label) btn.textContent = label;
+      btn.disabled = breaking;
+      btn.classList.toggle('breaking', breaking);
+      // Beside the deck: on whichever screen side the deck's center is farther from, vertically level with it.
+      const c = proj.worldToCss(b.motion);
+      const bh = 52;
+      const minY = proj.top + 30;
+      const maxY = H * 0.74 - bh;
+      let y = Math.min(maxY, Math.max(minY, c.y - bh / 2));
+      for (const u of used) if (Math.abs(u - y) < bh + 6) y = u + (y >= u ? bh + 6 : -(bh + 6));
+      used.push(y);
+      btn.style.top = `${Math.round(y)}px`;
+      const left = c.x > W / 2;
+      btn.style.left = left ? '8px' : '';
+      btn.style.right = left ? '' : '8px';
+    }
   }
 
   private sync(): void {
@@ -198,6 +259,7 @@ export class Hud {
     this.root.style.setProperty('--ocean-frac', `${(this.ctl.oceanFrac * 100).toFixed(2)}%`);
     this.setup.frame();
     this.crewDebug.frame();
+    this.syncDisengage();
     const setupMode = w.phase === 'ready';
     this.gauges.classList.toggle('hidden', setupMode);
     this.root.classList.toggle('setup-mode', setupMode);
@@ -268,6 +330,33 @@ export class Hud {
       ['HP repaired', `${Math.round(s.hpRepaired)}`],
       ['Lees lost (you / enemy)', `${s.leesLost} / ${w.stats.enemy.leesLost}`, true],
     ];
+    const e = w.stats.enemy;
+    const lost = (x: SideStats) =>
+      (['cannon', 'melee', 'pistol', 'sank'] as const)
+        .filter((k) => x.lostBy[k] > 0)
+        .map((k) => `${x.lostBy[k]} ${k === 'sank' ? 'sank' : k}`)
+        .join(', ') || 'none';
+    if (s.leesLost || e.leesLost) rows.push(['  by cause (you)', lost(s)], ['  by cause (enemy)', lost(e)]);
+    // Close combat: only when it happened.
+    if (s.dockTime > 0 || e.dockTime > 0) rows.push(['Time attached', fmtTime(Math.max(s.dockTime, e.dockTime))]);
+    if (s.boardings || e.boardings) {
+      rows.push([
+        'Boardings (you / enemy)',
+        `${s.boardings} / ${e.boardings} · ${Math.round(s.enemyDeckTime)}s / ${Math.round(e.enemyDeckTime)}s on decks`,
+        true,
+      ]);
+    }
+    if (s.meleeDealt || e.meleeDealt) {
+      rows.push(['Melee kills (you / enemy)', `${s.meleeKills} / ${e.meleeKills}`, true], ['Melee damage dealt / taken', `${Math.round(s.meleeDealt)} / ${Math.round(s.meleeTaken)}`]);
+    }
+    if (s.pistolShots || e.pistolShots) {
+      const pp = s.pistolShots ? Math.round((100 * s.pistolHits) / s.pistolShots) : 0;
+      rows.push(['Pistol shots / hits', `${s.pistolShots} / ${s.pistolHits} (${pp}%) · dmg ${Math.round(s.pistolDealt)}`]);
+    }
+    if (s.ramsDone || s.ramsTaken) {
+      rows.push(['Rams done / taken', `${s.ramsDone} / ${s.ramsTaken} · dealt ${Math.round(s.ramDealt)} · took ${Math.round(s.ramTaken)}`, true]);
+    }
+    if (s.disengages) rows.push(['Disengages', `${s.disengages}`]);
     this.resultBody.replaceChildren(
       ...rows.map(([k, v, key]) => {
         const row = el('div', `stat${key ? ' key' : ''}`);
@@ -319,6 +408,10 @@ export class Hud {
       if (st.shellsFired) bits.push(`fired ${st.shellsFired} · hit ${st.shellsHit} · dmg ${Math.round(st.damageDealt)}`);
       if (st.hpRepaired >= 0.5) bits.push(`repaired ${Math.round(st.hpRepaired)}`);
       if (st.waterBailed >= 0.5) bits.push(`bailed ${Math.round(st.waterBailed)}`);
+      if (st.boardings) bits.push(`boarded ${st.boardings}× · ${Math.round(st.onEnemyDeck)}s on enemy decks`);
+      if (st.time.melee >= 0.5) bits.push(`melee ${Math.round(st.time.melee)}s · ${st.meleeKills} kills · dealt ${Math.round(st.meleeDealt)} · took ${Math.round(st.meleeTaken)}`);
+      if (st.pistolShots) bits.push(`pistol ${st.pistolShots} shots · ${st.pistolHits} hits`);
+      if (!lee.alive && lee.lostCause) bits.push(`lost to ${lee.lostCause === 'sank' ? 'the sea' : lee.lostCause}`);
       bits.push(`away ${Math.round((100 * st.awayFromHome) / total)}%`, `idle ${Math.round((100 * st.time.idle) / total)}%`, `${st.switches} switches`);
       row.append(head, bar, el('div', 'crew-row-sub', bits.join(' · ')));
       box.append(row);

@@ -1,6 +1,9 @@
 // One scene, one world, two cameras:
 //  - ocean camera (top ~75%): zoomed out, frames both boats, takes steering input
-//  - strip camera (bottom ~25%): your boat, large, always bow-right, with its crew
+//  - strip camera (bottom ~25%): your boat, large, always bow-right, with its crew.
+//    While your boat is attached to others the strip expands (to about half the
+//    screen) and frames every attached deck in the direction it lies: a boat on
+//    your port side above yours, starboard below, a rammed one where it hit.
 // In setup mode the strip grows to about half the screen and frames the deck
 // grid at touch size; the DOM setup layer draws the interactive grid on top,
 // using the projection published to the Controller.
@@ -8,19 +11,22 @@
 // path preview) are drawn per camera with sizes divided by that camera's zoom.
 
 import Phaser from 'phaser';
-import { SLOOP } from '../config/boats';
+import { LAYOUTS } from '../config/boats';
+import { shipName } from '../config/ships';
 import {
   boatTuning,
   cannonOnline,
   cannonRange,
+  isDerelict,
   motionParams,
   sinkProgress,
   structureFraction,
   type Boat,
 } from '../sim/boat';
+import { leeWorldPos } from '../sim/combat';
 import { activity, workerAt } from '../sim/crew';
-import { clamp, DEG, dist, lerp, rotate, toWorld, type Vec } from '../sim/math';
-import { FIXED_DT, predictPath } from '../sim/steering';
+import { clamp, DEG, dist, lerp, rotate, toLocal, toWorld, type Vec } from '../sim/math';
+import { FIXED_DT, predictAlongside, predictPath } from '../sim/steering';
 import { TelegraphSystem } from '../sim/telegraph';
 import type { World, WorldEvent } from '../sim/world';
 import { BoatView, lerpColor } from './BoatView';
@@ -57,6 +63,9 @@ const COLOR = {
   enemyArrow: 0xffa040,
   pipPlayer: 0xf6e7c1,
   pipEnemy: 0xffa040,
+  neutral: 0xf6e7c1,
+  link: 0xd9c08a,
+  minRange: 0xff8a6a,
 };
 
 /** Debug colors for crew pips by activity. */
@@ -67,9 +76,22 @@ const ACTIVITY_COLOR: Record<string, number> = {
   lookout: 0xd59bff,
   repair: 0xff9b5a,
   bail: 0x3a9cf0,
+  board: 0xff5a5a,
+  repel: 0xffa0d0,
+  melee: 0xff2020,
+  swing: 0xffffff,
   walk: 0xffffff,
   idle: 0x777777,
 };
+
+/** A pistol shot's streak, drawn briefly. */
+interface Tracer {
+  from: Vec;
+  to: Vec;
+  t: number;
+  hit: boolean;
+  player: boolean;
+}
 
 interface Ring {
   x: number;
@@ -100,6 +122,14 @@ export class BattleScene extends Phaser.Scene {
   private smoke!: Phaser.GameObjects.Particles.ParticleEmitter;
   private bubbles!: Phaser.GameObjects.Particles.ParticleEmitter;
   private rings: Ring[] = [];
+  private tracers: Tracer[] = [];
+  /** Ship type labels over each enemy in the ocean view. */
+  private labels = new Map<number, Phaser.GameObjects.Text>();
+  /** 0..1: slide toward the setup layout / the expanded (attached) layout. */
+  private setupK = 1;
+  private expandK = 0;
+  /** Strip camera framing (local to your boat): center offset and zoom, smoothed. */
+  private stripFrame: { x: number; y: number; zoom: number } | null = null;
   private acc = 0;
   private runId = -1;
   private lastPhase = '';
@@ -125,8 +155,10 @@ export class BattleScene extends Phaser.Scene {
     this.dpr = this.game.registry.get('dpr') ?? 1;
     buildWaterTexture(this);
     buildParticleTextures(this);
-    for (const side of ['player', 'enemy'] as const) buildPartTextures(this, SLOOP, side);
-    buildCrackTextures(this, SLOOP);
+    for (const layout of LAYOUTS) {
+      for (const side of ['player', 'enemy'] as const) buildPartTextures(this, layout, side);
+      buildCrackTextures(this, layout);
+    }
     buildCrewTextures(this);
 
     this.oceanCam = this.cameras.main;
@@ -183,7 +215,8 @@ export class BattleScene extends Phaser.Scene {
     }).setDepth(9);
 
     // Land in setup mode at setup size (no slide on first load).
-    if (this.ctl.world.phase === 'ready') this.frac = clamp(this.ctl.tuning.layout.setupOceanFraction, 0.2, OCEAN_FRACTION);
+    this.setupK = this.ctl.world.phase === 'ready' ? 1 : 0;
+    this.frac = this.targetFrac();
     this.setupInput();
     this.scale.on('resize', () => {
       this.layout();
@@ -210,19 +243,27 @@ export class BattleScene extends Phaser.Scene {
 
   /** 0 = fight layout, 1 = setup layout. */
   private get setupBlend(): number {
-    const setup = clamp(this.ctl.tuning.layout.setupOceanFraction, 0.2, OCEAN_FRACTION);
-    if (OCEAN_FRACTION - setup < 1e-3) return this.ctl.world.phase === 'ready' ? 1 : 0;
-    return clamp((OCEAN_FRACTION - this.frac) / (OCEAN_FRACTION - setup), 0, 1);
+    return this.setupK;
   }
 
-  /** Slide the panels toward their setup or fight sizes. */
-  private animatePanels(dt: number): void {
+  /** Ocean share for the current blend of setup / fight / expanded layouts. */
+  private targetFrac(): number {
     const lay = this.ctl.tuning.layout;
     const setup = clamp(lay.setupOceanFraction, 0.2, OCEAN_FRACTION);
-    const want = this.ctl.world.phase === 'ready' ? setup : OCEAN_FRACTION;
-    if (Math.abs(want - this.frac) < 1e-4) return;
-    const speed = Math.abs(OCEAN_FRACTION - setup) / Math.max(0.01, lay.panelSlideTime);
-    this.frac = want > this.frac ? Math.min(want, this.frac + speed * dt) : Math.max(want, this.frac - speed * dt);
+    const expanded = clamp(lay.expandedOceanFraction, 0.25, OCEAN_FRACTION);
+    return lerp(lerp(OCEAN_FRACTION, expanded, this.expandK), setup, this.setupK);
+  }
+
+  /** Slide the panels toward their setup, fight or expanded sizes. */
+  private animatePanels(dt: number): void {
+    const world = this.ctl.world;
+    const step = dt / Math.max(0.01, this.ctl.tuning.layout.panelSlideTime);
+    const toward = (v: number, want: number) => (want > v ? Math.min(want, v + step) : Math.max(want, v - step));
+    this.setupK = toward(this.setupK, world.phase === 'ready' ? 1 : 0);
+    this.expandK = toward(this.expandK, world.phase !== 'ready' && world.isAttached(world.player) ? 1 : 0);
+    const f = this.targetFrac();
+    if (Math.abs(f - this.frac) < 1e-4) return;
+    this.frac = f;
     this.layout();
   }
 
@@ -254,14 +295,28 @@ export class BattleScene extends Phaser.Scene {
       this.pointerId = null;
       this.pointerScreen = null;
       this.ctl.world.player.target = null;
+      this.ctl.world.setAlongside(null);
     };
     this.input.on('pointerup', release);
     this.input.on('pointerupoutside', release);
   }
 
+  /**
+   * Steer toward the touched point. Holding on (or right beside) an enemy hull
+   * means "come alongside it" instead. While attached, steering does nothing.
+   */
   private aimAt(screen: Vec): void {
+    const world = this.ctl.world;
+    if (world.isAttached(world.player)) {
+      world.player.target = null;
+      world.setAlongside(null);
+      return;
+    }
     const w = this.oceanCam.getWorldPoint(screen.x, screen.y);
-    this.ctl.world.player.target = { x: w.x, y: w.y };
+    const grab = world.tuning.attach.alongsideGrab + this.px(this.oceanCam, 10);
+    const enemy = world.phase === 'running' ? world.enemyNear({ x: w.x, y: w.y }, grab) : null;
+    world.setAlongside(enemy);
+    if (!enemy) world.player.target = { x: w.x, y: w.y };
   }
 
   // ------------------------------------------------------------ frame
@@ -289,15 +344,21 @@ export class BattleScene extends Phaser.Scene {
       ctl.notify();
     }
 
-    if (this.pointerScreen && ctl.tuning.input.targetFollowsCamera) this.aimAt(this.pointerScreen);
-    if (this.pointerId === null && world.player.target) world.player.target = null;
+    if (this.pointerScreen && (ctl.tuning.input.targetFollowsCamera || world.isAttached(world.player))) this.aimAt(this.pointerScreen);
+    if (this.pointerId === null && (world.player.target || world.alongside)) {
+      world.player.target = null;
+      world.setAlongside(null);
+    }
 
     this.handleEvents(world.drainEvents());
     this.updateCameras(dt);
     for (const v of this.views) v.update(world, dt);
-    if (this.crewView && (this.crewView.boat !== world.player || this.crewLees !== world.player.crew.lees)) this.rebuildCrew();
+    if (this.crewView && this.crewLees !== world.player.crew.lees) this.rebuildCrew();
+    const inStrip = new Set(this.stripDecks(world));
+    for (const v of this.views) if (v.boat.side !== 'player') for (const o of v.all()) this.setInStrip(o, inStrip.has(v.boat));
     this.emitSinkingBubbles(world);
     this.rings = this.rings.filter((r) => this.clock - r.t < r.dur);
+    this.tracers = this.tracers.filter((tr) => this.clock - tr.t < 0.18);
 
     this.drawOcean(world);
     this.drawStrip(world);
@@ -308,7 +369,11 @@ export class BattleScene extends Phaser.Scene {
     this.runId = this.ctl.runId;
     for (const v of this.views) v.destroy();
     this.views = [];
+    for (const l of this.labels.values()) l.destroy();
+    this.labels.clear();
     this.rings = [];
+    this.tracers = [];
+    this.stripFrame = null;
     this.acc = 0;
     this.lastPhase = '';
     this.pointerId = null;
@@ -318,19 +383,40 @@ export class BattleScene extends Phaser.Scene {
 
     for (const boat of this.ctl.world.boats) {
       const view = new BoatView(this, boat);
-      // The strip shows your boat only.
+      // The strip shows your boat, plus any boat attached to it (toggled per frame).
       if (boat.side !== 'player') for (const o of view.all()) this.onlyOcean(o);
       this.views.push(view);
+      if (boat.side !== 'player') {
+        const label = this.add.text(0, 0, shipName(boat.type), {
+          fontFamily: 'system-ui, sans-serif',
+          fontSize: `${Math.round(11 * this.dpr)}px`,
+          color: '#ffd9b0',
+          stroke: '#1a0e06',
+          strokeThickness: Math.round(3 * this.dpr),
+        }).setOrigin(0.5, 1).setDepth(45);
+        this.onlyOcean(label);
+        this.labels.set(boat.id, label);
+      }
     }
     this.rebuildCrew();
   }
 
-  /** Crew sprites for your boat (rebuilt when setup changes who's aboard). */
+  /** Crew sprites (rebuilt when setup changes who's aboard). */
   private rebuildCrew(): void {
     this.crewView?.destroy();
-    this.crewView = new CrewView(this, this.ctl.world.player);
-    for (const o of this.crewView.all()) this.onlyStrip(o);
+    this.crewView = new CrewView(this, (o) => this.onlyStrip(o));
     this.crewLees = this.ctl.world.player.crew.lees;
+  }
+
+  /** Show or hide an object in the strip camera. */
+  private setInStrip(o: Phaser.GameObjects.GameObject, show: boolean): void {
+    const id = this.stripCam.id;
+    o.cameraFilter = show ? o.cameraFilter & ~id : o.cameraFilter | id;
+  }
+
+  /** Decks the strip shows: yours, then every boat attached to it. */
+  private stripDecks(world: World): Boat[] {
+    return [world.player, ...world.attachedTo(world.player)];
   }
 
   private viewFor(boatId: number): BoatView | undefined {
@@ -367,6 +453,30 @@ export class BattleScene extends Phaser.Scene {
         case 'sinking': {
           const b = this.ctl.world.boats.find((x) => x.id === e.boatId);
           if (b) this.rings.push({ x: b.motion.x, y: b.motion.y, t: this.clock, dur: 2.5, r: 26, color: 0xe0f4ff });
+          break;
+        }
+        case 'melee':
+          // A small flash on each sword hit.
+          this.rings.push({ x: e.pos.x, y: e.pos.y, t: this.clock, dur: 0.22, r: e.killed ? 1.6 : 0.9, color: e.killed ? 0xff6040 : 0xfff3d6 });
+          break;
+        case 'pistol':
+          this.tracers.push({ from: e.from, to: e.to, t: this.clock, hit: e.hit, player: e.side === 'player' });
+          break;
+        case 'rammed':
+          this.chips.explode(30, e.pos.x, e.pos.y);
+          this.viewFor(e.target)?.flashPart(e.part);
+          if (e.selfPart !== null) this.viewFor(e.rammer)?.flashPart(e.selfPart);
+          this.rings.push({ x: e.pos.x, y: e.pos.y, t: this.clock, dur: 0.6, r: 9, color: 0xffd28a });
+          this.cameras.main.shake(180, 0.006);
+          break;
+        case 'bump':
+          this.spray.explode(10, e.pos.x, e.pos.y);
+          this.rings.push({ x: e.pos.x, y: e.pos.y, t: this.clock, dur: 0.4, r: 3, color: 0xe0f4ff });
+          break;
+        case 'docked': {
+          const a = this.ctl.world.boats.find((x) => x.id === e.a);
+          const b = this.ctl.world.boats.find((x) => x.id === e.b);
+          if (a && b) this.rings.push({ x: (a.motion.x + b.motion.x) / 2, y: (a.motion.y + b.motion.y) / 2, t: this.clock, dur: 0.6, r: 10, color: COLOR.link });
           break;
         }
         default:
@@ -432,30 +542,69 @@ export class BattleScene extends Phaser.Scene {
     this.coverWithWater(this.waterOcean, this.cam.x, this.cam.y - shiftY, W / this.cam.zoom, this.oceanH / this.cam.zoom);
 
     // Strip: player boat, bow right. Fight: centered. Setup: larger (tiles at touch size)
-    // and near the top, leaving room for the tray below.
+    // and near the top, leaving room for the tray below. Attached: zoomed out to frame
+    // every attached deck, each where it lies relative to yours.
     const SH = this.scale.height - this.oceanH;
     const L = world.player.layout.length;
     const B = world.player.layout.beam;
     const grid = world.player.grid;
-    const fightZ = Math.min((W * clamp(t.stripBoatFill, 0.2, 1)) / L, (SH * 0.62) / B);
+    let fightZ = Math.min((W * clamp(t.stripBoatFill, 0.2, 1)) / L, (SH * 0.62) / B);
+    let fx = 0;
+    let fy = 0;
+    const decks = this.stripDecks(world);
+    if (decks.length > 1) {
+      // Bounding box of every deck in your boat's frame.
+      let x0 = Infinity;
+      let y0 = Infinity;
+      let x1 = -Infinity;
+      let y1 = -Infinity;
+      for (const b of decks) {
+        const hl = b.layout.length / 2;
+        const hb = b.layout.beam / 2;
+        for (const c of [{ x: -hl, y: -hb }, { x: hl, y: -hb }, { x: hl, y: hb }, { x: -hl, y: hb }]) {
+          const l = toLocal(toWorld(c, b.motion, b.motion.heading), p, p.heading);
+          x0 = Math.min(x0, l.x);
+          x1 = Math.max(x1, l.x);
+          y0 = Math.min(y0, l.y);
+          y1 = Math.max(y1, l.y);
+        }
+      }
+      const zoom = Math.min((W * 0.94) / (x1 - x0), (SH * 0.86) / (y1 - y0));
+      fightZ = Math.min(fightZ, zoom);
+      fx = (x0 + x1) / 2;
+      fy = (y0 + y1) / 2;
+    }
+    // Smooth the framing so the strip doesn't jump when a deck arrives or leaves.
+    const k = this.stripFrame ? 1 - Math.exp(-6 * dt) : 1;
+    const f = this.stripFrame ?? { x: fx, y: fy, zoom: fightZ };
+    f.x += (fx - f.x) * k;
+    f.y += (fy - f.y) * k;
+    f.zoom = Math.exp(lerp(Math.log(f.zoom), Math.log(fightZ), k));
+    this.stripFrame = f;
     const minTile = this.ctl.tuning.layout.minTilePx * this.dpr;
     const setupZ = Math.min(Math.max((W * 0.97) / L, minTile / Math.min(grid.tileW, grid.tileH)), (W * 0.98) / (grid.cols * grid.tileW));
     const s = this.setupBlend;
-    const sz = lerp(fightZ, setupZ, s);
+    const sz = lerp(f.zoom, setupZ, s);
     const boatY = lerp(SH / 2, (B * setupZ) / 2 + 16 * this.dpr, s);
     const d = (SH / 2 - boatY) / sz;
-    const c = toWorld({ x: 0, y: d }, p, p.heading);
+    const c = toWorld({ x: f.x * (1 - s), y: d + f.y * (1 - s) }, p, p.heading);
     this.stripCam.setZoom(sz);
     this.stripCam.setRotation(-p.heading);
     this.stripCam.centerOn(c.x, c.y);
     const diag = Math.hypot(W, SH) / sz;
     this.coverWithWater(this.waterStrip, c.x, c.y, diag, diag);
-    // Local boat frame → CSS px, for the DOM setup grid.
+    // Local boat frame → CSS px, for the DOM setup grid; and world → CSS px for strip buttons.
     const dpr = this.dpr;
     const top = this.oceanH;
+    const worldToCss = (w: Vec) => {
+      const r = rotate({ x: w.x - c.x, y: w.y - c.y }, -p.heading);
+      return { x: (r.x * sz + W / 2) / dpr, y: (top + SH / 2 + r.y * sz) / dpr };
+    };
     this.ctl.stripProjection = {
       toCss: (l: Vec) => ({ x: (l.x * sz + W / 2) / dpr, y: (top + boatY + l.y * sz) / dpr }),
+      worldToCss,
       top: top / dpr,
+      zoom: sz / dpr,
     };
   }
 
@@ -484,23 +633,34 @@ export class BattleScene extends Phaser.Scene {
     g.clear();
 
     this.drawRings(g, px);
+    this.drawTracers(g, px);
     if (this.ctl.debug) this.drawDebug(g, world, px);
     if (world.phase === 'ready') this.drawRangeRing(g, world, px);
+    // Minimum-range rings while your finger is on the ocean (and always in debug).
+    if ((this.pointerId !== null && world.phase === 'running') || this.ctl.debug) this.drawMinRangeRings(g, world, px);
+    this.drawLinks(g, world, px);
 
-    // Path preview (also before START).
+    // Path preview (also before START). Hidden while attached: steering does nothing.
     const player = world.player;
-    if (this.pointerId !== null && player.target && player.sinkingSince === null) {
-      const pts = predictPath(
-        player.motion,
-        player.target,
-        motionParams(player, world.tuning),
-        Math.max(0.5, world.tuning.global.previewHorizon),
-      );
+    const attached = world.isAttached(player);
+    const along = world.alongside ? world.enemies.find((e) => e.id === world.alongside!.boatId) : undefined;
+    if (this.pointerId !== null && !attached && player.sinkingSince === null && (player.target || along)) {
+      const horizon = Math.max(0.5, world.tuning.global.previewHorizon);
+      const params = motionParams(player, world.tuning);
+      const pts = along
+        ? predictAlongside(player.motion, world.alongsideSpec(player, along, world.alongside!.side), { ...params, orbitCapture: 0 }, horizon)
+        : predictPath(player.motion, player.target!, params, horizon);
       this.drawMarchingPath(g, pts, px);
-      g.lineStyle(px(2), COLOR.path, 0.7);
-      g.strokeCircle(player.target.x, player.target.y, px(14));
-      g.fillStyle(COLOR.path, 0.8);
-      g.fillCircle(player.target.x, player.target.y, px(2.5));
+      if (along) {
+        // Coming alongside: a ring around the boat you're closing on.
+        g.lineStyle(px(2), COLOR.path, 0.75);
+        g.strokeCircle(along.motion.x, along.motion.y, along.layout.length / 2 + px(8));
+      } else if (player.target) {
+        g.lineStyle(px(2), COLOR.path, 0.7);
+        g.strokeCircle(player.target.x, player.target.y, px(14));
+        g.fillStyle(COLOR.path, 0.8);
+        g.fillCircle(player.target.x, player.target.y, px(2.5));
+      }
     }
 
     // Shells in flight: ball above its shadow.
@@ -519,14 +679,93 @@ export class BattleScene extends Phaser.Scene {
     }
 
     this.drawTelegraphs(g, world, px);
+    this.drawContactWarnings(g, world, px);
 
     for (const b of world.boats) {
       if (b.sinkingSince !== null && world.sinkAnim(b) >= 1) continue;
       if (world.tuning.visuals.oceanReloadRings) this.drawReloadRings(g, world, b, px, 3);
-      this.drawCrewPips(g, world, b, px);
       this.drawBoatPips(g, world, b, px);
     }
+    this.drawCrewPips(g, world, px);
     for (const e of world.enemies) this.drawEnemyArrow(g, e);
+    // Ship type over each enemy (and DERELICT once its crew is gone).
+    for (const e of world.enemies) {
+      const label = this.labels.get(e.id);
+      if (!label) continue;
+      const gone = world.sinkAnim(e) >= 1;
+      label.setVisible(!gone);
+      if (gone) continue;
+      const text = isDerelict(e) ? `${shipName(e.type)} · derelict` : shipName(e.type);
+      if (label.text !== text) label.setText(text);
+      label.setScale(1 / this.oceanCam.zoom).setPosition(e.motion.x, e.motion.y - e.layout.length / 2 - px(23));
+      label.setAlpha(1 - world.sinkAnim(e));
+    }
+  }
+
+  /** Pistol shots: a short bright streak (yours cream, theirs orange). */
+  private drawTracers(g: Phaser.GameObjects.Graphics, px: (n: number) => number): void {
+    for (const tr of this.tracers) {
+      const a = 1 - clamp((this.clock - tr.t) / 0.18, 0, 1);
+      g.lineStyle(Math.max(px(1.2), 0.08), tr.player ? 0xfff3d6 : 0xffa060, a);
+      g.lineBetween(tr.from.x, tr.from.y, tr.to.x, tr.to.y);
+      if (tr.hit) {
+        g.fillStyle(0xff5040, a);
+        g.fillCircle(tr.to.x, tr.to.y, Math.max(px(2), 0.25));
+      }
+    }
+  }
+
+  /** Each boat's minimum cannon range: inside it, its guns can't touch you. */
+  private drawMinRangeRings(g: Phaser.GameObjects.Graphics, world: World, px: (n: number) => number): void {
+    for (const b of world.boats) {
+      if (b.sinkingSince !== null) continue;
+      const r = boatTuning(b, world.tuning).cannons.minRange;
+      if (r <= 0) continue;
+      g.lineStyle(px(1.5), b.side === 'player' ? COLOR.path : COLOR.minRange, 0.35);
+      g.strokeCircle(b.motion.x, b.motion.y, r);
+    }
+  }
+
+  /** Links between attached boats: a rope line between them. */
+  private drawLinks(g: Phaser.GameObjects.Graphics, world: World, px: (n: number) => number): void {
+    for (const l of world.links.links) {
+      const breaking = l.breakAt !== null;
+      g.lineStyle(px(2.5), COLOR.link, breaking ? 0.35 + 0.35 * Math.sin(this.clock * 12) : 0.85);
+      g.lineBetween(l.a.motion.x, l.a.motion.y, l.b.motion.x, l.b.motion.y);
+    }
+  }
+
+  /**
+   * Ram X's and dock rings. Red when it's being done to you (same language as
+   * incoming shells); a neutral color when you're the one doing it.
+   */
+  private drawContactWarnings(g: Phaser.GameObjects.Graphics, world: World, px: (n: number) => number): void {
+    for (const w of world.links.warnings) {
+      const color = w.byPlayer ? COLOR.neutral : COLOR.threat;
+      const { x, y } = w.pos;
+      if (w.kind === 'dock') {
+        // Progress ring filling up over the grapple time.
+        const r = Math.max(px(16), 4);
+        g.lineStyle(px(5), 0x000000, 0.4);
+        g.strokeCircle(x, y, r);
+        g.lineStyle(px(3), color, 0.95);
+        g.beginPath();
+        g.arc(x, y, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * w.progress, false);
+        g.strokePath();
+        continue;
+      }
+      const s = Math.max(world.tuning.telegraph.markerSize, px(9));
+      const ring = lerp(Math.max(world.tuning.telegraph.ringStartRadius, px(30)), s * 1.15, w.progress);
+      g.lineStyle(px(2), color, 0.85);
+      g.strokeCircle(x, y, ring);
+      const ss = s * (1 + 0.1 * Math.sin(this.clock * 20) * w.progress);
+      g.lineStyle(px(6), w.byPlayer ? COLOR.pathDark : COLOR.threatDark, 0.6);
+      g.lineBetween(x - ss, y - ss, x + ss, y + ss);
+      g.lineBetween(x - ss, y + ss, x + ss, y - ss);
+      g.lineStyle(px(3.5), color, 1);
+      g.lineBetween(x - ss, y - ss, x + ss, y + ss);
+      g.lineBetween(x - ss, y + ss, x + ss, y - ss);
+    }
   }
 
   private drawRings(g: Phaser.GameObjects.Graphics, px: (n: number) => number): void {
@@ -541,7 +780,7 @@ export class BattleScene extends Phaser.Scene {
   private drawRangeRing(g: Phaser.GameObjects.Graphics, world: World, px: (n: number) => number): void {
     const b = world.player;
     const r = cannonRange(b, world.tuning);
-    const arc = boatTuning('player', world.tuning).cannons.arc * DEG;
+    const arc = boatTuning(world.player, world.tuning).cannons.arc * DEG;
     const { x, y } = b.motion;
     for (const side of [-1, 1]) {
       const face = b.motion.heading + (side * Math.PI) / 2;
@@ -676,13 +915,14 @@ export class BattleScene extends Phaser.Scene {
   }
 
   /** Tiny figures on each deck so crew losses and movement read in the ocean view. Debug colors them by task. */
-  private drawCrewPips(g: Phaser.GameObjects.Graphics, world: World, b: Boat, px: (n: number) => number): void {
-    const alpha = 1 - world.sinkAnim(b);
+  private drawCrewPips(g: Phaser.GameObjects.Graphics, world: World, px: (n: number) => number): void {
     const r = Math.max(px(1.7), 0.35);
-    for (const lee of b.crew.lees) {
+    for (const lee of world.allLees()) {
       if (!lee.alive) continue;
-      const p = toWorld(lee.pos, b.motion, b.motion.heading);
-      const color = this.ctl.debug ? ACTIVITY_COLOR[activity(lee, b)] : b.side === 'player' ? COLOR.pipPlayer : COLOR.pipEnemy;
+      const alpha = lee.swing ? 1 : 1 - world.sinkAnim(lee.deck);
+      if (alpha <= 0.01) continue;
+      const p = leeWorldPos(lee);
+      const color = this.ctl.debug ? ACTIVITY_COLOR[activity(lee)] : lee.side === 'player' ? COLOR.pipPlayer : COLOR.pipEnemy;
       g.fillStyle(0x000000, 0.75 * alpha);
       g.fillCircle(p.x, p.y, r * 1.45);
       g.fillStyle(color, alpha);
@@ -746,7 +986,7 @@ export class BattleScene extends Phaser.Scene {
 
   private drawDebug(g: Phaser.GameObjects.Graphics, world: World, px: (n: number) => number): void {
     for (const b of world.boats) {
-      const ct = boatTuning(b.side, world.tuning).cannons;
+      const ct = boatTuning(b, world.tuning).cannons;
       // Hitboxes.
       g.lineStyle(px(1), COLOR.debug, 0.9);
       for (const part of b.parts) {
@@ -785,6 +1025,25 @@ export class BattleScene extends Phaser.Scene {
     // Every shell's landing point (incl. yours) — debug only, never a red X.
     g.fillStyle(0xffff60, 0.9);
     for (const s of world.shells) g.fillCircle(s.to.x, s.to.y, px(2));
+    // Docking distance around each hull and pistol range around your boat.
+    const at = world.tuning.attach;
+    for (const b of world.boats) {
+      if (b.sinkingSince !== null) continue;
+      g.lineStyle(px(1), 0xb0ffb0, 0.35);
+      g.strokeCircle(b.motion.x, b.motion.y, b.layout.length / 2 + at.dockDistance);
+    }
+    g.lineStyle(px(1), 0xfff3d6, 0.3);
+    g.strokeCircle(world.player.motion.x, world.player.motion.y, world.player.layout.length / 2 + world.tuning.pistol.range);
+    // Melee engagements: a red tick between fighters.
+    for (const l of world.allLees()) {
+      if (!l.engaged || l.meleeTarget === null) continue;
+      const o = world.findLee(l.meleeTarget);
+      if (!o) continue;
+      const a = leeWorldPos(l);
+      const b = leeWorldPos(o.lee);
+      g.lineStyle(px(1.5), 0xff3030, 0.9);
+      g.lineBetween(a.x, a.y, b.x, b.y);
+    }
   }
 
   // ------------------------------------------------------------ strip overlay
@@ -816,21 +1075,31 @@ export class BattleScene extends Phaser.Scene {
       g.fillCircle(gx + up.x * h, gy + up.y * h, 0.6);
     }
 
+    this.drawTracers(g, px);
     const fight = world.phase !== 'ready';
+    const decks = this.stripDecks(world);
     if (this.crewView) {
-      this.crewView.update(world, g, px, fight, this.clock, this.ctl.debug);
+      this.crewView.update(world, g, px, decks, fight, this.clock, this.ctl.debug, m.heading);
       for (const p of this.crewView.splashes) {
         this.spray.explode(10, p.x, p.y);
         this.rings.push({ x: p.x, y: p.y, t: this.clock, dur: 0.7, r: 2.5, color: 0xe0f4ff });
       }
     }
-    if (!show || !fight) return;
+    if (!fight) return;
 
     // Per-part HP and water bars, tucked along the bottom of a plain tile of the part (below crew feet).
     const along = rotate({ x: 1, y: 0 }, m.heading);
     const down = rotate({ x: 0, y: 1 }, m.heading);
+    for (const deck of decks) {
+      if (world.sinkAnim(deck) >= 1 || (deck === b && !show)) continue;
+      this.drawPartBars(g, deck, along, down);
+    }
+  }
+
+  private drawPartBars(g: Phaser.GameObjects.Graphics, b: Boat, along: Vec, down: Vec): void {
+    const m = b.motion;
     b.parts.forEach((part, i) => {
-      const anchor = this.partAnchor(i);
+      const anchor = this.partAnchor(b, i);
       const f = structureFraction(part);
       const fill = part.capacity > 0 ? part.water / part.capacity : 0;
       const bw = Math.min(polygonWidth(part.def.polygon) * 0.7, b.grid.tileW * 0.8);
@@ -851,8 +1120,7 @@ export class BattleScene extends Phaser.Scene {
   }
 
   /** Where a part's HP/water bars go (local frame): bottom of its plain tile nearest the part's middle. */
-  private partAnchor(partIndex: number): Vec {
-    const b = this.ctl.world.player;
+  private partAnchor(b: Boat, partIndex: number): Vec {
     const part = b.parts[partIndex];
     let best: Vec | null = null;
     let bestD = Infinity;

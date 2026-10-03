@@ -16,20 +16,48 @@
 //     job pay the help penalty). Ties break by: score, then ladder tier, then
 //     walking time, then Lee id, then task order (stations before repair
 //     before bail before idle, then target index).
+//  5. Close combat (Phase 3): a Lee sharing a tile with an opposing Lee is
+//     engaged and fights until the tile is clear (forced, no decision). Enemy
+//     Lees on your deck create "repel" needs. While attached to an enemy boat
+//     with crew aboard, Lees whose station does nothing right now (a gun with
+//     no valid target, oars and sails, an idle lookout, standing by) are
+//     surplus: they lose their home/role bonuses and a "board" need draws them
+//     to swing across. Once across, a Lee follows the boarder rules
+//     (boarding.ts) until the deck is clear, it's sinking, or the link breaks.
 
 import type { StationKind } from '../config/boats';
+import { shipName } from '../config/ships';
 import { LEE_STAT_KEYS, WORK_STAT, type ActivityKind, type LeeDef, type LeeStatKey, type LeeStats, type WorkKind } from '../config/lees';
 import type { LadderTier, Side, Tuning } from '../config/tuning';
-import { boatTuning, cannonOnline, cannonRange, isWrecked, sinkProgress, structure, structureFraction, type Boat, type CannonState } from './boat';
+import type { AttachSystem } from './attach';
+import { boatTuning, cannonOnline, cannonRange, isWrecked, keelSegment, sinkProgress, structure, structureFraction, type Boat, type CannonState } from './boat';
 import { pathTo, tileAt, type Tile } from './grid';
-import { DEG, dist, toWorld, wrapAngle, type Vec } from './math';
+import { closestOnSegment, DEG, dist, toLocal, toWorld, wrapAngle, type Vec } from './math';
 
-export type TaskType = 'station' | 'repair' | 'bail' | 'idle';
+export type TaskType = 'station' | 'repair' | 'bail' | 'idle' | 'board' | 'repel';
 
 export interface Task {
   type: TaskType;
-  /** Station: tile index. Repair/bail: part index. Idle: -1. */
+  /** Station: tile index. Repair/bail: part index. Board: boat id. Repel: the boarder's Lee id. Idle: -1. */
   target: number;
+}
+
+/** How a Lee was lost (result screen). */
+export type LossCause = 'cannon' | 'melee' | 'pistol' | 'sank';
+
+/** A Lee in the air between two attached decks. */
+export interface Swing {
+  from: Boat;
+  to: Boat;
+  /** Where it left from, in `from`'s frame. */
+  fromLocal: Vec;
+  /** Tile it lands on, on `to`. */
+  toTile: number;
+  t: number;
+  dur: number;
+  /** Swinging home (recall) rather than boarding. */
+  back: boolean;
+  why: string;
 }
 
 export interface LeeRunStats {
@@ -41,6 +69,16 @@ export interface LeeRunStats {
   time: Record<ActivityKind, number>;
   awayFromHome: number;
   switches: number;
+  /** Swings across to an enemy deck. */
+  boardings: number;
+  /** Seconds standing on an enemy deck. */
+  onEnemyDeck: number;
+  meleeKills: number;
+  meleeDealt: number;
+  meleeTaken: number;
+  pistolShots: number;
+  pistolHits: number;
+  pistolDealt: number;
 }
 
 /** A scored option, kept for the debug overlay. */
@@ -57,11 +95,15 @@ export interface Lee {
   def: LeeDef;
   /** Allegiance (not necessarily the boat it stands on). */
   side: Side;
+  /** Its own boat (home tile, tasks, crew list). */
+  boat: Boat;
+  /** The deck it stands on right now (its own boat, or one it boarded). */
+  deck: Boat;
   /** Home tile: where it was placed. Sets its preferred role. */
   home: number;
-  /** Last tile it reached. */
+  /** Last tile it reached (on `deck`). */
   tile: number;
-  /** Position in the boat's local frame, m. */
+  /** Position in the deck's local frame, m. */
   pos: Vec;
   /** Tiles still to walk through. */
   path: number[];
@@ -78,9 +120,23 @@ export interface Lee {
   maxHp: number;
   alive: boolean;
   lostAt: number | null;
+  lostCause: LossCause | null;
   hurtAt: number;
+  /** In the air between decks, or null. */
+  swing: Swing | null;
+  /** Sharing a tile with an opposing Lee: fighting, nothing else. */
+  engaged: boolean;
+  /** Opposing Lee it is hitting (debug). */
+  meleeTarget: number | null;
+  /** Seconds until the next sword hit / pistol shot is ready (scaled by rate). */
+  meleeCd: number;
+  pistolCd: number;
+  /** World time it last fired its pistol (icon and tracer). */
+  firedAt: number;
   /** One-line "why am I doing this". */
   reason: string;
+  /** Why it last swung across to board (kept while it's over there, for "why did that Lee go?"). */
+  whyBoarded: string;
   /** Score of its current task at the last decision. */
   score: number;
   /** Best few options at the last decision (debug). */
@@ -99,6 +155,8 @@ export interface Need {
   why: string;
   /** Cannon stations: the gun (engagement is judged per Lee). */
   cannon?: CannonState;
+  /** This station does nothing right now (attached: oars, sails, lookout with nothing to spot). */
+  surplus?: boolean;
 }
 
 export interface CrewState {
@@ -112,11 +170,15 @@ export interface CrewState {
 export interface CrewContext {
   tuning: Tuning;
   time: number;
-  /** Boats this crew's guns can shoot at (other side, afloat). */
+  /** Boats this crew's guns may shoot at: other side, afloat, not attached to us or our allies. */
   foes: Boat[];
+  /** Every Lee in the world (boarders on our deck, enemies on attached decks). Defaults to this boat's crew. */
+  lees?: Lee[];
+  /** Links between boats (boarding needs them). */
+  links?: AttachSystem;
 }
 
-const TYPE_ORDER: Record<TaskType, number> = { station: 0, repair: 1, bail: 2, idle: 3 };
+const TYPE_ORDER: Record<TaskType, number> = { station: 0, repair: 1, bail: 2, repel: 3, board: 4, idle: 5 };
 const STATION_WORK: Record<StationKind, WorkKind> = { cannon: 'gun', oars: 'row', sails: 'sail', lookout: 'lookout' };
 export const ROLE_NAMES: Record<WorkKind | 'damage', string> = {
   gun: 'Gunner',
@@ -125,6 +187,8 @@ export const ROLE_NAMES: Record<WorkKind | 'damage', string> = {
   lookout: 'Lookout',
   repair: 'Damage control',
   bail: 'Damage control',
+  board: 'Boarder',
+  repel: 'Defender',
   damage: 'Damage control',
 };
 
@@ -139,9 +203,17 @@ const emptyRunStats = (): LeeRunStats => ({
   damageDealt: 0,
   hpRepaired: 0,
   waterBailed: 0,
-  time: { gun: 0, row: 0, sail: 0, lookout: 0, repair: 0, bail: 0, walk: 0, idle: 0 },
+  time: { gun: 0, row: 0, sail: 0, lookout: 0, repair: 0, bail: 0, board: 0, repel: 0, melee: 0, swing: 0, walk: 0, idle: 0 },
   awayFromHome: 0,
   switches: 0,
+  boardings: 0,
+  onEnemyDeck: 0,
+  meleeKills: 0,
+  meleeDealt: 0,
+  meleeTaken: 0,
+  pistolShots: 0,
+  pistolHits: 0,
+  pistolDealt: 0,
 });
 
 /** Base stat for a Lee type from tuning (live), falling back to its content stats. */
@@ -170,6 +242,8 @@ export function createLee(id: number, number: number, def: LeeDef, side: Side, b
     number,
     def,
     side,
+    boat,
+    deck: boat,
     home,
     tile: home,
     pos: { ...tile.center },
@@ -183,8 +257,16 @@ export function createLee(id: number, number: number, def: LeeDef, side: Side, b
     maxHp,
     alive: true,
     lostAt: null,
+    lostCause: null,
     hurtAt: -99,
+    swing: null,
+    engaged: false,
+    meleeTarget: null,
+    meleeCd: 0.5,
+    pistolCd: 0.5 + (id % 7) * 0.13,
+    firedAt: -99,
     reason: `home: ${roleName(boat, home)}`,
+    whyBoarded: '',
     score: 0,
     options: [],
     stats: emptyRunStats(),
@@ -218,28 +300,40 @@ export function workKind(boat: Boat, task: Task): WorkKind | null {
       return 'repair';
     case 'bail':
       return 'bail';
+    case 'board':
+      return 'board';
+    case 'repel':
+      return 'repel';
     default:
       return null;
   }
 }
 
 /** What a Lee is doing right now, for icons and stats. */
-export function activity(lee: Lee, boat: Boat): ActivityKind {
-  if (!lee.working) return lee.path.length || dist(lee.pos, boat.grid.tiles[lee.dest].center) > 0.05 ? 'walk' : 'idle';
-  return workKind(boat, lee.task) ?? 'idle';
+export function activity(lee: Lee, _boat?: Boat): ActivityKind {
+  if (lee.swing) return 'swing';
+  if (lee.engaged) return 'melee';
+  if (lee.deck !== lee.boat) return 'board';
+  const deck = lee.deck;
+  if (!lee.working) return lee.path.length || dist(lee.pos, deck.grid.tiles[lee.dest]?.center ?? lee.pos) > 0.05 ? 'walk' : 'idle';
+  return workKind(deck, lee.task) ?? 'idle';
 }
+
+/** Is this Lee standing on an enemy deck (boarding)? */
+export const isAboardEnemy = (lee: Lee): boolean => lee.deck !== lee.boat;
 
 // ------------------------------------------------------------ stats
 
 /** A Lee's effective stat: type stat × player crew bonus × passive abilities (own and neighbors'). */
-export function leeStat(lee: Lee, key: LeeStatKey, boat: Boat, t: Tuning): number {
+export function leeStat(lee: Lee, key: LeeStatKey, _boat: Boat, t: Tuning): number {
   let v = typeStat(lee.def, key, t) * (lee.side === 'player' ? t.global.playerCrewStats : 1);
   for (const a of lee.def.abilities) {
     if (a.trigger === 'passive' && a.target === 'self' && a.stat === key) v *= a.multiply;
   }
-  const here = boat.grid.tiles[lee.tile];
-  for (const other of boat.crew.lees) {
-    if (other === lee || !other.alive || !here.neighbors.includes(other.tile)) continue;
+  const here = lee.deck.grid.tiles[lee.tile];
+  if (!here) return v;
+  for (const other of lee.boat.crew.lees) {
+    if (other === lee || !other.alive || other.deck !== lee.deck || other.swing || !here.neighbors.includes(other.tile)) continue;
     for (const a of other.def.abilities) {
       if (a.trigger === 'passive' && a.target === 'orthogonalNeighbors' && a.stat === key) v *= a.multiply;
     }
@@ -256,9 +350,11 @@ export function wetFactor(lee: Lee, boat: Boat, t: Tuning): number {
   return isWet(lee, boat, t) ? 1 - Math.min(1, Math.max(0, t.crew.wetSlowdown)) : 1;
 }
 
-export function isWet(lee: Lee, boat: Boat, t: Tuning): boolean {
-  const tile = tileAt(boat.grid, lee.pos, 1) ?? boat.grid.tiles[lee.tile];
-  const part = boat.parts[tile.part];
+export function isWet(lee: Lee, _boat: Boat, t: Tuning): boolean {
+  if (lee.swing) return false;
+  const deck = lee.deck;
+  const tile = tileAt(deck.grid, lee.pos, 1) ?? deck.grid.tiles[lee.tile];
+  const part = deck.parts[tile.part];
   return part.capacity > 0 && part.water / part.capacity >= t.crew.wetThreshold;
 }
 
@@ -271,9 +367,75 @@ export function liveLees(boat: Boat): Lee[] {
 /** The Lee working a station right now, if any. */
 export function workerAt(boat: Boat, tile: number): Lee | null {
   for (const l of boat.crew.lees) {
-    if (l.alive && l.working && l.task.type === 'station' && l.task.target === tile) return l;
+    if (l.alive && l.working && !l.engaged && l.deck === boat && l.task.type === 'station' && l.task.target === tile) return l;
   }
   return null;
+}
+
+/** Living Lees standing (not swinging) on a deck, either side. */
+export function leesOn(deck: Boat, lees: Lee[]): Lee[] {
+  return lees.filter((l) => l.alive && !l.swing && l.deck === deck);
+}
+
+/** Living Lees of `side`'s opponents standing on a deck. */
+export function foesOn(deck: Boat, side: Side, lees: Lee[]): Lee[] {
+  return lees.filter((l) => l.alive && !l.swing && l.deck === deck && l.side !== side);
+}
+
+/** The tile a Lee is standing on (by position, falling back to its last tile). */
+export function standingTile(lee: Lee): number {
+  return (tileAt(lee.deck.grid, lee.pos, 1) ?? lee.deck.grid.tiles[lee.tile]).index;
+}
+
+/** The tile of `from` closest to `target`'s hull: where a Lee swings across from. Ties by tile index. */
+export function departureTile(from: Boat, target: Boat): number {
+  const [s0, s1] = keelSegment(target);
+  let best = 0;
+  let bestD = Infinity;
+  for (const tile of from.grid.tiles) {
+    const w = toWorld(tile.center, from.motion, from.motion.heading);
+    const d = dist(w, closestOnSegment(w, s0, s1));
+    if (d < bestD - 1e-9) {
+      bestD = d;
+      best = tile.index;
+    }
+  }
+  return best;
+}
+
+/** The tile of `deck` nearest a world point (where a swinging Lee lands). Ties by tile index. */
+export function landingTile(deck: Boat, world: Vec): number {
+  const l = toLocal(world, deck.motion, deck.motion.heading);
+  let best = 0;
+  let bestD = Infinity;
+  for (const tile of deck.grid.tiles) {
+    const d = dist(l, tile.center);
+    if (d < bestD - 1e-9) {
+      bestD = d;
+      best = tile.index;
+    }
+  }
+  return best;
+}
+
+/** Opposing boats linked to this one (link not breaking) that have enemy crew standing on them: somewhere to board. */
+export function boardableFrom(boat: Boat, ctx: CrewContext): Boat[] {
+  if (!ctx.links) return [];
+  const lees = ctx.lees ?? boat.crew.lees;
+  const evac = ctx.tuning.boarding.evacuateAt;
+  const out: Boat[] = [];
+  for (const l of ctx.links.linksOf(boat)) {
+    if (l.breakAt !== null) continue;
+    const o = ctx.links.other(l, boat);
+    if (o.side === boat.side || o.sinkingSince !== null || sinkProgress(o, ctx.tuning) >= evac) continue;
+    if (foesOn(o, boat.side, lees).length) out.push(o);
+  }
+  return out.sort((a, b) => a.id - b.id);
+}
+
+/** Is this boat attached to anything right now (propulsion overridden)? */
+export function isAttached(boat: Boat, ctx: CrewContext): boolean {
+  return !!ctx.links && ctx.links.linksOf(boat).length > 0;
 }
 
 /** The Lee holding a claim on a station (working it or walking to it). */
@@ -287,13 +449,14 @@ export function claimantOf(boat: Boat, tile: number): Lee | null {
 /** Is the enemy in this gun's arc and range `at` seconds from now (straight-line prediction)? */
 export function cannonEngages(boat: Boat, c: CannonState, ctx: CrewContext, at: number): boolean {
   const m = boat.motion;
-  const ct = boatTuning(boat.side, ctx.tuning).cannons;
+  const ct = boatTuning(boat, ctx.tuning).cannons;
   const h = m.heading + m.omega * at;
   const muzzle = toWorld({ x: c.local.x, y: c.local.y + c.broadside * 0.8 }, { x: m.x + m.vx * at, y: m.y + m.vy * at }, h);
   const face = h + (c.broadside * Math.PI) / 2;
   for (const f of ctx.foes) {
     const p = { x: f.motion.x + f.motion.vx * at, y: f.motion.y + f.motion.vy * at };
-    if (dist(muzzle, p) > cannonRange(boat, ctx.tuning)) continue;
+    const d = dist(muzzle, p);
+    if (d > cannonRange(boat, ctx.tuning) || d < ct.minRange) continue;
     if (Math.abs(wrapAngle(Math.atan2(p.y - muzzle.y, p.x - muzzle.x) - face)) <= ct.arc * DEG) return true;
   }
   return false;
@@ -302,6 +465,16 @@ export function cannonEngages(boat: Boat, c: CannonState, ctx: CrewContext, at: 
 // ------------------------------------------------------------ needs
 
 const pct = (f: number) => `${Math.round(f * 100)}%`;
+
+/** Short name for a boat in reasons (its ship type name, or "your boat"). */
+export function boatLabel(b: Boat): string {
+  return b.side === 'player' ? 'your boat' : `${shipName(b.type)} #${b.id - 1}`;
+}
+
+/** Short name for a Lee in reasons. */
+export function leeLabel(l: Lee): string {
+  return `${l.side === 'player' ? '' : 'enemy '}#${l.number}`;
+}
 
 function claimed(boat: Boat, key: string): boolean {
   return boat.crew.lees.some((l) => l.alive && taskKey(l.task) === key);
@@ -315,7 +488,12 @@ export function computeNeeds(boat: Boat, ctx: CrewContext): Need[] {
   const span = L.severitySpan;
   const out: Need[] = [];
   const sink = sinkProgress(boat, t);
-  const offlineAt = boatTuning(boat.side, t).function.cannonOfflineAt;
+  const offlineAt = boatTuning(boat, t).function.cannonOfflineAt;
+
+  const attached = isAttached(boat, ctx);
+  const attachedNames = attached && ctx.links ? ctx.links.attachedTo(boat).map((b) => boatLabel(b)).join(', ') : '';
+  // While attached the lookout has nothing to spot unless some gun target is still out there.
+  const spotting = !attached || ctx.foes.length > 0;
 
   // Stations, in tile order.
   for (const tile of boat.grid.tiles) {
@@ -327,14 +505,32 @@ export function computeNeeds(boat: Boat, ctx: CrewContext): Need[] {
     if (tile.station === 'cannon') {
       const cannon = boat.cannons.find((c) => c.station === tile.index);
       if (!cannon || !cannonOnline(boat, cannon, t)) continue;
-      out.push({ key, task, tier: 'idleCannon', base: L.idleCannon, label: tile.label, why: 'no target', cannon });
+      out.push({ key, task, tier: 'idleCannon', base: L.idleCannon, label: tile.label, why: attached ? `no valid target (attached to ${attachedNames})` : 'no target', cannon });
     } else if (tile.station === 'lookout') {
-      out.push({ key, task, tier: 'lookout', base: L.lookout + span * 0.5, label: tile.label, why: 'lookout empty' });
+      if (spotting) out.push({ key, task, tier: 'lookout', base: L.lookout + span * 0.5, label: tile.label, why: 'lookout empty' });
+      else out.push({ key, task, tier: 'idleCannon', base: L.idleCannon, label: tile.label, why: 'nothing to spot', surplus: true });
+    } else if (attached) {
+      // Propulsion and steering are overridden while attached: nothing to do here.
+      out.push({ key, task, tier: 'idleCannon', base: L.idleCannon, label: tile.label, why: `attached to ${attachedNames}: ${tile.station} do nothing`, surplus: true });
     } else {
       // Oars slightly ahead of sails: speed is the bigger loss.
       const sev = tile.station === 'oars' ? 0.6 : 0.4;
       out.push({ key, task, tier: 'mobility', base: L.mobility + span * sev, label: tile.label, why: `${tile.station} empty` });
     }
+  }
+
+  // Enemy Lees on our deck: go fight them (the weakest first, by severity).
+  const lees = ctx.lees ?? boat.crew.lees;
+  for (const e of foesOn(boat, boat.side, lees).sort((a, b) => a.id - b.id)) {
+    const task: Task = { type: 'repel', target: e.id };
+    const hurt = 1 - e.hp / Math.max(1, e.maxHp);
+    out.push({ key: taskKey(task), task, tier: 'repelBoarders', base: L.repelBoarders + span * (0.5 + 0.5 * hurt), label: `Repel ${leeLabel(e)}`, why: `boarder on deck at ${boat.grid.tiles[standingTile(e)].label}` });
+  }
+
+  // An attached enemy boat with crew aboard: surplus Lees board it.
+  for (const o of boardableFrom(boat, ctx)) {
+    const task: Task = { type: 'board', target: o.id };
+    out.push({ key: taskKey(task), task, tier: 'board', base: L.board, label: `Board ${boatLabel(o)}`, why: 'surplus crew → swing across' });
   }
 
   boat.parts.forEach((part, i) => {
@@ -397,8 +593,16 @@ function walkTime(lee: Lee, dest: number, boat: Boat, t: Tuning): number {
 }
 
 /** Where a Lee would work a task from. Repairs/bails pick the closest free tile of the part. */
-function destFor(lee: Lee, task: Task, boat: Boat, t: Tuning): number {
+function destFor(lee: Lee, task: Task, boat: Boat, t: Tuning, ctx?: CrewContext): number {
   if (task.type === 'station') return task.target;
+  if (task.type === 'board') {
+    const target = ctx?.links?.attachedTo(boat).find((b) => b.id === task.target);
+    return target ? departureTile(boat, target) : -1;
+  }
+  if (task.type === 'repel') {
+    const e = (ctx?.lees ?? []).find((l) => l.id === task.target);
+    return e && e.alive && e.deck === boat && !e.swing ? standingTile(e) : -1;
+  }
   if (task.type === 'idle') {
     // Home, unless someone else is working its home station right now.
     const other = workerAt(boat, lee.home);
@@ -419,12 +623,19 @@ function destFor(lee: Lee, task: Task, boat: Boat, t: Tuning): number {
   return best;
 }
 
-function evaluate(lee: Lee, need: Need | null, othersOnIt: number, boat: Boat, ctx: CrewContext): Option | null {
+/** Points lost per other Lee already on this kind of job. Boarding has none; fighting boarders little (ganging up works). */
+function helpCost(type: TaskType, t: Tuning): number {
+  if (type === 'board' || type === 'idle' || type === 'station') return 0;
+  if (type === 'repel') return Math.max(0, t.boarding.repelHelpPenalty);
+  return t.crewAI.helpPenalty;
+}
+
+function evaluate(lee: Lee, need: Need | null, othersOnIt: number, boat: Boat, ctx: CrewContext, boardingOpen = false): Option | null {
   const t = ctx.tuning;
   const ai = t.crewAI;
   const L = t.ladder;
   const task = need ? need.task : IDLE;
-  const dest = destFor(lee, task, boat, t);
+  const dest = destFor(lee, task, boat, t, ctx);
   if (dest < 0) return null;
   const walk = walkTime(lee, dest, boat, t);
   let tier: LadderTier | null = need ? need.tier : null;
@@ -439,20 +650,24 @@ function evaluate(lee: Lee, need: Need | null, othersOnIt: number, boat: Boat, c
     why = engage ? (claimantOf(boat, need.task.target) === lee ? 'enemy in arc' : 'enemy in arc, unmanned') : 'no target';
   }
   const atHome = dest === lee.home;
+  // Surplus: while there's an enemy deck to board, a station that does nothing
+  // right now (or standing by) holds no pull: no home/role bonus, no stickiness.
+  const surplus = boardingOpen && (!need || tier === 'idleCannon' || !!need.surplus);
+  if (surplus && need?.cannon) why = `${need.why}`;
   // Walking costs the time an urgent task goes undone. Standing by, or a gun
   // with nothing to shoot, loses nothing on the way.
   const urgent = tier !== null && tier !== 'idleCannon';
   let score = base - (urgent ? ai.walkPenalty * walk : 0);
-  if (atHome) score += ai.homeBonus;
+  if (atHome && !surplus) score += ai.homeBonus;
   // Damage control's home job is standing by, ready.
-  if (!need && atHome && !boat.grid.tiles[lee.home].station) score += ai.standbyBonus;
+  if (!need && atHome && !surplus && !boat.grid.tiles[lee.home].station) score += ai.standbyBonus;
   const kind = workKind(boat, task);
   if (kind) {
-    if (homeRole(lee, boat).includes(kind)) score += ai.roleBonus;
+    if (homeRole(lee, boat).includes(kind) && !surplus) score += ai.roleBonus;
     score += lee.def.affinities[kind] ?? 0;
     score += ai.statAffinity * (leeStat(lee, WORK_STAT[kind], boat, t) - 1);
   }
-  score -= ai.helpPenalty * othersOnIt;
+  score -= helpCost(task.type, t) * othersOnIt;
   const label = need ? need.label : atHome ? 'Home' : 'Stand by';
   return {
     lee,
@@ -464,8 +679,8 @@ function evaluate(lee: Lee, need: Need | null, othersOnIt: number, boat: Boat, c
     score,
     tierWeight: tier ? L[tier] : -Infinity,
     label,
-    why: atHome && !need ? 'home' : why,
-    needed: urgent || atHome,
+    why: atHome && !need ? (surplus ? 'standing by with nothing to do while attached (surplus)' : 'home') : why,
+    needed: urgent || (atHome && !surplus),
   };
 }
 
@@ -496,6 +711,8 @@ function endedWhy(lee: Lee, boat: Boat, t: Tuning): string {
     return isWrecked(part) ? 'wrecked' : 'patched';
   }
   if (task.type === 'bail') return 'dry';
+  if (task.type === 'board') return 'nobody left to fight there';
+  if (task.type === 'repel') return 'boarder gone';
   return 'done';
 }
 
@@ -507,6 +724,10 @@ function describeTask(task: Task, boat: Boat): string {
       return `Repair ${boat.parts[task.target].def.label}`;
     case 'bail':
       return `Bail ${boat.parts[task.target].def.label}`;
+    case 'board':
+      return 'Board';
+    case 'repel':
+      return 'Repel boarder';
     default:
       return 'stand by';
   }
@@ -516,13 +737,22 @@ function describeTask(task: Task, boat: Boat): string {
 export function thinkCrew(boat: Boat, ctx: CrewContext): void {
   const t = ctx.tuning;
   const ai = t.crewAI;
-  const lees = liveLees(boat);
+  const all = liveLees(boat);
+  // Engaged Lees are forced to fight; boarders and swingers follow the boarder rules.
+  const lees = all.filter((l) => l.deck === boat && !l.swing && !l.engaged);
+  for (const l of all) {
+    if (l.engaged && l.deck === boat) l.reason = `engaged: fighting on ${boat.grid.tiles[standingTile(l)].label}`;
+  }
   const needs = computeNeeds(boat, ctx);
   boat.crew.needs = needs;
+  const boardingOpen = needs.some((n) => n.task.type === 'board');
+  // Minimum home crew: boarding stops once only this many would be left aboard.
+  const minHome = Math.max(0, Math.round(t.boarding.minHomeCrew));
+  let aboard = all.filter((l) => l.deck === boat && !l.swing && l.task.type !== 'board').length;
 
   // Who holds what right now (a Lee walking to a task holds its claim).
   const holders = new Map<string, Set<number>>();
-  for (const l of lees) {
+  for (const l of all) {
     const k = taskKey(l.task);
     if (!holders.has(k)) holders.set(k, new Set());
     holders.get(k)!.add(l.id);
@@ -542,7 +772,7 @@ export function thinkCrew(boat: Boat, ctx: CrewContext): void {
       const k = need ? need.key : taskKey(IDLE);
       const others = need && need.task.type !== 'idle' ? othersOn(k, lee) : 0;
       if (need?.task.type === 'station' && others > 0) continue; // one Lee per station
-      const o = evaluate(lee, need, others, boat, ctx);
+      const o = evaluate(lee, need, others, boat, ctx, boardingOpen);
       if (!o) continue;
       mine.push(o);
       if (k === curKey) current = o;
@@ -575,8 +805,11 @@ export function thinkCrew(boat: Boat, ctx: CrewContext): void {
       if (!isCurrent && h && [...h].some((id) => id !== lee.id)) continue;
     }
     const k = keep.get(lee.id)!;
-    const score = o.score - (o.task.type === 'idle' ? 0 : ai.helpPenalty * (joined.get(o.key) ?? 0));
+    const score = o.score - helpCost(o.task.type, t) * (joined.get(o.key) ?? 0);
     if (!isCurrent && score <= k.value) continue;
+    if (o.task.type === 'board' && !isCurrent && aboard - 1 < minHome) continue;
+    if (o.task.type === 'board' && !isCurrent) aboard--;
+    else if (lee.task.type === 'board' && !isCurrent) aboard++;
     decided.add(lee.id);
     if (o.task.type === 'station') takenStations.add(o.key);
     if (isCurrent) {
@@ -594,8 +827,12 @@ export function thinkCrew(boat: Boat, ctx: CrewContext): void {
         : !prev
           ? `abandoned ${from}: ${endedWhy(lee, boat, t)} → `
           : lee.task.type === 'idle'
-            ? ''
-            : `left ${from} (${Math.round(prev.score)} < ${Math.round(o.score)}) → `;
+            ? prev.why.includes('surplus')
+              ? `${prev.why.replace(' (surplus)', '')} → `
+              : ''
+            : !prev.needed && o.task.type === 'board'
+              ? `${from}: ${prev.why} → `
+              : `left ${from} (${Math.round(prev.score)} < ${Math.round(o.score)}) → `;
     holders.get(taskKey(lee.task))?.delete(lee.id);
     if (!holders.has(o.key)) holders.set(o.key, new Set());
     holders.get(o.key)!.add(lee.id);
@@ -603,7 +840,7 @@ export function thinkCrew(boat: Boat, ctx: CrewContext): void {
     lee.taskSince = ctx.time;
     lee.score = score;
     lee.stats.switches++;
-    const helping = (holders.get(o.key)?.size ?? 1) > 1 ? ' (helping)' : '';
+    const helping = (holders.get(o.key)?.size ?? 1) > 1 && o.task.type !== 'board' ? ' (helping)' : '';
     lee.reason = `${leaving}${o.label}: ${o.why}${helping}`;
     setDestination(lee, o.dest, boat);
   }
@@ -649,31 +886,62 @@ export interface CrewStepResult {
   /** HP repaired this step per part index. */
   repaired: number;
   bailed: number;
+  /** Lees that swung across to board this step. */
+  boarded: Lee[];
+  /** Lees that landed back home this step. */
+  returned: Lee[];
 }
 
-/** Decide (on the think interval), walk, and work. Gun loading happens in the world (it owns cannons). */
+/**
+ * Decide (on the think interval), walk, swing and work. Gun loading happens in
+ * the world (it owns cannons); melee and pistols in combat.ts.
+ */
 export function stepCrew(boat: Boat, ctx: CrewContext, dt: number): CrewStepResult {
   const t = ctx.tuning;
-  const out = { repaired: 0, bailed: 0 };
+  const out: CrewStepResult = { repaired: 0, bailed: 0, boarded: [], returned: [] };
   if (boat.sinkingSince !== null) {
-    for (const l of boat.crew.lees) l.working = false;
+    for (const l of boat.crew.lees) if (l.deck === boat) l.working = false;
     updateMobility(boat, t);
     return out;
   }
   boat.crew.thinkIn -= dt;
   if (boat.crew.thinkIn <= 0) {
     thinkCrew(boat, ctx);
+    thinkBoarders(boat, ctx);
     boat.crew.thinkIn += Math.max(0.02, t.crewAI.thinkInterval);
     if (boat.crew.thinkIn <= 0) boat.crew.thinkIn = Math.max(0.02, t.crewAI.thinkInterval);
   }
 
   for (const lee of boat.crew.lees) {
     if (!lee.alive) continue;
-    walk(lee, boat, t, dt);
+    if (lee.swing) {
+      const landed = stepSwing(lee, ctx, dt);
+      lee.stats.time.swing += dt;
+      lee.stats.awayFromHome += dt;
+      if (landed) (lee.deck === boat ? out.returned : out.boarded).push(lee);
+      lee.progress = 0;
+      continue;
+    }
+    if (!lee.engaged) walk(lee, lee.deck, t, dt);
+    else lee.working = false;
     const act = activity(lee, boat);
     lee.stats.time[act] += dt;
-    if (dist(lee.pos, boat.grid.tiles[lee.home].center) > 0.3) lee.stats.awayFromHome += dt;
-    if (!lee.working) {
+    const away = lee.deck !== boat;
+    if (away) lee.stats.onEnemyDeck += dt;
+    if (away || dist(lee.pos, boat.grid.tiles[lee.home].center) > 0.3) lee.stats.awayFromHome += dt;
+    if (away || !lee.working || lee.engaged) {
+      lee.progress = 0;
+      continue;
+    }
+    // At the departure tile: swing across.
+    if (lee.task.type === 'board') {
+      const target = ctx.links?.attachedTo(boat).find((b) => b.id === lee.task.target);
+      const link = target ? ctx.links!.linkBetween(boat, target) : null;
+      if (target && link && link.breakAt === null) {
+        lee.whyBoarded = lee.reason.split(' | ')[0];
+        startSwing(lee, target, false, `swinging across to ${boatLabel(target)}`, t);
+        lee.reason = `${lee.whyBoarded} | swinging across`;
+      }
       lee.progress = 0;
       continue;
     }
@@ -681,12 +949,12 @@ export function stepCrew(boat: Boat, ctx: CrewContext, dt: number): CrewStepResu
     const task = lee.task;
     if (task.type === 'repair') {
       const part = boat.parts[task.target];
-      const s = structure(part);
-      const cap = s.maxHp * Math.min(1, Math.max(0, t.crew.repairCeiling));
+      const st = structure(part);
+      const cap = st.maxHp * Math.min(1, Math.max(0, t.crew.repairCeiling));
       const rate = t.crew.repairRate * leeStat(lee, 'repairRate', boat, t) * wet;
-      const add = Math.max(0, Math.min(rate * dt, cap - s.hp));
-      if (s.hp > 0 || t.crew.wreckedRepairable > 0) {
-        s.hp += add;
+      const add = Math.max(0, Math.min(rate * dt, cap - st.hp));
+      if (st.hp > 0 || t.crew.wreckedRepairable > 0) {
+        st.hp += add;
         lee.stats.hpRepaired += add;
         out.repaired += add;
       }
@@ -709,6 +977,113 @@ export function stepCrew(boat: Boat, ctx: CrewContext, dt: number): CrewStepResu
   }
   updateMobility(boat, t);
   return out;
+}
+
+// ------------------------------------------------------------ boarding
+
+/** Leap from the Lee's deck to `to`, landing on the tile nearest where it left. */
+export function startSwing(lee: Lee, to: Boat, back: boolean, why: string, t: Tuning): void {
+  const from = lee.deck;
+  const world = toWorld(lee.pos, from.motion, from.motion.heading);
+  const speed = Math.max(0.05, leeStat(lee, 'swingSpeed', lee.boat, t));
+  lee.swing = {
+    from,
+    to,
+    fromLocal: { ...lee.pos },
+    toTile: landingTile(to, world),
+    t: 0,
+    dur: Math.max(0.05, t.boarding.swingTime / speed),
+    back,
+    why,
+  };
+  lee.engaged = false;
+  lee.working = false;
+  lee.path = [];
+  lee.progress = 0;
+}
+
+/** Advance a swing. Returns true when the Lee lands. */
+function stepSwing(lee: Lee, ctx: CrewContext, dt: number): boolean {
+  const s = lee.swing!;
+  s.t += dt;
+  if (s.t < s.dur) return false;
+  // Land.
+  lee.swing = null;
+  lee.deck = s.to;
+  lee.tile = s.toTile;
+  lee.pos = { ...s.to.grid.tiles[s.toTile].center };
+  lee.path = [];
+  lee.dest = s.toTile;
+  lee.working = false;
+  if (s.back) {
+    lee.task = IDLE;
+    lee.taskSince = ctx.time;
+    lee.reason = `swung home: ${s.why}`;
+  } else {
+    lee.stats.boardings++;
+    lee.task = { type: 'board', target: s.to.id };
+    lee.taskSince = ctx.time;
+    lee.reason = `landed on ${boatLabel(s.to)}: hunting`;
+  }
+  return true;
+}
+
+/** Why a boarder should leave the deck it's on, or null to stay and fight. */
+export function recallWhy(lee: Lee, ctx: CrewContext): string | null {
+  const deck = lee.deck;
+  const lees = ctx.lees ?? lee.boat.crew.lees;
+  const link = ctx.links?.linkBetween(deck, lee.boat) ?? null;
+  if (link && link.breakAt !== null) return `link breaking (${link.breakReason ?? 'released'})`;
+  if (deck.sinkingSince !== null) return `${boatLabel(deck)} is sinking`;
+  if (sinkProgress(deck, ctx.tuning) >= ctx.tuning.boarding.evacuateAt) return `${boatLabel(deck)} about to sink`;
+  if (!foesOn(deck, lee.side, lees).length) return `${boatLabel(deck)} deck clear`;
+  return null;
+}
+
+/**
+ * The boarder rules, for this crew's Lees standing on an enemy deck: swing home
+ * when the deck is clear, sinking, or the link is breaking; otherwise walk to
+ * the nearest enemy Lee (walking distance, then id) to fight it. Deterministic.
+ */
+export function thinkBoarders(boat: Boat, ctx: CrewContext): void {
+  const lees = ctx.lees ?? boat.crew.lees;
+  for (const lee of boat.crew.lees) {
+    if (!lee.alive || lee.swing || lee.deck === boat) continue;
+    const deck = lee.deck;
+    const why = recallWhy(lee, ctx);
+    if (why) {
+      const link = ctx.links?.linkBetween(deck, boat) ?? null;
+      if (link) {
+        startSwing(lee, boat, true, why, ctx.tuning);
+        lee.reason = `recall: ${why} → swinging home`;
+        continue;
+      }
+      if (!lee.engaged) lee.reason = `stranded on ${boatLabel(deck)}: ${why}`;
+    }
+    if (lee.engaged) {
+      lee.reason = `boarding ${boatLabel(deck)}: engaged in melee`;
+      continue;
+    }
+    const foes = foesOn(deck, lee.side, lees);
+    if (!foes.length) {
+      if (lee.path.length === 0) lee.working = true;
+      continue;
+    }
+    const here = lee.path.length ? lee.path[0] : lee.tile;
+    let best: Lee | null = null;
+    let bestD = Infinity;
+    for (const f of foes) {
+      const d = deck.grid.dist[here][standingTile(f)];
+      if (d < bestD - 1e-9 || (Math.abs(d - bestD) <= 1e-9 && best && f.id < best.id)) {
+        bestD = d;
+        best = f;
+      }
+    }
+    if (!best) continue;
+    const dest = standingTile(best);
+    lee.reason = `boarding ${boatLabel(deck)}: going for ${leeLabel(best)} at ${deck.grid.tiles[dest].label}`;
+    if (lee.dest !== dest || (!lee.path.length && lee.tile !== dest)) setDestination(lee, dest, deck);
+  }
 }
 
 function walk(lee: Lee, boat: Boat, t: Tuning, dt: number): void {
@@ -753,7 +1128,7 @@ export function updateMobility(boat: Boat, t: Tuning): void {
   }
   if (boat.sinkingSince === null) {
     for (const l of boat.crew.lees) {
-      if (!l.alive || !l.working || l.task.type !== 'station') continue;
+      if (!l.alive || !l.working || l.engaged || l.deck !== boat || l.task.type !== 'station') continue;
       const s = boat.grid.tiles[l.task.target].station;
       const wet = wetFactor(l, boat, t);
       if (s === 'oars') rowing += leeStat(l, 'rowStrength', boat, t) * wet;
@@ -775,34 +1150,48 @@ export interface CrewHit {
   lost: boolean;
 }
 
-/** A shell lands at a local point: Lees on that tile take the hit, neighbors take splash. */
-export function damageCrewAt(boat: Boat, local: Vec, t: Tuning, time: number): CrewHit[] {
-  const struck: Tile | null = tileAt(boat.grid, local, 1.5);
+/**
+ * A shell lands at a local point on `deck`: every Lee standing there (either
+ * side; boarders too) takes the hit, neighbors take splash. `lees` defaults to
+ * the deck's own crew.
+ */
+export function damageCrewAt(deck: Boat, local: Vec, t: Tuning, time: number, lees: Lee[] = deck.crew.lees): CrewHit[] {
+  const struck: Tile | null = tileAt(deck.grid, local, 1.5);
   if (!struck) return [];
   const out: CrewHit[] = [];
-  for (const lee of boat.crew.lees) {
-    if (!lee.alive) continue;
-    const on = tileAt(boat.grid, lee.pos, 1) ?? boat.grid.tiles[lee.tile];
+  for (const lee of lees) {
+    if (!lee.alive || lee.swing || lee.deck !== deck) continue;
+    const on = tileAt(deck.grid, lee.pos, 1) ?? deck.grid.tiles[lee.tile];
     let dmg = 0;
     if (on.index === struck.index) dmg = t.crew.hitDamage;
     else if (struck.neighbors.includes(on.index)) dmg = t.crew.hitDamage * Math.max(0, t.crew.splashFraction);
     if (dmg <= 0) continue;
-    lee.hp -= dmg;
-    lee.hurtAt = time;
-    const lost = lee.hp <= 0;
-    if (lost) loseLee(lee, time);
+    const lost = hurtLee(lee, dmg, time, 'cannon');
     out.push({ lee, damage: dmg, lost });
   }
-  if (out.some((h) => h.lost)) updateMobility(boat, t);
+  if (out.some((h) => h.lost)) for (const b of new Set(out.map((h) => h.lee.boat))) updateMobility(b, t);
   return out;
 }
 
-function loseLee(lee: Lee, time: number): void {
+/** Take damage. Returns true if this killed it. */
+export function hurtLee(lee: Lee, dmg: number, time: number, cause: LossCause): boolean {
+  if (!lee.alive) return false;
+  lee.hp -= dmg;
+  lee.hurtAt = time;
+  if (lee.hp > 0) return false;
+  loseLee(lee, time, cause);
+  return true;
+}
+
+export function loseLee(lee: Lee, time: number, cause: LossCause): void {
   lee.hp = 0;
   lee.alive = false;
   lee.lostAt = time;
+  lee.lostCause = cause;
   lee.working = false;
+  lee.engaged = false;
+  lee.swing = null;
   lee.path = [];
   lee.task = IDLE;
-  lee.reason = 'lost overboard';
+  lee.reason = cause === 'sank' ? 'went down with the ship' : `lost overboard (${cause})`;
 }

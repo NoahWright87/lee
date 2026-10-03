@@ -35,7 +35,7 @@ export function defaultBoatTuning() {
       cannon: { hp: 30, waterCapacity: 10, leakMultiplier: 0.3 },
     },
     crew: {
-      /** Lees aboard (next fight). Yours fill the setup tray; the enemy's come from src/config/crews.ts. */
+      /** Lees aboard (next fight). Yours fill the setup tray; an enemy type's homes come from src/config/ships.ts. */
       size: 6,
     },
     cannons: {
@@ -43,6 +43,8 @@ export function defaultBoatTuning() {
       reloadTime: 3,
       /** Max range, m. */
       range: 130,
+      /** Minimum range, m: a boat closer than this (center to muzzle) can't be shelled by this gun. */
+      minRange: 30,
       /** Half-width of each gun's firing arc around its beam, degrees. */
       arc: 35,
       /** HP damage per shell. */
@@ -91,17 +93,67 @@ export function defaultBoatTuning() {
 export type BoatTuning = ReturnType<typeof defaultBoatTuning>;
 export type PartStatKey = keyof BoatTuning['parts'];
 
+/** AI preferences for an enemy ship type. */
+export function defaultShipAI() {
+  return {
+    /** Distance this type tries to keep from you while orbiting, m. */
+    preferredRange: 85,
+    /** 0 = orbit at preferredRange (cannon boat), 1 = close in to dock or ram, then board. */
+    seekAttach: 0,
+    /** Boarders ram when their heading is within this many degrees of a clean line onto your hull. */
+    ramLine: 20,
+    /** ...and you are closer than this, m. */
+    ramRange: 70,
+  };
+}
+
+/** An enemy ship type's tuning: a full boat block plus its AI. */
+export function defaultShipTuning() {
+  return { ...defaultBoatTuning(), ai: defaultShipAI() };
+}
+
+export type ShipTuning = ReturnType<typeof defaultShipTuning>;
+
 export function defaultTuning() {
   const player = defaultBoatTuning();
-  const enemy = defaultBoatTuning();
-  enemy.cannons.spread = 1.5;
+
+  // Standard (Sloop): what Phase 2 called "the enemy". Orbits at cannon range.
+  const standard = defaultShipTuning();
+  standard.cannons.spread = 1.5;
   // The enemy is a slower, clumsier hull. playerAdvantage stacks on top of this.
-  enemy.movement.cruiseSpeed = 10;
-  enemy.movement.turnRate = 18;
+  standard.movement.cruiseSpeed = 10;
+  standard.movement.turnRate = 18;
   // Fewer hands than you: the test fight should still favor the player. Its guns
   // load faster to make up for rarely having more than one manned on a broadside.
-  enemy.crew.size = 4;
-  enemy.cannons.reloadTime = 2.2;
+  standard.crew.size = 4;
+  standard.cannons.reloadTime = 2.2;
+
+  // Boarder (Friend Ship): fast, light, few guns, a big crew. Wants to close in.
+  const boarder = defaultShipTuning();
+  Object.assign(boarder.movement, { cruiseSpeed: 13.5, turnRate: 24, acceleration: 3.5 });
+  boarder.parts = {
+    bow: { hp: 34, waterCapacity: 14, leakMultiplier: 0.7 },
+    midship: { hp: 60, waterCapacity: 36, leakMultiplier: 1.8 },
+    stern: { hp: 40, waterCapacity: 20, leakMultiplier: 1 },
+    cannon: { hp: 22, waterCapacity: 8, leakMultiplier: 0.4 },
+  };
+  Object.assign(boarder.cannons, { reloadTime: 2.6, range: 110, minRange: 25, spread: 1.8 });
+  boarder.crew.size = 7;
+  Object.assign(boarder.ai, { preferredRange: 30, seekAttach: 1 });
+
+  // Heavy (Hard Ship): big, slow, many guns with wide arcs. Weak inside its minimum range.
+  const heavy = defaultShipTuning();
+  Object.assign(heavy.movement, { cruiseSpeed: 7, turnRate: 10, turnAcceleration: 35, acceleration: 1.6 });
+  heavy.parts = {
+    bow: { hp: 70, waterCapacity: 30, leakMultiplier: 0.5 },
+    midship: { hp: 170, waterCapacity: 110, leakMultiplier: 1.3 },
+    stern: { hp: 100, waterCapacity: 45, leakMultiplier: 0.8 },
+    cannon: { hp: 50, waterCapacity: 16, leakMultiplier: 0.25 },
+  };
+  Object.assign(heavy.cannons, { reloadTime: 3.2, range: 150, minRange: 55, arc: 45, spread: 1.6 });
+  heavy.crew.size = 9;
+  Object.assign(heavy.ai, { preferredRange: 105 });
+
   return {
     global: {
       /**
@@ -124,15 +176,14 @@ export function defaultTuning() {
       enemyStartEast: 90,
     },
     player,
-    enemy,
+    /** Enemy ship types (see src/config/ships.ts): boat stats, crew size and AI per type. */
+    ships: { standard, boarder, heavy } as Record<string, ShipTuning>,
     enemyAI: {
-      /** Distance the enemy tries to keep from you, m. */
-      preferredRange: 85,
       /** Degrees the enemy bends its course per meter it is off its preferred range. */
       rangeCorrection: 1,
       /** How far ahead of itself the enemy places its seek point, m. Bigger = smoother, lazier. */
       lookAhead: 60,
-      /** Each ship's preferred range is randomly ± this much, so a pack spreads out, m. */
+      /** Each ship's preferred range (its type's ai.preferredRange) is randomly ± this much, so a pack spreads out, m. */
       rangeJitter: 15,
       /** Ships in a pack steer apart when closer than this, m. */
       spacing: 70,
@@ -166,6 +217,90 @@ export function defaultTuning() {
       maxIncomingShells: 3,
       /** 1 = enemy shells can hit other enemies (crossfire), 0 = they pass through. */
       friendlyFire: 1,
+      /** 1 = fights 1-3 introduce one ship type each, alone (Sloop, Friend Ship, Hard Ship). 0 = mix from fight 1. */
+      introFights: 1,
+      /** Weights for drawing each ship's type after the intro fights (0 = never). */
+      mix: { standard: 2, boarder: 1, heavy: 1 } as Record<string, number>,
+    },
+    /** Docking, ramming and the links they form. */
+    attach: {
+      /** Hulls this close (m, gap between them) can start grappling. */
+      dockDistance: 5,
+      /** Seconds two boats must stay close and slow before they stick. */
+      grappleTime: 1.5,
+      /** Grappling only counts while the boats move slower than this relative to each other, m/s. */
+      dockRelSpeed: 4.5,
+      /** Seconds for docked boats to ease side by side. */
+      dockEaseTime: 0.7,
+      /** Gap between docked hulls, m (close enough to swing across, not overlapping). */
+      dockGap: 1.2,
+      /** Bow-first contact at or above this closing speed is a ram, m/s. */
+      ramSpeed: 6,
+      /** Damage to the struck part per m/s of closing speed. */
+      ramDamage: 3,
+      /** The rammer's bow takes this fraction of that. */
+      ramSelfDamage: 0.5,
+      /** Rams only count within this many degrees of square-on to the hull (else it's a glancing bump). */
+      ramMaxAngle: 55,
+      /** How far ahead (s) a ram is predicted and shown as an X. */
+      ramWarnTime: 1.6,
+      /** A ram only lands if its X has been up this long; otherwise the contact is a bump. */
+      ramMinWarning: 0.6,
+      /** Bounciness of a bump (0 = dead stop along the contact, 1 = elastic). */
+      bounce: 0.3,
+      /** Most links one boat can have at once. */
+      cap: 2,
+      /** Most links per side (port, starboard, bow, stern). */
+      perSide: 1,
+      /** Speed an attached pair drifts at, m/s. */
+      driftSpeed: 1.2,
+      /** How fast an attached pair slows to its drift speed, 1/s. */
+      driftDecay: 0.9,
+      /** Seconds between pressing Disengage (or a sinking) and the link breaking: boarders swing home meanwhile. */
+      recallWindow: 2,
+      /** Speed each boat is pushed apart with when a link breaks, m/s. */
+      pushSpeed: 3,
+      /** Seconds after a link breaks before the same two boats can dock again. */
+      redockDelay: 3,
+      /** Holding your finger within this many meters of an enemy hull steers you alongside it instead of orbiting. */
+      alongsideGrab: 6,
+    },
+    /** Crossing between attached decks. */
+    boarding: {
+      /** Seconds a baseline Lee takes to swing across (÷ swing speed). */
+      swingTime: 0.9,
+      /** 1 = Lees in mid-swing can be shot by pistols. */
+      swingHittable: 0,
+      /** Boarders leave a deck once its water passes this fraction of the sink line. */
+      evacuateAt: 0.9,
+      /** Always keep at least this many of a crew aboard its own boat (0 = off). */
+      minHomeCrew: 0,
+      /** Points lost per Lee already fighting a boarder (low, so ganging up happens). */
+      repelHelpPenalty: 8,
+    },
+    /** Pistols: every Lee carries one. Hurts opposing Lees; barely scratches boats. */
+    pistol: {
+      /** Damage to a Lee per hit. */
+      damage: 6,
+      /** Damage to a boat part when a shot lands on the hull instead. */
+      boatDamage: 0.3,
+      /** Range, m. Covers the gap between attached boats and a little more. */
+      range: 16,
+      /** Shots per second for a baseline Lee. */
+      rate: 0.45,
+      /** Scatter radius at the muzzle (÷ pistol accuracy), m. Same disk model as cannon spread. */
+      spread: 0.6,
+      /** Extra scatter per meter of distance, m. */
+      spreadPerMeter: 0.08,
+      /** A shot this close to its target Lee hits it, m. */
+      hitRadius: 0.7,
+    },
+    /** Swords: Lees on a shared tile with an opposing Lee fight. Never misses. */
+    melee: {
+      /** Damage per hit. */
+      damage: 4,
+      /** Hits per second for a baseline Lee. */
+      rate: 0.8,
     },
     /** Core stats per Lee type, live (1 = baseline). `hp` applies next fight. */
     lees: Object.fromEntries(Object.entries(LEE_DEFS).map(([id, d]) => [id, { ...d.stats }])) as Record<string, LeeStats>,
@@ -236,10 +371,14 @@ export function defaultTuning() {
       flooding: 100,
       /** Offline guns or a damaged engine → repair. */
       functionDamage: 80,
+      /** Enemy Lees on your deck → go fight them. */
+      repelBoarders: 70,
       /** An unmanned cannon that has (or is about to have) the enemy in arc and range → man it. */
       engageCannon: 60,
       /** Other damaged parts and moderate water → repair / bail. */
       otherDamage: 40,
+      /** Swing across to an attached enemy boat (surplus Lees only). */
+      board: 35,
       /** Empty oars or sails → man them. */
       mobility: 30,
       /** Empty lookout → man it. */
@@ -256,6 +395,8 @@ export function defaultTuning() {
       minTilePx: 46,
       /** Seconds for the panels to slide between setup and fight sizes. */
       panelSlideTime: 0.45,
+      /** Ocean share of the screen while you're attached (the strip expands to show every attached deck). */
+      expandedOceanFraction: 0.5,
     },
     telegraph: {
       /** Enemy shells always give at least this much warning, s. */

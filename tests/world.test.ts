@@ -8,7 +8,7 @@ import { enemiesForFight, World } from '../src/sim/world';
 
 function quiet(t: Tuning): Tuning {
   // No leaks or bilge noise unless a test wants them.
-  for (const b of [t.player, t.enemy]) b.flooding.bilgeRate = 0;
+  for (const b of [t.player, ...Object.values(t.ships)]) b.flooding.bilgeRate = 0;
   return t;
 }
 
@@ -30,7 +30,7 @@ describe('world', () => {
 
   test('lead targeting hits a boat holding course and misses one that turns', () => {
     const t = quiet(defaultTuning());
-    t.enemy.cannons.spread = 0;
+    t.ships.standard.cannons.spread = 0;
     // Steering as in Phase 1 regardless of who mans the oars and sails.
     t.crew.oarBaseline = 1;
     t.crew.sailBaseline = 1;
@@ -110,12 +110,12 @@ describe('world', () => {
     // Guns and engine wrecked: still afloat.
     for (const p of w.enemies[0].parts) if (p.def.id !== 'midship') p.layers[0].hp = 0;
     for (const p of w.enemies[0].parts) p.water = 0;
-    t.enemy.flooding.leakRate = 0;
+    t.ships.standard.flooding.leakRate = 0;
     run(w, 1);
     expect(w.enemies[0].sinkingSince).toBeNull();
     // Flood it.
     const mid = w.enemies[0].parts.find((p) => p.def.id === 'midship')!;
-    mid.water = Math.min(mid.capacity, t.enemy.flooding.sinkThreshold * totalCapacity(w.enemies[0]));
+    mid.water = Math.min(mid.capacity, t.ships.standard.flooding.sinkThreshold * totalCapacity(w.enemies[0]));
     for (const p of w.enemies[0].parts) if (p !== mid) p.water = p.capacity;
     run(w, FIXED_DT * 2);
     expect(w.enemies[0].sinkingSince).not.toBeNull();
@@ -163,7 +163,8 @@ describe('world', () => {
     }
     expect(w.phase).toBe('over');
     expect(w.stats.player.shellsFired).toBeGreaterThan(5);
-    expect(w.stats.enemy.shellsFired).toBeGreaterThan(5);
+    // This weave keeps closing inside the Sloop's minimum range, so it gets fewer shots off.
+    expect(w.stats.enemy.shellsFired).toBeGreaterThan(2);
   });
 });
 
@@ -176,6 +177,8 @@ describe('several attackers and fight progression', () => {
     expect([1, 2, 3, 4, 5].map((f) => enemiesForFight(t, f))).toEqual([1, 2, 3, 3, 3]);
     t.campaign.enemiesAddedPerFight = 0.5;
     expect([1, 2, 3, 4].map((f) => enemiesForFight(t, f))).toEqual([1, 1, 2, 2]);
+    // Fights 1-3 introduce one ship type each; fight 5 is the third "pack" fight.
+    t.campaign.enemiesAddedPerFight = 1;
     const w = new World(t, 1, { fight: 5 });
     expect(w.enemies).toHaveLength(3);
     expect(new Set(w.enemies.map((e) => e.id)).size).toBe(3);
@@ -286,7 +289,7 @@ describe('hits, holes and aim', () => {
       return part;
     };
     const total = () => w.enemies[0].parts.reduce((a, p) => a + p.water, 0);
-    t.enemy.flooding.leakRate = 0;
+    t.ships.standard.flooding.leakRate = 0;
     let before = total();
     shoot('midship');
     expect(total() - before).toBeCloseTo(ct.hitWater, 3);

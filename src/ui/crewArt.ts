@@ -4,7 +4,7 @@
 
 import type { ActivityKind } from '../config/lees';
 
-export type IconKind = ActivityKind | 'cannon' | 'oars' | 'sails' | 'spyglass';
+export type IconKind = ActivityKind | 'cannon' | 'oars' | 'sails' | 'spyglass' | 'pistol' | 'recall';
 
 const INK = '#f6e7c1';
 const OUTLINE = '#1a120a';
@@ -187,6 +187,102 @@ export function drawIcon(ctx: CanvasRenderingContext2D, kind: IconKind, size: nu
           ctx.ellipse(x, y, 7, 11, r, 0, Math.PI * 2);
         }, 2, true);
       }
+      break;
+    case 'melee':
+      // Crossed swords.
+      for (const flip of [1, -1]) {
+        both(() => {
+          ctx.beginPath();
+          ctx.moveTo(32 - 22 * flip, 10);
+          ctx.lineTo(32 + 16 * flip, 50);
+        }, 5);
+        both(() => {
+          ctx.beginPath();
+          ctx.moveTo(32 + 8 * flip, 50);
+          ctx.lineTo(32 + 22 * flip, 40);
+        }, 4);
+      }
+      break;
+    case 'board':
+      // A sword pointing forward with an arrowhead: going over to fight.
+      both(() => {
+        ctx.beginPath();
+        ctx.moveTo(8, 50);
+        ctx.lineTo(50, 14);
+      }, 5);
+      both(() => {
+        ctx.beginPath();
+        ctx.moveTo(10, 36);
+        ctx.lineTo(22, 50);
+      }, 4);
+      both(() => {
+        ctx.beginPath();
+        ctx.moveTo(38, 12);
+        ctx.lineTo(54, 10);
+        ctx.lineTo(52, 26);
+      }, 4);
+      break;
+    case 'repel':
+      // Shield.
+      both(() => {
+        ctx.beginPath();
+        ctx.moveTo(32, 8);
+        ctx.lineTo(52, 16);
+        ctx.quadraticCurveTo(50, 46, 32, 58);
+        ctx.quadraticCurveTo(14, 46, 12, 16);
+        ctx.closePath();
+      }, 3, true);
+      ctx.strokeStyle = OUTLINE;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(32, 16);
+      ctx.lineTo(32, 48);
+      ctx.moveTo(20, 28);
+      ctx.lineTo(44, 28);
+      ctx.stroke();
+      break;
+    case 'swing':
+      // A rope from above, the Lee's arc across.
+      both(() => {
+        ctx.beginPath();
+        ctx.moveTo(32, 4);
+        ctx.lineTo(46, 40);
+      }, 3);
+      both(() => {
+        ctx.beginPath();
+        ctx.arc(32, 22, 26, Math.PI * 0.85, Math.PI * 0.15, true);
+      }, 3);
+      both(() => {
+        ctx.beginPath();
+        ctx.arc(46, 44, 6, 0, Math.PI * 2);
+      }, 3, true);
+      break;
+    case 'recall':
+      // Curved arrow back home.
+      both(() => {
+        ctx.beginPath();
+        ctx.arc(32, 36, 18, Math.PI * 1.9, Math.PI * 0.95, true);
+      }, 5);
+      both(() => {
+        ctx.beginPath();
+        ctx.moveTo(6, 30);
+        ctx.lineTo(15, 42);
+        ctx.lineTo(25, 30);
+      }, 4);
+      break;
+    case 'pistol':
+      both(() => {
+        ctx.beginPath();
+        ctx.moveTo(10, 22);
+        ctx.lineTo(54, 22);
+        ctx.lineTo(54, 32);
+        ctx.lineTo(30, 32);
+        ctx.lineTo(24, 54);
+        ctx.lineTo(12, 52);
+        ctx.lineTo(18, 32);
+        ctx.lineTo(10, 32);
+        ctx.closePath();
+      }, 3, true);
       break;
     case 'idle':
       both(() => {

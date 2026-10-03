@@ -69,10 +69,10 @@ describe('part function', () => {
     const b = make('enemy', t);
     const healthy = motionParams(b, t);
     applyDamage(part(b, 'stern'), 1000);
-    expect(engineFactor(b, t)).toBeCloseTo(t.enemy.function.engineMinFactor);
+    expect(engineFactor(b, t)).toBeCloseTo(t.ships.standard.function.engineMinFactor);
     const wrecked = motionParams(b, t);
-    expect(wrecked.cruiseSpeed).toBeCloseTo(healthy.cruiseSpeed * t.enemy.function.engineMinFactor);
-    expect(wrecked.turnRate).toBeCloseTo(healthy.turnRate * t.enemy.function.engineMinFactor);
+    expect(wrecked.cruiseSpeed).toBeCloseTo(healthy.cruiseSpeed * t.ships.standard.function.engineMinFactor);
+    expect(wrecked.turnRate).toBeCloseTo(healthy.turnRate * t.ships.standard.function.engineMinFactor);
   });
 });
 
@@ -86,18 +86,18 @@ describe('flooding', () => {
 
   test('leak rate = rate × damage fraction × leak multiplier', () => {
     const t = defaultTuning();
-    t.enemy.flooding.spreadRate = 0;
-    t.enemy.flooding.bilgeRate = 0;
+    t.ships.standard.flooding.spreadRate = 0;
+    t.ships.standard.flooding.bilgeRate = 0;
     const b = make('enemy', t);
     const mid = part(b, 'midship');
     applyDamage(mid, 50); // half damaged
     const leaked = stepFlooding(b, t, 1);
-    expect(leaked).toBeCloseTo(t.enemy.flooding.leakRate * 0.5 * t.enemy.parts.midship.leakMultiplier);
+    expect(leaked).toBeCloseTo(t.ships.standard.flooding.leakRate * 0.5 * t.ships.standard.parts.midship.leakMultiplier);
   });
 
   test('water spreads to neighbors and evens out', () => {
     const t = defaultTuning();
-    t.enemy.flooding.bilgeRate = 0;
+    t.ships.standard.flooding.bilgeRate = 0;
     const b = make('enemy', t);
     const bow = part(b, 'bow');
     bow.water = bow.capacity;
@@ -113,16 +113,16 @@ describe('flooding', () => {
     const b = make('enemy', t);
     part(b, 'midship').water = 10;
     stepFlooding(b, t, 1);
-    expect(totalWater(b)).toBeCloseTo(10 - t.enemy.flooding.bilgeRate);
+    expect(totalWater(b)).toBeCloseTo(10 - t.ships.standard.flooding.bilgeRate);
   });
 
   test('water slows the boat along the configured curve', () => {
     const t = defaultTuning();
     const b = make('enemy', t);
     expect(waterFactors(b, t).speed).toBe(1);
-    const line = t.enemy.flooding.sinkThreshold * totalCapacity(b);
+    const line = t.ships.standard.flooding.sinkThreshold * totalCapacity(b);
     part(b, 'midship').water = line / 2;
-    const f = t.enemy.flooding;
+    const f = t.ships.standard.flooding;
     expect(waterFactors(b, t).speed).toBeCloseTo(1 - f.waterSpeedPenalty * Math.pow(0.5, f.waterCurveExponent));
     expect(sinkProgress(b, t)).toBeCloseTo(0.5);
   });
