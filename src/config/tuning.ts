@@ -1,3 +1,5 @@
+import { LEE_DEFS, type LeeStats } from './lees';
+
 // Every gameplay number lives here. The sim reads from a live Tuning object, so
 // most changes apply the next frame. Values marked "next run" in the tuning
 // panel (part HP and capacity, cannon count) are read when a fight is built.
@@ -32,10 +34,12 @@ export function defaultBoatTuning() {
       stern: { hp: 60, waterCapacity: 30, leakMultiplier: 0.9 },
       cannon: { hp: 30, waterCapacity: 10, leakMultiplier: 0.3 },
     },
+    crew: {
+      /** Lees aboard (next fight). Yours fill the setup tray; the enemy's come from src/config/crews.ts. */
+      size: 6,
+    },
     cannons: {
-      /** Guns on each broadside cannon section (next run). */
-      perSide: 2,
-      /** Seconds to load one shot. */
+      /** Seconds for a baseline gunner to load one shot. */
       reloadTime: 3,
       /** Max range, m. */
       range: 130,
@@ -43,7 +47,7 @@ export function defaultBoatTuning() {
       arc: 35,
       /** HP damage per shell. */
       damage: 10,
-      /** Random scatter radius around the aim point, m. */
+      /** Random scatter radius around the aim point for a baseline gunner, m (÷ accuracy and lookout). */
       spread: 2,
       /** Shell flight time = base + perMeter * distance (seconds). */
       flightTimeBase: 1.4,
@@ -86,6 +90,10 @@ export function defaultTuning() {
   // The enemy is a slower, clumsier hull. playerAdvantage stacks on top of this.
   enemy.movement.cruiseSpeed = 10;
   enemy.movement.turnRate = 18;
+  // Fewer hands than you: the test fight should still favor the player. Its guns
+  // load faster to make up for rarely having more than one manned on a broadside.
+  enemy.crew.size = 4;
+  enemy.cannons.reloadTime = 2.2;
   return {
     global: {
       /**
@@ -93,6 +101,8 @@ export function defaultTuning() {
        * (× sqrt). 1 = boats are equal apart from their own tuning.
        */
       playerAdvantage: 1.4,
+      /** Multiplies every core stat of your Lees (1 = same Lees as the enemy). */
+      playerCrewStats: 1,
       /** Seconds of motion the path preview shows. */
       previewHorizon: 6,
       /** How long the sinking animation takes, s. */
@@ -149,6 +159,96 @@ export function defaultTuning() {
       /** 1 = enemy shells can hit other enemies (crossfire), 0 = they pass through. */
       friendlyFire: 1,
     },
+    /** Core stats per Lee type, live (1 = baseline). `hp` applies next fight. */
+    lees: Object.fromEntries(Object.entries(LEE_DEFS).map(([id, d]) => [id, { ...d.stats }])) as Record<string, LeeStats>,
+    crew: {
+      /** HP/s a baseline Lee restores while repairing. */
+      repairRate: 3,
+      /** Water/s a baseline Lee removes while bailing. */
+      bailRate: 1.4,
+      /** Baseline walking speed, m/s. */
+      walkSpeed: 5,
+      /** Baseline Lee HP (next fight). */
+      hp: 40,
+      /** Speed with every oar station empty, as a fraction of fully crewed. */
+      oarBaseline: 0.6,
+      /** Turn rate with every sail station empty, as a fraction of fully crewed. */
+      sailBaseline: 0.6,
+      /** Most a crew can push speed/turning past "fully crewed" (stronger Lees later). */
+      mobilityCap: 1.5,
+      /** Gunner accuracy bonus per manned lookout at baseline spotting (0.3 = +30%). */
+      lookoutBonus: 0.3,
+      /** Repairs can only bring a part back to this fraction of its max HP. */
+      repairCeiling: 0.6,
+      /** 1 = parts at 0 HP can be repaired mid-fight, 0 = wrecked stays wrecked. */
+      wreckedRepairable: 0,
+      /** Damage to each Lee on the tile a shell hits. */
+      hitDamage: 10,
+      /** Fraction of that dealt to Lees on orthogonally neighboring tiles. 0 = direct hits only. */
+      splashFraction: 0.25,
+      /** A part this full of water (fraction of capacity) slows the Lees in it. */
+      wetThreshold: 0.3,
+      /** Work and walking speed lost while wet (0..1). */
+      wetSlowdown: 0.4,
+    },
+    /** Crew AI: how each Lee picks its task. Need points; higher wins. */
+    crewAI: {
+      /** Seconds between crew decisions. */
+      thinkInterval: 0.2,
+      /** A Lee only switches when another task beats its current one by this many points. */
+      stickiness: 20,
+      /** After switching, a Lee keeps its new task at least this long, s (unless the task ends). */
+      commitTime: 1.5,
+      /** Gunners count a cannon as engaging if the enemy is in its arc now or this many seconds ahead. */
+      arcLookahead: 1.5,
+      /** Bonus for tasks worked from the Lee's home tile. */
+      homeBonus: 15,
+      /** Bonus for the kind of work the Lee's home tile sets (gunner → guns, damage control → repair/bail). */
+      roleBonus: 25,
+      /** Bonus for a damage-control Lee standing by at home (so it waits there instead of drifting to low-tier stations). */
+      standbyBonus: 20,
+      /** Points lost per second of walking to reach a task. */
+      walkPenalty: 3,
+      /** Points lost per Lee already on a repair/bail job (so extra hands help only when nothing else needs them). */
+      helpPenalty: 45,
+      /** Points per +1.0 of the stat a task uses (role affinity for stronger Lees). */
+      statAffinity: 10,
+      /** A part this full (fraction) is a flooding emergency. */
+      floodPartAt: 0.55,
+      /** The whole boat this close to its sink line (0..1) is a flooding emergency. */
+      floodSinkAt: 0.5,
+      /** A part this full is worth bailing (lower urgency). */
+      moderateWaterAt: 0.15,
+      /** Bailers stop once a part is this dry. */
+      bailStopAt: 0.04,
+    },
+    /** Urgency ladder: base need points per tier (reorder tiers by changing the numbers). */
+    ladder: {
+      /** Very high water in a part, or the boat near its sink line → bail. */
+      flooding: 100,
+      /** Offline guns or a damaged engine → repair. */
+      functionDamage: 80,
+      /** An unmanned cannon that has (or is about to have) the enemy in arc and range → man it. */
+      engageCannon: 60,
+      /** Other damaged parts and moderate water → repair / bail. */
+      otherDamage: 40,
+      /** Empty oars or sails → man them. */
+      mobility: 30,
+      /** Empty lookout → man it. */
+      lookout: 15,
+      /** Cannons with nothing to shoot at. */
+      idleCannon: 0,
+      /** Extra points within a tier by severity (lowest HP, most water...). */
+      severitySpan: 10,
+    },
+    layout: {
+      /** Ocean share of the screen in setup mode (the deck grid gets the rest). */
+      setupOceanFraction: 0.5,
+      /** Smallest tile on screen in setup mode, CSS px (touch target). */
+      minTilePx: 46,
+      /** Seconds for the panels to slide between setup and fight sizes. */
+      panelSlideTime: 0.45,
+    },
     telegraph: {
       /** Enemy shells always give at least this much warning, s. */
       minWarningTime: 1.2,
@@ -172,7 +272,7 @@ export function defaultTuning() {
       /** How quickly the camera catches up, 1/s. */
       smoothing: 1.2,
       /** Fraction of the strip's width the close-up boat fills. */
-      stripBoatFill: 0.72,
+      stripBoatFill: 0.9,
     },
     input: {
       /** 0 = the target is pinned in the water where you touched (preview stays exact). 1 = target stays under a still finger as the camera moves. */
@@ -188,6 +288,7 @@ export function defaultTuning() {
 }
 
 export type Tuning = ReturnType<typeof defaultTuning>;
+export type LadderTier = Exclude<keyof Tuning['ladder'], 'severitySpan'>;
 export type Side = 'player' | 'enemy';
 
 /** Deep-merge saved values onto defaults, keeping only keys (and types) the defaults know about. */

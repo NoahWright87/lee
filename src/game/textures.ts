@@ -4,8 +4,10 @@
 import Phaser from 'phaser';
 import { ART, GEN_PPM } from '../config/art';
 import type { BoatLayout, PartDef } from '../config/boats';
+import { LEE_DEFS } from '../config/lees';
 import type { Side } from '../config/tuning';
 import { polygonBounds, Rng, type Vec } from '../sim/math';
+import { drawIcon, drawLeeFigure, type IconKind } from '../ui/crewArt';
 
 export const CRACK_STAGES = Math.max(1, ART.cracks.length);
 const PAD = 2;
@@ -50,6 +52,28 @@ export function preloadArt(scene: Phaser.Scene): void {
     if (path) scene.load.image(`art:crack:${i}`, path);
   });
   if (ART.cannonBarrel) scene.load.image('art:barrel', ART.cannonBarrel);
+  for (const def of Object.values(LEE_DEFS)) if (def.art) scene.load.image(`art:lee:${def.id}`, def.art);
+}
+
+const ICONS: IconKind[] = ['gun', 'row', 'sail', 'lookout', 'repair', 'bail', 'walk', 'idle', 'cannon', 'oars', 'sails', 'spyglass'];
+
+/** Texture key for a Lee type's figure (supplied art or the stick figure). */
+export function leeTextureKey(scene: Phaser.Scene, defId: string): string {
+  const art = `art:lee:${defId}`;
+  return scene.textures.exists(art) ? art : 'lee:figure';
+}
+
+/** Lee figure, ghost outline, and every task/station icon. */
+export function buildCrewTextures(scene: Phaser.Scene): void {
+  const make = (key: string, w: number, h: number, draw: (ctx: CanvasRenderingContext2D) => void) => {
+    if (scene.textures.exists(key)) return;
+    const tex = scene.textures.createCanvas(key, w, h)!;
+    draw(tex.getContext());
+    tex.refresh();
+  };
+  make('lee:figure', 96, 160, (ctx) => drawLeeFigure(ctx, 96, 160));
+  make('lee:ghost', 96, 160, (ctx) => drawLeeFigure(ctx, 96, 160, { ghost: true }));
+  for (const k of ICONS) make(`icon:${k}`, 96, 96, (ctx) => drawIcon(ctx, k, 96));
 }
 
 export function partTextureKey(side: Side, layout: BoatLayout, part: PartDef): string {

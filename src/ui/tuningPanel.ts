@@ -21,7 +21,7 @@ const RANGES: Record<string, Range> = {
   hp: [1, 400, 1],
   waterCapacity: [1, 200, 1],
   leakMultiplier: [0, 5, 0.05],
-  perSide: [0, 4, 1],
+  size: [0, 15, 1],
   reloadTime: [0.3, 10, 0.1],
   range: [20, 300, 5],
   arc: [5, 90, 1],
@@ -76,10 +76,52 @@ const RANGES: Record<string, Range> = {
   targetFollowsCamera: [0, 1, 1],
   shellArcHeight: [0, 40, 1],
   oceanReloadRings: [0, 1, 1],
+  playerCrewStats: [0.25, 3, 0.05],
+  repairRate: [0, 20, 0.1],
+  bailRate: [0, 10, 0.1],
+  walkSpeed: [0.5, 15, 0.25],
+  oarBaseline: [0, 1, 0.05],
+  sailBaseline: [0, 1, 0.05],
+  mobilityCap: [1, 3, 0.05],
+  lookoutBonus: [0, 1, 0.05],
+  repairCeiling: [0, 1, 0.05],
+  wreckedRepairable: [0, 1, 1],
+  hitDamage: [0, 60, 1],
+  splashFraction: [0, 1, 0.05],
+  wetThreshold: [0, 1, 0.05],
+  wetSlowdown: [0, 1, 0.05],
+  thinkInterval: [0.05, 2, 0.05],
+  stickiness: [0, 100, 1],
+  commitTime: [0, 10, 0.1],
+  arcLookahead: [0, 5, 0.1],
+  homeBonus: [0, 100, 1],
+  roleBonus: [0, 100, 1],
+  standbyBonus: [0, 100, 1],
+  walkPenalty: [0, 20, 0.5],
+  helpPenalty: [0, 100, 1],
+  statAffinity: [0, 50, 1],
+  floodPartAt: [0, 1, 0.05],
+  floodSinkAt: [0, 1, 0.05],
+  moderateWaterAt: [0, 1, 0.01],
+  bailStopAt: [0, 0.5, 0.01],
+  flooding: [0, 150, 1],
+  functionDamage: [0, 150, 1],
+  engageCannon: [0, 150, 1],
+  otherDamage: [0, 150, 1],
+  mobility: [0, 150, 1],
+  lookout: [0, 150, 1],
+  idleCannon: [0, 150, 1],
+  severitySpan: [0, 50, 1],
+  setupOceanFraction: [0.3, 0.75, 0.01],
+  minTilePx: [30, 90, 1],
+  panelSlideTime: [0, 2, 0.05],
 };
 
+/** Ranges by path prefix, checked before RANGES (Lee stats are multipliers around 1). */
+const PATH_RANGES: [RegExp, Range][] = [[/^lees\./, [0, 3, 0.05]]];
+
 /** Keys read only when a fight is built. */
-const NEXT_RUN = /(^|\.)(parts\..*|cannons\.perSide|global\.enemyStart\w+|campaign\.(packHullScaling|firstFightEnemies|enemiesAddedPerFight|maxEnemies|spawnSpread|repairBetweenFights)|enemyAI\.rangeJitter)$/;
+const NEXT_RUN = /(^|\.)(parts\..*|crew\.size|crew\.hp|lees\.\w+\.hp|global\.enemyStart\w+|campaign\.(packHullScaling|firstFightEnemies|enemiesAddedPerFight|maxEnemies|spawnSpread|repairBetweenFights)|enemyAI\.rangeJitter)$/;
 
 const FOLDER_NAMES: Record<string, string> = {
   global: 'Global',
@@ -96,6 +138,14 @@ const FOLDER_NAMES: Record<string, string> = {
   cannons: 'Cannons',
   function: 'Part function loss',
   flooding: 'Flooding & sinking',
+  'player.crew': 'Crew',
+  'enemy.crew': 'Crew',
+  crew: 'Crew (rates, damage, flooding)',
+  crewAI: 'Crew AI',
+  ladder: 'Urgency ladder (crew)',
+  lees: 'Lee stats (per type)',
+  basic: 'Basic Lee',
+  layout: 'Setup layout',
 };
 
 function autoRange(v: number): Range {
@@ -147,18 +197,21 @@ export class TuningPanel {
     for (const [key, value] of Object.entries(obj)) {
       const p = path ? `${path}.${key}` : key;
       if (value && typeof value === 'object') {
-        const folder = gui.addFolder(FOLDER_NAMES[key] ?? key);
+        const folder = gui.addFolder(FOLDER_NAMES[p] ?? FOLDER_NAMES[key] ?? key);
         this.buildFolder(folder, value as Record<string, unknown>, p);
         if (path) folder.close();
         continue;
       }
       if (typeof value !== 'number') continue;
-      const [min, max, step] = RANGES[key] ?? autoRange(value);
+      const [min, max, step] = PATH_RANGES.find(([re]) => re.test(p))?.[1] ?? RANGES[key] ?? autoRange(value);
       const label = NEXT_RUN.test(p) && !p.includes('.parts.') ? `${key} (next fight)` : key;
       gui
         .add(obj, key, Math.min(min, value), Math.max(max, value), step)
         .name(label)
-        .onChange(() => this.ctl.saveTuning());
+        .onChange(() => {
+          this.ctl.saveTuning();
+          this.ctl.tuningChanged();
+        });
     }
   }
 

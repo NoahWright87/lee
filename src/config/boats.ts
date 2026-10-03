@@ -24,6 +24,27 @@ export interface PartDef {
   broadside?: -1 | 1;
 }
 
+/** What standing on (and working) a tile does. Plain tiles have none. */
+export type StationKind = 'cannon' | 'oars' | 'sails' | 'lookout';
+
+/**
+ * The deck grid Lees stand on. Rows run port (top) to starboard (bottom),
+ * columns stern (left) to bow (right), matching the close-up strip.
+ * `parts` names the part each tile belongs to ('-' = no tile there).
+ * `stations` marks stations: C cannon, O oars, S sails, L lookout, . plain deck.
+ */
+export interface GridDef {
+  cols: number;
+  rows: number;
+  /** Tile size, m (x along the boat, y across it). */
+  tileW: number;
+  tileH: number;
+  /** Local-frame corner of tile (0, 0): its stern-port corner. */
+  origin: Vec;
+  parts: string[];
+  stations: string[];
+}
+
 export interface BoatLayout {
   id: string;
   length: number;
@@ -31,6 +52,7 @@ export interface BoatLayout {
   parts: PartDef[];
   /** Pairs of part ids that share a bulkhead; water spreads between them. */
   adjacency: [string, string][];
+  grid: GridDef;
 }
 
 const rect = (x0: number, y0: number, x1: number, y1: number): Vec[] => [
@@ -40,7 +62,9 @@ const rect = (x0: number, y0: number, x1: number, y1: number): Vec[] => [
   { x: x0, y: y1 },
 ];
 
-/** A small warship: five parts. Used for both boats in the prototype. */
+const BEAM_THIRD = 5 / 3;
+
+/** A small warship: five parts and a 5 × 3 deck. Used for both boats in the prototype. */
 export const SLOOP: BoatLayout = {
   id: 'sloop',
   length: 28,
@@ -66,7 +90,7 @@ export const SLOOP: BoatLayout = {
       role: 'cannon',
       stats: 'cannon',
       art: 'cannon',
-      polygon: rect(-5, -5, 7, -2.5),
+      polygon: rect(-5, -5, 7, -BEAM_THIRD),
       broadside: -1,
     },
     {
@@ -75,7 +99,7 @@ export const SLOOP: BoatLayout = {
       role: 'hull',
       stats: 'midship',
       art: 'midship',
-      polygon: rect(-5, -2.5, 7, 2.5),
+      polygon: rect(-5, -BEAM_THIRD, 7, BEAM_THIRD),
     },
     {
       id: 'starboard',
@@ -84,7 +108,7 @@ export const SLOOP: BoatLayout = {
       stats: 'cannon',
       art: 'cannon',
       flipArt: true,
-      polygon: rect(-5, 2.5, 7, 5),
+      polygon: rect(-5, BEAM_THIRD, 7, 5),
       broadside: 1,
     },
     {
@@ -113,4 +137,22 @@ export const SLOOP: BoatLayout = {
     ['port', 'stern'],
     ['starboard', 'stern'],
   ],
+  // Cannons sit on the cannon stations: two per broadside.
+  grid: {
+    cols: 5,
+    rows: 3,
+    tileW: 4,
+    tileH: 10 / 3,
+    origin: { x: -9, y: -5 },
+    parts: [
+      'stern port      port      port      bow',
+      'stern midship   midship   midship   bow',
+      'stern starboard starboard starboard bow',
+    ],
+    stations: [
+      'O C . C .',
+      '. . S . L',
+      'O C . C .',
+    ],
+  },
 };

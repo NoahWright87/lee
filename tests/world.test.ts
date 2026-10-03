@@ -31,6 +31,9 @@ describe('world', () => {
   test('lead targeting hits a boat holding course and misses one that turns', () => {
     const t = quiet(defaultTuning());
     t.enemy.cannons.spread = 0;
+    // Steering as in Phase 1 regardless of who mans the oars and sails.
+    t.crew.oarBaseline = 1;
+    t.crew.sailBaseline = 1;
     const w = new World(t, 3);
     w.start();
     run(w, 6, () => (w.enemies[0].target = null)); // up to cruise speed first
@@ -68,7 +71,6 @@ describe('world', () => {
     let sawPlayer = 0;
     for (let i = 0; i < 120 / FIXED_DT && (sawEnemy < 3 || sawPlayer < 3); i++) {
       w.player.target = { x: w.enemies[0].motion.x + 60, y: w.enemies[0].motion.y };
-      const before = w.telegraphs.list.length;
       w.step(FIXED_DT);
       for (const e of w.drainEvents()) {
         if (e.type !== 'fire') continue;
@@ -76,9 +78,8 @@ describe('world', () => {
         const shell = w.shells.find((s) => s.to === e.to)!;
         if (shooter.side === 'enemy') {
           sawEnemy++;
-          const tg = w.telegraphs.list[w.telegraphs.list.length - 1];
-          expect(w.telegraphs.list.length).toBeGreaterThan(before);
-          expect(tg.pos).toEqual(e.to);
+          const tg = w.telegraphs.list.find((x) => x.pos.x === e.to.x && x.pos.y === e.to.y && x.elapsed <= FIXED_DT)!;
+          expect(tg).toBeDefined();
           expect(tg.warnTime).toBeCloseTo(shell.flightTime);
           expect(shell.flightTime).toBeGreaterThanOrEqual(t.telegraph.minWarningTime);
         } else {
@@ -134,7 +135,7 @@ describe('world', () => {
     w.start();
     w.enemies[0].sinkingSince = 0;
     const p = w.enemies[0].motion;
-    w.shells.push({ id: 99, ownerId: w.player.id, ownerSide: 'player', from: { x: 0, y: 0 }, to: { x: p.x, y: p.y }, elapsed: 0, flightTime: 0.01, damage: 50, impactRadius: 1 });
+    w.shells.push({ id: 99, ownerId: w.player.id, ownerSide: 'player', from: { x: 0, y: 0 }, to: { x: p.x, y: p.y }, elapsed: 0, flightTime: 0.01, damage: 50, impactRadius: 1, leeId: null });
     w.step(FIXED_DT);
     expect(w.drainEvents().some((e) => e.type === 'splash')).toBe(true);
     expect(w.stats.player.shellsHit).toBe(0);
@@ -262,7 +263,7 @@ describe('several attackers and fight progression', () => {
     const w = new World(t, 3);
     w.start();
     const p = w.player.motion;
-    w.shells.push({ id: 1, ownerId: w.enemies[0].id, ownerSide: 'enemy', from: { x: 0, y: -80 }, to: { x: p.x, y: p.y }, elapsed: 0, flightTime: 1, damage: 99, impactRadius: 1 });
+    w.shells.push({ id: 1, ownerId: w.enemies[0].id, ownerSide: 'enemy', from: { x: 0, y: -80 }, to: { x: p.x, y: p.y }, elapsed: 0, flightTime: 1, damage: 99, impactRadius: 1, leeId: null });
     for (const part of w.enemies[0].parts) part.water = part.capacity;
     run(w, 1.5);
     expect(w.result?.winner).toBe('player');
