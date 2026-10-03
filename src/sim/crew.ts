@@ -20,7 +20,7 @@
 import type { StationKind } from '../config/boats';
 import { LEE_STAT_KEYS, WORK_STAT, type ActivityKind, type LeeDef, type LeeStatKey, type LeeStats, type WorkKind } from '../config/lees';
 import type { LadderTier, Side, Tuning } from '../config/tuning';
-import { boatTuning, cannonOnline, isWrecked, sinkProgress, structure, structureFraction, type Boat, type CannonState } from './boat';
+import { boatTuning, cannonOnline, cannonRange, isWrecked, sinkProgress, structure, structureFraction, type Boat, type CannonState } from './boat';
 import { pathTo, tileAt, type Tile } from './grid';
 import { DEG, dist, toWorld, wrapAngle, type Vec } from './math';
 
@@ -147,6 +147,18 @@ const emptyRunStats = (): LeeRunStats => ({
 /** Base stat for a Lee type from tuning (live), falling back to its content stats. */
 function typeStat(def: LeeDef, key: LeeStatKey, t: Tuning): number {
   return t.lees[def.id]?.[key] ?? def.stats[key];
+}
+
+/** A Lee type's stat for one side before abilities (what the setup screen previews). */
+export function baseStat(def: LeeDef, key: LeeStatKey, side: Side, t: Tuning): number {
+  return typeStat(def, key, t) * (side === 'player' ? t.global.playerCrewStats : 1);
+}
+
+/** Speed or turn multiplier from the crew on n stations: baseline when empty, 1 fully crewed at stat 1. */
+export function mobilityFactor(baseline: number, have: number, n: number, t: Tuning): number {
+  if (n === 0) return 1;
+  const b = Math.min(1, Math.max(0, baseline));
+  return b + (1 - b) * Math.min(Math.max(1, t.crew.mobilityCap), have / n);
 }
 
 export function createLee(id: number, number: number, def: LeeDef, side: Side, boat: Boat, home: number, t: Tuning): Lee {
@@ -281,7 +293,7 @@ export function cannonEngages(boat: Boat, c: CannonState, ctx: CrewContext, at: 
   const face = h + (c.broadside * Math.PI) / 2;
   for (const f of ctx.foes) {
     const p = { x: f.motion.x + f.motion.vx * at, y: f.motion.y + f.motion.vy * at };
-    if (dist(muzzle, p) > ct.range) continue;
+    if (dist(muzzle, p) > cannonRange(boat, ctx.tuning)) continue;
     if (Math.abs(wrapAngle(Math.atan2(p.y - muzzle.y, p.x - muzzle.x) - face)) <= ct.arc * DEG) return true;
   }
   return false;
@@ -728,7 +740,7 @@ function walk(lee: Lee, boat: Boat, t: Tuning, dt: number): void {
   lee.working = !lee.path.length && lee.tile === lee.dest && dist(lee.pos, g.tiles[lee.dest].center) < 0.05;
 }
 
-/** Oars set speed, sails set turning, the lookout sharpens the guns. Empty stations fall back to the baseline. */
+/** Oars set speed, sails set turning, the lookout extends gun range. Empty stations fall back to the baseline. */
 export function updateMobility(boat: Boat, t: Tuning): void {
   let oars = 0;
   let sails = 0;
@@ -750,15 +762,9 @@ export function updateMobility(boat: Boat, t: Tuning): void {
     }
   }
   const c = t.crew;
-  const cap = Math.max(1, c.mobilityCap);
-  const factor = (base: number, have: number, n: number) => {
-    if (n === 0) return 1;
-    const b = Math.min(1, Math.max(0, base));
-    return b + (1 - b) * Math.min(cap, have / n);
-  };
-  boat.mobility.speed = factor(c.oarBaseline, rowing, oars);
-  boat.mobility.turn = factor(c.sailBaseline, sailing, sails);
-  boat.spotting = 1 + Math.max(0, c.lookoutBonus) * spotting;
+  boat.mobility.speed = mobilityFactor(c.oarBaseline, rowing, oars, t);
+  boat.mobility.turn = mobilityFactor(c.sailBaseline, sailing, sails, t);
+  boat.rangeBonus = 1 + Math.max(0, c.lookoutRange) * spotting;
 }
 
 // ------------------------------------------------------------ damage

@@ -2,12 +2,13 @@ import { describe, expect, test } from 'vitest';
 import { SLOOP } from '../src/config/boats';
 import { BASIC_LEE, LEE_DEFS } from '../src/config/lees';
 import { defaultTuning, type Tuning } from '../src/config/tuning';
-import { motionParams, structureFraction, type Boat } from '../src/sim/boat';
+import { cannonRange, motionParams, structureFraction, type Boat } from '../src/sim/boat';
 import { createLee, leeStat, taskKey, type Lee } from '../src/sim/crew';
 import { buildGrid, tileAtCell } from '../src/sim/grid';
 import { pointInPolygon, toWorld, type Vec } from '../src/sim/math';
 import { FIXED_DT } from '../src/sim/steering';
 import { World, type CrewPlacement } from '../src/sim/world';
+import { placementStats } from '../src/sim/boatStats';
 
 const grid = buildGrid(SLOOP);
 const tile = (col: number, row: number) => tileAtCell(grid, col, row)!.index;
@@ -112,10 +113,37 @@ describe('stations need crew', () => {
     expect(half.player.mobility.speed).toBeCloseTo(t.crew.oarBaseline + (1 - t.crew.oarBaseline) / 2);
   });
 
-  test('a manned lookout tightens every gunner', () => {
+  test('a manned lookout extends the guns\' range', () => {
     const t = quiet(defaultTuning());
     const w = new World(t, 1, { crew: [T.lookout] });
-    expect(w.player.spotting).toBeCloseTo(1 + t.crew.lookoutBonus);
+    expect(w.player.rangeBonus).toBeCloseTo(1 + t.crew.lookoutRange);
+    expect(cannonRange(w.player, t)).toBeCloseTo(t.player.cannons.range * (1 + t.crew.lookoutRange));
+  });
+});
+
+describe('setup boat stats', () => {
+  test('the preview matches what the fight uses for each placement', () => {
+    const t = quiet(defaultTuning());
+    for (const crew of [[], [T.portOars], [T.portOars, tile(0, 2), T.sails], [T.lookout, T.portCannon1], [T.midDeck, T.bowDeck]] as CrewPlacement[]) {
+      const w = new World(t, 1, { crew });
+      const s = placementStats(w.player, t, crew, BASIC_LEE);
+      expect(s.speed).toBeCloseTo(w.player.mobility.speed);
+      expect(s.turning).toBeCloseTo(w.player.mobility.turn);
+      expect(s.range).toBeCloseTo(cannonRange(w.player, t));
+      expect(s.guns).toBe(crew.filter((c) => grid.tiles[c!].station === 'cannon').length);
+      expect(s.repairers).toBe(crew.filter((c) => !grid.tiles[c!].station).length);
+    }
+  });
+
+  test('manning a gun raises firepower; moving a gunner to the oars trades it for speed', () => {
+    const t = quiet(defaultTuning());
+    const w = new World(t, 1, { crew: [] });
+    const a = placementStats(w.player, t, [T.portCannon1], BASIC_LEE);
+    const b = placementStats(w.player, t, [T.portCannon1, T.starCannon1], BASIC_LEE);
+    const c = placementStats(w.player, t, [T.portOars, T.starCannon1], BASIC_LEE);
+    expect(b.firepower).toBeCloseTo(a.firepower * 2);
+    expect(c.firepower).toBeLessThan(b.firepower);
+    expect(c.speed).toBeGreaterThan(b.speed);
   });
 });
 

@@ -898,3 +898,128 @@ body {
 .act-bail { background: #3a9cf0; }
 .act-walk { background: #f6f6f6; }
 .act-idle { background: #666; }
+
+.gauge.move {
+  bottom: 0;
+  right: 0;
+}
+
+.sink-banner {
+  right: auto;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+/* Boat stats in setup mode: what this crew gives the boat. */
+.boat-stats {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  top: max(52px, calc(env(safe-area-inset-top) + 46px));
+  margin: 0 auto;
+  max-width: 380px;
+  padding: 6px 10px 7px;
+  background: rgba(0, 10, 20, 0.78);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 12px;
+  z-index: 2;
+}
+
+.boat-stats-title {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  margin-bottom: 3px;
+}
+
+.bs-row {
+  display: grid;
+  grid-template-columns: 74px 1fr auto;
+  gap: 7px;
+  align-items: center;
+  padding: 2px 0;
+}
+
+.bs-name {
+  font-weight: 700;
+}
+
+.bs-value {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.bs-row.up .bs-value {
+  color: var(--win);
+}
+
+.bs-row.down .bs-value {
+  color: var(--lose);
+}
+
+.bs-bar {
+  position: relative;
+  height: 8px;
+  background: #0a1a2a;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.bs-fill,
+.bs-delta {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+}
+
+.bs-fill {
+  background: var(--ink);
+  border-radius: 4px;
+}
+
+.bs-k-gun .bs-fill { background: #ffd27a; }
+.bs-k-row .bs-fill { background: #7be08a; }
+.bs-k-sail .bs-fill { background: #7dd6ff; }
+.bs-k-lookout .bs-fill { background: #d59bff; }
+.bs-k-repair .bs-fill { background: #ff9b5a; }
+
+.bs-delta.up {
+  background: repeating-linear-gradient(45deg, #7be08a 0 4px, #3e8a4a 4px 8px);
+}
+
+.bs-delta.down {
+  background: repeating-linear-gradient(45deg, #ff8a7a 0 4px, #8a3a30 4px 8px);
+}
+
+.tile-label .fx {
+  font-weight: 800;
+  font-size: 10px;
+}
+
+.tile-label .fx.good {
+  color: #9dff9d;
+}
+
+.tile-label .fx.bad {
+  color: #ffa090;
+}
+
+.card-help {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: #d8e8f0;
+}
+
+/* In setup the stats sit at the top of the ocean, so the card gets the space below. */
+.setup-mode .lee-card {
+  max-height: calc(100% - 200px);
+}
+
+.tile-label.quiet {
+  opacity: 0.45;
+}

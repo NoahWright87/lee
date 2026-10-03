@@ -5,12 +5,17 @@
 //  - Tap a Lee (tray or deck) to select it; tap a tile to put it there. Tapping
 //    another Lee swaps them. Drag-and-drop does the same; drop off the deck to
 //    send a Lee back to the tray.
-//  - While a Lee is selected every tile says what it would make that Lee.
+//  - While a Lee is selected every tile says what it would make that Lee and
+//    what moving it there would change ("+20% speed", "−1 gun").
+//  - The boat-stats panel shows what the current crew gives the boat, and
+//    previews the change while a Lee is dragged over a tile.
 
-import { LEE_DEFS, LEE_STAT_KEYS, STAT_LABELS } from '../config/lees';
+import { LEE_DEFS, type LeeDef, type LeeStatKey } from '../config/lees';
 import { CREWS } from '../config/crews';
+import type { Tuning } from '../config/tuning';
 import type { Controller } from '../game/Controller';
-import { roleName } from '../sim/crew';
+import { placementStats, type BoatStats } from '../sim/boatStats';
+import { baseStat, roleName } from '../sim/crew';
 import type { Tile } from '../sim/grid';
 import type { Vec } from '../sim/math';
 import { iconUrl, leeUrl, STATION_ICON } from './crewArt';
@@ -64,6 +69,60 @@ function clipToRect(poly: readonly Vec[], x0: number, y0: number, x1: number, y1
   return out;
 }
 
+/** Lee skills, simplified: each averages the core stats behind it. */
+const SKILLS: [string, LeeStatKey[]][] = [
+  ['Gunnery', ['loadSpeed', 'accuracy']],
+  ['Seamanship', ['rowStrength', 'sailHandling', 'spotting']],
+  ['Repairs', ['repairRate', 'bailRate']],
+  ['Toughness', ['hp', 'walkSpeed']],
+];
+
+const pctText = (f: number) => `${Math.round(f * 100)}%`;
+
+/** What working a post does, in plain words with the current numbers. */
+export function postHelp(tile: Tile, tiles: Tile[], t: Tuning): string {
+  const n = (kind: string) => Math.max(1, tiles.filter((x) => x.station === kind).length);
+  switch (tile.station) {
+    case 'cannon':
+      return 'Loads and fires this gun. Only guns facing the enemy can shoot, so gunners cross the deck to follow it.';
+    case 'oars':
+      return `Rows: +${pctText((1 - t.crew.oarBaseline) / n('oars'))} speed while manned. With every oar empty you sail at ${pctText(t.crew.oarBaseline)}.`;
+    case 'sails':
+      return `Works the sails: +${pctText((1 - t.crew.sailBaseline) / n('sails'))} turning while manned. Empty, you turn at ${pctText(t.crew.sailBaseline)}.`;
+    case 'lookout':
+      return `Spots from the mast: every gun reaches +${pctText(t.crew.lookoutRange)} farther while manned.`;
+    default:
+      return 'Damage control: stands by here, then runs to patch hit parts and bail water. Fills in wherever needed most.';
+  }
+}
+
+interface Effect {
+  text: string;
+  good: boolean;
+}
+
+/** What changes between two crew placements, biggest first. */
+function effects(a: BoatStats, b: BoatStats): Effect[] {
+  const out: (Effect & { size: number })[] = [];
+  const add = (d: number, text: string, size: number) => {
+    if (Math.abs(d) < 1e-6) return;
+    out.push({ text: `${d > 0 ? '+' : '−'}${text}`, good: d > 0, size });
+  };
+  const dg = b.guns - a.guns;
+  add(dg, `${Math.abs(dg)} gun${Math.abs(dg) === 1 ? '' : 's'}`, Math.abs(dg) * 0.5);
+  const ds = Math.round((b.speed - a.speed) * 100);
+  add(ds, `${Math.abs(ds)}% speed`, Math.abs(ds) / 100);
+  const dt = Math.round((b.turning - a.turning) * 100);
+  add(dt, `${Math.abs(dt)}% turning`, Math.abs(dt) / 100);
+  const dr = Math.round(b.range - a.range);
+  add(dr, `${Math.abs(dr)} m range`, Math.abs(dr) / Math.max(1, a.range));
+  const dc = b.repairers - a.repairers;
+  add(dc, `${Math.abs(dc)} repairer${Math.abs(dc) === 1 ? '' : 's'}`, Math.abs(dc) * 0.3);
+  const da = b.aboard - a.aboard;
+  if (da > 0 && !out.length) out.push({ text: '+1 aboard', good: true, size: 0 });
+  return out.sort((x, y) => y.size - x.size);
+}
+
 function tier(v: number): string {
   if (v < 0.75) return 'Low';
   if (v < 1.15) return 'Average';
@@ -83,8 +142,10 @@ export class SetupPanel {
   private hint: HTMLDivElement;
   /** Tray, hint and buttons stacked under the deck. */
   private below: HTMLDivElement;
+  /** Boat stats panel (lives over the ocean panel in setup). */
+  readonly stats: HTMLDivElement;
   private selected: number | null = null;
-  private drag: { slot: number; x: number; y: number; id: number; ghost: HTMLDivElement | null; from: HTMLElement } | null = null;
+  private drag: { slot: number; x: number; y: number; id: number; ghost: HTMLDivElement | null; from: HTMLElement; over: number | null } | null = null;
   private suppressClick = false;
   private builtFor: unknown = null;
   private lastSig = '';
@@ -116,6 +177,7 @@ export class SetupPanel {
     this.below.append(this.tray, this.hint, this.bar);
     this.root.append(this.gridEl, this.below);
     this.card = el('div', 'lee-card hidden');
+    this.stats = el('div', 'boat-stats hidden');
     // Tapping the tray background with a placed Lee selected sends it back.
     this.tray.onclick = (e) => {
       if (e.target !== this.tray || this.selected === null) return;
@@ -135,6 +197,7 @@ export class SetupPanel {
     const w = this.ctl.world;
     const on = w.phase === 'ready';
     this.root.classList.toggle('hidden', !on);
+    this.stats.classList.toggle('hidden', !on);
     if (!on) {
       this.card.classList.add('hidden');
       this.selected = null;
@@ -221,29 +284,85 @@ export class SetupPanel {
           ? `Place #${sel + 1}: tap a tile`
           : `Move #${sel + 1}: tap a tile, another Lee to swap, or the tray to unload`;
     this.renderCard();
+    this.renderStats(null);
   }
 
-  /** With a Lee selected, every tile says what it would make that Lee. */
+  private get def(): LeeDef {
+    return LEE_DEFS[CREWS.player.lee] ?? Object.values(LEE_DEFS)[0];
+  }
+
+  private statsFor(a: (number | null)[]): BoatStats {
+    return placementStats(this.ctl.world.player, this.ctl.tuning, a, this.def);
+  }
+
+  /** The arrangement after moving `slot` to `tile` (null = tray), swapping like Controller.placeLee. */
+  private moved(slot: number, tile: number | null): (number | null)[] {
+    const a = [...this.ctl.arrangement];
+    const from = a[slot];
+    if (tile !== null) {
+      const other = a.indexOf(tile);
+      if (other >= 0 && other !== slot) a[other] = from;
+    }
+    a[slot] = tile;
+    return a;
+  }
+
+  /** Boat stats from the current crew; with `preview`, show what that arrangement would change. */
+  private renderStats(preview: (number | null)[] | null): void {
+    const now = this.statsFor(this.ctl.arrangement);
+    const next = preview ? this.statsFor(preview) : null;
+    const repairMax = Math.max(1e-6, 3 * this.ctl.tuning.crew.repairRate * baseStat(this.def, 'repairRate', 'player', this.ctl.tuning));
+    const rows: [string, (s: BoatStats) => number, (s: BoatStats) => string, string][] = [
+      ['Firepower', (s) => s.firepower / Math.max(1e-6, s.firepowerMax), (s) => `${s.guns}/${s.gunsTotal} guns · ${Math.round(s.firepower)}/min`, 'gun'],
+      ['Speed', (s) => s.speed, (s) => pctText(s.speed), 'row'],
+      ['Turning', (s) => s.turning, (s) => pctText(s.turning), 'sail'],
+      ['Gun range', (s) => s.range / Math.max(1e-6, s.rangeMax), (s) => `${Math.round(s.range)} m`, 'lookout'],
+      ['Repairs', (s) => Math.min(1, s.repairRate / repairMax), (s) => (s.repairers ? `${s.repairers} Lee${s.repairers === 1 ? '' : 's'} · ${s.repairRate.toFixed(1)} HP/s` : 'nobody standing by'), 'repair'],
+    ];
+    this.stats.replaceChildren(el('div', 'boat-stats-title', preview ? 'Boat (if moved)' : 'Boat with this crew'));
+    for (const [name, frac, text, kind] of rows) {
+      const row = el('div', `bs-row bs-k-${kind}`);
+      const bar = el('div', 'bs-bar');
+      const f0 = Math.max(0, Math.min(1, frac(now)));
+      const fill = el('div', 'bs-fill');
+      fill.style.width = `${f0 * 100}%`;
+      bar.append(fill);
+      let value = text(now);
+      if (next) {
+        const f1 = Math.max(0, Math.min(1, frac(next)));
+        if (Math.abs(f1 - f0) > 1e-6) {
+          const delta = el('div', `bs-delta ${f1 > f0 ? 'up' : 'down'}`);
+          delta.style.left = `${Math.min(f0, f1) * 100}%`;
+          delta.style.width = `${Math.abs(f1 - f0) * 100}%`;
+          bar.append(delta);
+          if (f1 < f0) fill.style.width = `${f1 * 100}%`;
+          value = `→ ${text(next)}`;
+          row.classList.add(f1 > f0 ? 'up' : 'down');
+        }
+      }
+      row.append(el('span', 'bs-name', name), bar, el('span', 'bs-value', value));
+      this.stats.append(row);
+    }
+  }
+
+  /** With a Lee selected, every tile says what it would make that Lee and what the move changes. */
   private updateLabels(sel: number | null): void {
     const a = this.ctl.arrangement;
     const boat = this.ctl.world.player;
+    const now = sel !== null ? this.statsFor(a) : null;
     this.tileEls.forEach((d, i) => {
       for (const c of [...d.querySelectorAll('.tile-label')]) c.remove();
       d.classList.toggle('targets', sel !== null);
       d.classList.toggle('mine', sel !== null && a[sel] === i);
-      if (sel === null || a[sel] === i) return;
-      const t = this.tiles[i];
+      if (sel === null || a[sel] === i || !now) return;
       const slot = a.indexOf(i);
-      const role = roleName(boat, i);
-      const label = el('div', 'tile-label');
-      if (slot >= 0) {
-        // Occupied: the role it would get, and that tapping swaps.
-        label.append(el('b', '', `⇄ ${role}`));
-      } else {
-        label.append(el('b', '', role));
-        const detail = t.station ? t.label : boat.layout.parts[t.part].label;
-        if (detail !== role) label.append(el('span', '', detail));
-      }
+      const station = this.tiles[i].station;
+      const role = station ? roleName(boat, i) : 'Repairs';
+      const fx = effects(now, this.statsFor(this.moved(sel, i))).slice(0, 2);
+      // Tiles that change nothing stay quiet so the ones that matter stand out.
+      const label = el('div', `tile-label${fx.length ? '' : ' quiet'}`);
+      label.append(el('b', '', slot >= 0 ? `⇄ ${role}` : role));
+      for (const f of fx) label.append(el('span', `fx ${f.good ? 'good' : 'bad'}`, f.text));
       d.append(label);
     });
   }
@@ -309,7 +428,7 @@ export class SetupPanel {
     if (this.drag) return;
     e.stopPropagation();
     from.setPointerCapture(e.pointerId);
-    this.drag = { slot, x: e.clientX, y: e.clientY, id: e.pointerId, ghost: null, from };
+    this.drag = { slot, x: e.clientX, y: e.clientY, id: e.pointerId, ghost: null, from, over: null };
     from.onpointermove = (m) => this.moveDrag(m);
     from.onpointerup = (u) => this.endDrag(u, false);
     from.onpointercancel = (u) => this.endDrag(u, true);
@@ -331,7 +450,12 @@ export class SetupPanel {
     if (d.ghost) {
       d.ghost.style.left = `${e.clientX}px`;
       d.ghost.style.top = `${e.clientY}px`;
-      this.tileEls.forEach((t, i) => t.classList.toggle('drop', i === this.tileAtPoint(e.clientX, e.clientY)));
+      const over = this.tileAtPoint(e.clientX, e.clientY);
+      this.tileEls.forEach((t, i) => t.classList.toggle('drop', i === over));
+      if (over !== d.over) {
+        d.over = over;
+        this.renderStats(over === null ? null : this.moved(d.slot, over));
+      }
     }
   }
 
@@ -390,28 +514,30 @@ export class SetupPanel {
     head.append(img, names);
 
     const role = el('div', 'card-role');
-    if (home === null) role.append(el('b', '', 'In the tray'), el('span', '', ' — stays ashore unless placed'));
-    else {
+    const help = el('div', 'card-help');
+    if (home === null) {
+      role.append(el('b', '', 'In the tray'), el('span', '', ' — stays ashore unless placed'));
+      help.textContent = 'Tap a tile to see what each post would add to the boat.';
+    } else {
       const tile = boat.grid.tiles[home];
       role.append(el('b', '', roleName(boat, home)), el('span', '', ` — ${tile.station ? tile.label : `${boat.layout.parts[tile.part].label} deck`}`));
+      help.textContent = postHelp(tile, boat.grid.tiles, t);
     }
 
     const stats = el('div', 'card-stats');
-    for (const k of LEE_STAT_KEYS) {
-      const v = (t.lees[def.id]?.[k] ?? def.stats[k]) * t.global.playerCrewStats;
+    for (const [name, keys] of SKILLS) {
+      const v = keys.reduce((sum, k) => sum + baseStat(def, k, 'player', t), 0) / keys.length;
       const row = el('div', 'card-stat');
       const bar = el('div', 'card-bar');
       const fill = el('div', 'card-fill');
       fill.style.width = `${Math.min(100, v * 50)}%`;
       bar.append(fill);
-      row.append(el('span', 'card-stat-k', STAT_LABELS[k]), bar, el('span', 'card-stat-v', tier(v)));
+      row.append(el('span', 'card-stat-k', name), bar, el('span', 'card-stat-v', tier(v)));
       stats.append(row);
     }
+    if (def.abilities.length) stats.append(el('div', 'card-special', `Special: ${def.abilities.length} ability`));
 
-    const special = el('div', 'card-special');
-    special.append(el('b', '', 'Special: '), el('span', '', def.abilities.length ? `${def.abilities.length} ability` : '—'));
-
-    this.card.append(head, role, stats, special);
+    this.card.append(head, role, help, stats);
 
     if (!storageGet(NOTE_KEY)) {
       const note = el('div', 'card-note');

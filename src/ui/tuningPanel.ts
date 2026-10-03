@@ -83,7 +83,7 @@ const RANGES: Record<string, Range> = {
   oarBaseline: [0, 1, 0.05],
   sailBaseline: [0, 1, 0.05],
   mobilityCap: [1, 3, 0.05],
-  lookoutBonus: [0, 1, 0.05],
+  lookoutRange: [0, 1, 0.05],
   repairCeiling: [0, 1, 0.05],
   wreckedRepairable: [0, 1, 1],
   hitDamage: [0, 60, 1],

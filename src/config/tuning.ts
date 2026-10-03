@@ -176,8 +176,8 @@ export function defaultTuning() {
       sailBaseline: 0.6,
       /** Most a crew can push speed/turning past "fully crewed" (stronger Lees later). */
       mobilityCap: 1.5,
-      /** Gunner accuracy bonus per manned lookout at baseline spotting (0.3 = +30%). */
-      lookoutBonus: 0.3,
+      /** Cannon range bonus per manned lookout at baseline spotting (0.25 = guns reach 25% farther). */
+      lookoutRange: 0.25,
       /** Repairs can only bring a part back to this fraction of its max HP. */
       repairCeiling: 0.6,
       /** 1 = parts at 0 HP can be repaired mid-fight, 0 = wrecked stays wrecked. */

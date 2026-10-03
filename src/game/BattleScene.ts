@@ -12,6 +12,7 @@ import { SLOOP } from '../config/boats';
 import {
   boatTuning,
   cannonOnline,
+  cannonRange,
   motionParams,
   sinkProgress,
   structureFraction,
@@ -484,6 +485,7 @@ export class BattleScene extends Phaser.Scene {
 
     this.drawRings(g, px);
     if (this.ctl.debug) this.drawDebug(g, world, px);
+    if (world.phase === 'ready') this.drawRangeRing(g, world, px);
 
     // Path preview (also before START).
     const player = world.player;
@@ -532,6 +534,27 @@ export class BattleScene extends Phaser.Scene {
       const k = clamp((this.clock - r.t) / r.dur, 0, 1);
       g.lineStyle(Math.max(px(1.5), 0.15), r.color, (1 - k) * 0.9);
       g.strokeCircle(r.x, r.y, r.r * (0.3 + 0.7 * Math.sqrt(k)));
+    }
+  }
+
+  /** Setup: your guns' reach as a dashed ring (the lookout grows it) and the two broadside arcs. */
+  private drawRangeRing(g: Phaser.GameObjects.Graphics, world: World, px: (n: number) => number): void {
+    const b = world.player;
+    const r = cannonRange(b, world.tuning);
+    const arc = boatTuning('player', world.tuning).cannons.arc * DEG;
+    const { x, y } = b.motion;
+    for (const side of [-1, 1]) {
+      const face = b.motion.heading + (side * Math.PI) / 2;
+      g.fillStyle(0xffd27a, 0.08);
+      g.slice(x, y, r, face - arc, face + arc, false);
+      g.fillPath();
+    }
+    const n = 72;
+    g.lineStyle(px(2), 0xffd27a, 0.6);
+    for (let i = 0; i < n; i += 2) {
+      const a0 = (i / n) * Math.PI * 2;
+      const a1 = ((i + 1) / n) * Math.PI * 2;
+      g.lineBetween(x + Math.cos(a0) * r, y + Math.sin(a0) * r, x + Math.cos(a1) * r, y + Math.sin(a1) * r);
     }
   }
 
@@ -737,12 +760,12 @@ export class BattleScene extends Phaser.Scene {
         g.lineStyle(px(1), online ? (c.load >= 1 ? 0x7dff8a : 0x2f8a3a) : 0x666666, 0.5);
         g.beginPath();
         g.moveTo(from.x, from.y);
-        g.arc(from.x, from.y, ct.range, face - ct.arc * DEG, face + ct.arc * DEG, false);
+        g.arc(from.x, from.y, cannonRange(b, world.tuning), face - ct.arc * DEG, face + ct.arc * DEG, false);
         g.closePath();
         g.strokePath();
       }
       g.lineStyle(px(1), 0xffffff, 0.15);
-      g.strokeCircle(b.motion.x, b.motion.y, ct.range);
+      g.strokeCircle(b.motion.x, b.motion.y, cannonRange(b, world.tuning));
     }
     // Each enemy's seek point and preferred range.
     for (const e of world.enemies) {

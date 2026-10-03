@@ -3,7 +3,8 @@
 // Reads the Controller; the canvas never draws UI chrome.
 
 import { ACTIVITY_KINDS, type ActivityKind } from '../config/lees';
-import { cannonOnline, sinkProgress } from '../sim/boat';
+import { advantageOf, cannonOnline, motionParams, sinkProgress } from '../sim/boat';
+import { DEG } from '../sim/math';
 import { roleName } from '../sim/crew';
 import type { Controller } from '../game/Controller';
 import type { SideStats } from '../sim/world';
@@ -44,6 +45,7 @@ export class Hud {
   private toastTimer = 0;
   private gauges: HTMLDivElement;
   private crewText: HTMLSpanElement;
+  private moveText: HTMLSpanElement;
   private speedBtns: HTMLButtonElement[];
   private debugBtn: HTMLButtonElement;
   private result: HTMLDivElement;
@@ -132,7 +134,7 @@ export class Hud {
     this.result.append(card);
 
     this.panel = new TuningPanel(ctl);
-    ocean.append(top, this.crewDebug.root, this.setup.card, this.toast, this.result, this.panel.root);
+    ocean.append(top, this.setup.stats, this.crewDebug.root, this.setup.card, this.toast, this.result, this.panel.root);
     root.append(this.setup.root);
 
     // Strip gauges.
@@ -152,7 +154,11 @@ export class Hud {
     crew.append(el('span', 'gauge-label', 'CREW'));
     this.crewText = el('span', 'gauge-value');
     crew.append(this.crewText);
-    gauges.append(water, guns, crew);
+    const move = el('div', 'gauge move');
+    move.append(el('span', 'gauge-label', 'SPEED'));
+    this.moveText = el('span', 'gauge-value');
+    move.append(this.moveText);
+    gauges.append(water, guns, crew, move);
     this.gauges = gauges;
     this.sinkBanner = el('div', 'sink-banner hidden', 'SINKING');
     strip.append(gauges, this.sinkBanner);
@@ -197,6 +203,12 @@ export class Hud {
     this.root.classList.toggle('setup-mode', setupMode);
     const lees = p.crew.lees;
     this.crewText.textContent = `${lees.filter((l) => l.alive).length}/${lees.length}`;
+    // Speed and turning as a share of a fully crewed, undamaged boat (oars, sails, engine, water).
+    const mp = motionParams(p, w.tuning);
+    const mv = w.tuning.player.movement;
+    const spd = mp.cruiseSpeed / Math.max(1e-6, mv.cruiseSpeed);
+    const trn = mp.turnRate / Math.max(1e-6, mv.turnRate * DEG * Math.sqrt(advantageOf('player', w.tuning)));
+    this.moveText.textContent = `${Math.round(spd * 100)}% · TURN ${Math.round(trn * 100)}%`;
     const s = Math.min(1, sinkProgress(p, w.tuning));
     this.waterFill.style.width = `${(s * 100).toFixed(1)}%`;
     this.waterFill.classList.toggle('danger', s > 0.7);

@@ -10,6 +10,7 @@ import {
   applyDamage,
   boatTuning,
   cannonOnline,
+  cannonRange,
   createBoat,
   distanceToHull,
   isWrecked,
@@ -415,7 +416,7 @@ export class World {
   /** Is `aim` inside this cannon's arc and range? */
   canHit(b: Boat, c: CannonState, from: Vec, aim: Vec): boolean {
     const ct = boatTuning(b.side, this.tuning).cannons;
-    if (dist(from, aim) > ct.range) return false;
+    if (dist(from, aim) > cannonRange(b, this.tuning)) return false;
     const a = Math.atan2(aim.y - from.y, aim.x - from.x);
     return Math.abs(wrapAngle(a - this.cannonFacing(b, c))) <= ct.arc * DEG;
   }
@@ -447,7 +448,7 @@ export class World {
       if (!tgt) return;
       const { aim, time } = this.leadAim(b, from, tgt.boat, tgt.part);
       if (!this.canHit(b, c, from, aim)) return;
-      const accuracy = Math.max(0.05, leeStat(gunner, 'accuracy', b, this.tuning) * b.spotting);
+      const accuracy = Math.max(0.05, leeStat(gunner, 'accuracy', b, this.tuning));
       const off = this.rng.inDisk(Math.max(0, ct.spread) / accuracy);
       const to = { x: aim.x + off.x, y: aim.y + off.y };
       c.load = 0;

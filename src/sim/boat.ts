@@ -62,8 +62,8 @@ export interface Boat {
   crew: CrewState;
   /** Speed and turn multipliers from oars and sails, updated by the crew each step. */
   mobility: { speed: number; turn: number };
-  /** Gunner accuracy multiplier from manned lookouts. */
-  spotting: number;
+  /** Cannon range multiplier from manned lookouts (the lookout spots targets farther out). */
+  rangeBonus: number;
 }
 
 export function advantageOf(side: Side, t: Tuning): number {
@@ -143,7 +143,7 @@ export function createBoat(
     grid,
     crew: { lees: [], needs: [], thinkIn: 0 },
     mobility: { speed: 1, turn: 1 },
-    spotting: 1,
+    rangeBonus: 1,
   };
 }
 
@@ -183,6 +183,11 @@ export function applyDamage(part: PartState, amount: number): DamageResult {
     if (i === part.layers.length - 1) structureDamage += take;
   }
   return { dealt, structureDamage };
+}
+
+/** How far this boat's guns reach right now, m (base range × lookout). */
+export function cannonRange(boat: Boat, t: Tuning): number {
+  return boatTuning(boat.side, t).cannons.range * boat.rangeBonus;
 }
 
 export function cannonOnline(boat: Boat, cannon: CannonState, t: Tuning): boolean {

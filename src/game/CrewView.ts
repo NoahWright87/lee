@@ -21,6 +21,7 @@ const COLOR = {
   barBg: 0x1a1a1a,
   bar: 0xf6e7c1,
   barGun: 0xffd27a,
+  barRepair: 0xff9b5a,
   claim: 0xf6e7c1,
   offline: 0x8a8580,
   wet: 0x3a9cf0,
@@ -176,19 +177,37 @@ export class CrewView {
       if (world.time - lee.hurtAt < 0.25) s.fig.setTintFill(0xff5040);
       else s.fig.clearTint();
 
-      // Task icon and progress bar over its head.
-      const ip = W({ x: p.x - 0.85, y: p.y - 1.4 });
-      s.icon.setTexture(`icon:${act}`).setPosition(ip.x, ip.y).setRotation(m.heading).setAlpha(alpha);
+      // Task icon over its head, and a bar only where the work has real progress:
+      // a gun loading, a part being patched up to its ceiling, water being bailed
+      // down. Oars, sails and the lookout are steady effects, so no bar.
       const x0 = p.x - 0.32;
       const x1 = p.x + 0.95;
       const y0 = p.y - 1.55;
       const y1 = y0 + 0.3;
-      g.fillStyle(COLOR.barBg, 0.85 * alpha);
-      g.fillPoints(quad(x0, y0, x1, y1), true);
-      const prog = clamp(lee.working ? lee.progress : 0, 0, 1);
-      if (prog > 0) {
-        g.fillStyle(act === 'gun' ? COLOR.barGun : COLOR.bar, alpha);
-        g.fillPoints(quad(x0, y0, x0 + (x1 - x0) * prog, y1), true);
+      let bar: { frac: number; color: number } | null = null;
+      if (lee.working) {
+        if (act === 'gun') {
+          const c = boat.cannons.find((x) => x.station === lee.task.target);
+          if (c) bar = { frac: c.load, color: COLOR.barGun };
+        } else if (act === 'repair') {
+          const part = boat.parts[lee.task.target];
+          const st = part.layers[part.layers.length - 1];
+          bar = { frac: st.hp / Math.max(1e-6, st.maxHp * t.crew.repairCeiling), color: COLOR.barRepair };
+        } else if (act === 'bail') {
+          const part = boat.parts[lee.task.target];
+          bar = { frac: part.capacity > 0 ? part.water / part.capacity : 0, color: COLOR.wet };
+        }
+      }
+      const ip = W({ x: bar ? p.x - 0.85 : p.x, y: p.y - 1.4 });
+      s.icon.setTexture(`icon:${act}`).setPosition(ip.x, ip.y).setRotation(m.heading).setAlpha(alpha);
+      if (bar) {
+        g.fillStyle(COLOR.barBg, 0.85 * alpha);
+        g.fillPoints(quad(x0, y0, x1, y1), true);
+        const f = clamp(bar.frac, 0, 1);
+        if (f > 0) {
+          g.fillStyle(bar.color, alpha);
+          g.fillPoints(quad(x0, y0, x0 + (x1 - x0) * f, y1), true);
+        }
       }
       // HP pip under the bar once hurt.
       if (lee.hp < lee.maxHp) {
