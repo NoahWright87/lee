@@ -1,6 +1,9 @@
 // One scene, one world, two cameras:
 //  - ocean camera (top ~75%): zoomed out, frames both boats, takes steering input
-//  - strip camera (bottom ~25%): your boat, large, always bow-right
+//  - strip camera (bottom ~25%): your boat, large, always bow-right, with its crew
+// In setup mode the strip grows to about half the screen and frames the deck
+// grid at touch size; the DOM setup layer draws the interactive grid on top,
+// using the projection published to the Controller.
 // Overlays that must stay a readable size on screen (HP pips, X markers, the
 // path preview) are drawn per camera with sizes divided by that camera's zoom.
 
@@ -9,26 +12,30 @@ import { SLOOP } from '../config/boats';
 import {
   boatTuning,
   cannonOnline,
+  cannonRange,
   motionParams,
   sinkProgress,
   structureFraction,
   type Boat,
 } from '../sim/boat';
+import { activity, workerAt } from '../sim/crew';
 import { clamp, DEG, dist, lerp, rotate, toWorld, type Vec } from '../sim/math';
 import { FIXED_DT, predictPath } from '../sim/steering';
 import { TelegraphSystem } from '../sim/telegraph';
 import type { World, WorldEvent } from '../sim/world';
 import { BoatView, lerpColor } from './BoatView';
 import type { Controller } from './Controller';
+import { CrewView } from './CrewView';
 import {
   buildCrackTextures,
+  buildCrewTextures,
   buildParticleTextures,
   buildPartTextures,
   buildWaterTexture,
   preloadArt,
 } from './textures';
 
-/** Fraction of the screen height given to the ocean view. */
+/** Fraction of the screen height given to the ocean view during a fight (setup mode uses tuning.layout). */
 export const OCEAN_FRACTION = 0.75;
 const WATER_TILE_M = 48;
 /** Height of the HUD's top bar, CSS px. The ocean camera frames boats below it. */
@@ -48,6 +55,20 @@ const COLOR = {
   offline: 0x8a8580,
   debug: 0x40e0ff,
   enemyArrow: 0xffa040,
+  pipPlayer: 0xf6e7c1,
+  pipEnemy: 0xffa040,
+};
+
+/** Debug colors for crew pips by activity. */
+const ACTIVITY_COLOR: Record<string, number> = {
+  gun: 0xffd27a,
+  row: 0x7dff8a,
+  sail: 0x7dd6ff,
+  lookout: 0xd59bff,
+  repair: 0xff9b5a,
+  bail: 0x3a9cf0,
+  walk: 0xffffff,
+  idle: 0x777777,
 };
 
 interface Ring {
@@ -69,7 +90,11 @@ export class BattleScene extends Phaser.Scene {
   private gOcean!: Phaser.GameObjects.Graphics;
   private gStrip!: Phaser.GameObjects.Graphics;
   private views: BoatView[] = [];
-  private labels: Phaser.GameObjects.Text[] = [];
+  private crewView: CrewView | null = null;
+  /** The crew list the crew view was built for (setup replaces it). */
+  private crewLees: unknown = null;
+  /** Current ocean share of the screen (animates between setup and fight sizes). */
+  private frac = OCEAN_FRACTION;
   private chips!: Phaser.GameObjects.Particles.ParticleEmitter;
   private spray!: Phaser.GameObjects.Particles.ParticleEmitter;
   private smoke!: Phaser.GameObjects.Particles.ParticleEmitter;
@@ -102,6 +127,7 @@ export class BattleScene extends Phaser.Scene {
     buildParticleTextures(this);
     for (const side of ['player', 'enemy'] as const) buildPartTextures(this, SLOOP, side);
     buildCrackTextures(this, SLOOP);
+    buildCrewTextures(this);
 
     this.oceanCam = this.cameras.main;
     this.oceanCam.setBackgroundColor('#0d2c4d');
@@ -156,8 +182,13 @@ export class BattleScene extends Phaser.Scene {
       tint: 0xe6f6ff,
     }).setDepth(9);
 
+    // Land in setup mode at setup size (no slide on first load).
+    if (this.ctl.world.phase === 'ready') this.frac = clamp(this.ctl.tuning.layout.setupOceanFraction, 0.2, OCEAN_FRACTION);
     this.setupInput();
-    this.scale.on('resize', () => this.layout());
+    this.scale.on('resize', () => {
+      this.layout();
+      this.snapCamera = true;
+    });
     this.layout();
   }
 
@@ -174,7 +205,25 @@ export class BattleScene extends Phaser.Scene {
   }
 
   private get oceanH(): number {
-    return Math.round(this.scale.height * OCEAN_FRACTION);
+    return Math.round(this.scale.height * this.frac);
+  }
+
+  /** 0 = fight layout, 1 = setup layout. */
+  private get setupBlend(): number {
+    const setup = clamp(this.ctl.tuning.layout.setupOceanFraction, 0.2, OCEAN_FRACTION);
+    if (OCEAN_FRACTION - setup < 1e-3) return this.ctl.world.phase === 'ready' ? 1 : 0;
+    return clamp((OCEAN_FRACTION - this.frac) / (OCEAN_FRACTION - setup), 0, 1);
+  }
+
+  /** Slide the panels toward their setup or fight sizes. */
+  private animatePanels(dt: number): void {
+    const lay = this.ctl.tuning.layout;
+    const setup = clamp(lay.setupOceanFraction, 0.2, OCEAN_FRACTION);
+    const want = this.ctl.world.phase === 'ready' ? setup : OCEAN_FRACTION;
+    if (Math.abs(want - this.frac) < 1e-4) return;
+    const speed = Math.abs(OCEAN_FRACTION - setup) / Math.max(0.01, lay.panelSlideTime);
+    this.frac = want > this.frac ? Math.min(want, this.frac + speed * dt) : Math.max(want, this.frac - speed * dt);
+    this.layout();
   }
 
   private layout(): void {
@@ -182,7 +231,7 @@ export class BattleScene extends Phaser.Scene {
     const H = this.scale.height;
     this.oceanCam.setViewport(0, 0, W, this.oceanH);
     this.stripCam.setViewport(0, this.oceanH, W, H - this.oceanH);
-    this.snapCamera = true;
+    this.ctl.oceanFrac = this.frac;
   }
 
   // ------------------------------------------------------------ input
@@ -224,6 +273,7 @@ export class BattleScene extends Phaser.Scene {
 
     const dt = Math.min(deltaMs / 1000, 0.1);
     this.clock += dt;
+    this.animatePanels(dt);
     if (!ctl.blocked && world.phase !== 'ready') {
       this.acc += dt * ctl.speed;
       let steps = 0;
@@ -245,6 +295,7 @@ export class BattleScene extends Phaser.Scene {
     this.handleEvents(world.drainEvents());
     this.updateCameras(dt);
     for (const v of this.views) v.update(world, dt);
+    if (this.crewView && (this.crewView.boat !== world.player || this.crewLees !== world.player.crew.lees)) this.rebuildCrew();
     this.emitSinkingBubbles(world);
     this.rings = this.rings.filter((r) => this.clock - r.t < r.dur);
 
@@ -256,9 +307,7 @@ export class BattleScene extends Phaser.Scene {
   private rebuild(): void {
     this.runId = this.ctl.runId;
     for (const v of this.views) v.destroy();
-    for (const t of this.labels) t.destroy();
     this.views = [];
-    this.labels = [];
     this.rings = [];
     this.acc = 0;
     this.lastPhase = '';
@@ -273,22 +322,15 @@ export class BattleScene extends Phaser.Scene {
       if (boat.side !== 'player') for (const o of view.all()) this.onlyOcean(o);
       this.views.push(view);
     }
-    for (const part of this.ctl.world.player.parts) {
-      const t = this.add
-        .text(0, 0, part.def.label.toUpperCase(), {
-          fontFamily: 'system-ui, sans-serif',
-          fontSize: '22px',
-          fontStyle: 'bold',
-          color: '#ffffff',
-          stroke: '#000000',
-          strokeThickness: 5,
-        })
-        .setOrigin(0.5, 0.5)
-        .setDepth(45)
-        .setAlpha(0.85);
-      this.onlyStrip(t);
-      this.labels.push(t);
-    }
+    this.rebuildCrew();
+  }
+
+  /** Crew sprites for your boat (rebuilt when setup changes who's aboard). */
+  private rebuildCrew(): void {
+    this.crewView?.destroy();
+    this.crewView = new CrewView(this, this.ctl.world.player);
+    for (const o of this.crewView.all()) this.onlyStrip(o);
+    this.crewLees = this.ctl.world.player.crew.lees;
   }
 
   private viewFor(boatId: number): BoatView | undefined {
@@ -313,6 +355,15 @@ export class BattleScene extends Phaser.Scene {
           this.spray.explode(12, e.pos.x, e.pos.y);
           this.rings.push({ x: e.pos.x, y: e.pos.y, t: this.clock, dur: 0.7, r: 5, color: 0xe0f4ff });
           break;
+        case 'leeLost': {
+          // Your Lees splash when their fall animation reaches the water (CrewView); enemy Lees at once.
+          const b = this.ctl.world.boats.find((x) => x.id === e.boatId);
+          if (b && b.side !== 'player') {
+            this.spray.explode(6, e.pos.x, e.pos.y);
+            this.rings.push({ x: e.pos.x, y: e.pos.y, t: this.clock, dur: 0.6, r: 3, color: 0xe0f4ff });
+          }
+          break;
+        }
         case 'sinking': {
           const b = this.ctl.world.boats.find((x) => x.id === e.boatId);
           if (b) this.rings.push({ x: b.motion.x, y: b.motion.y, t: this.clock, dur: 2.5, r: 26, color: 0xe0f4ff });
@@ -380,16 +431,32 @@ export class BattleScene extends Phaser.Scene {
     this.oceanCam.centerOn(this.cam.x, this.cam.y - shiftY);
     this.coverWithWater(this.waterOcean, this.cam.x, this.cam.y - shiftY, W / this.cam.zoom, this.oceanH / this.cam.zoom);
 
-    // Strip: player boat, bow right, centered.
+    // Strip: player boat, bow right. Fight: centered. Setup: larger (tiles at touch size)
+    // and near the top, leaving room for the tray below.
     const SH = this.scale.height - this.oceanH;
     const L = world.player.layout.length;
     const B = world.player.layout.beam;
-    const sz = Math.min((W * clamp(t.stripBoatFill, 0.2, 1)) / L, (SH * 0.62) / B);
+    const grid = world.player.grid;
+    const fightZ = Math.min((W * clamp(t.stripBoatFill, 0.2, 1)) / L, (SH * 0.62) / B);
+    const minTile = this.ctl.tuning.layout.minTilePx * this.dpr;
+    const setupZ = Math.min(Math.max((W * 0.97) / L, minTile / Math.min(grid.tileW, grid.tileH)), (W * 0.98) / (grid.cols * grid.tileW));
+    const s = this.setupBlend;
+    const sz = lerp(fightZ, setupZ, s);
+    const boatY = lerp(SH / 2, (B * setupZ) / 2 + 16 * this.dpr, s);
+    const d = (SH / 2 - boatY) / sz;
+    const c = toWorld({ x: 0, y: d }, p, p.heading);
     this.stripCam.setZoom(sz);
     this.stripCam.setRotation(-p.heading);
-    this.stripCam.centerOn(p.x, p.y);
+    this.stripCam.centerOn(c.x, c.y);
     const diag = Math.hypot(W, SH) / sz;
-    this.coverWithWater(this.waterStrip, p.x, p.y, diag, diag);
+    this.coverWithWater(this.waterStrip, c.x, c.y, diag, diag);
+    // Local boat frame → CSS px, for the DOM setup grid.
+    const dpr = this.dpr;
+    const top = this.oceanH;
+    this.ctl.stripProjection = {
+      toCss: (l: Vec) => ({ x: (l.x * sz + W / 2) / dpr, y: (top + boatY + l.y * sz) / dpr }),
+      top: top / dpr,
+    };
   }
 
   /** Position a world-anchored tiled water sprite to cover a view (snapped to the tile grid so waves stay put). */
@@ -418,6 +485,7 @@ export class BattleScene extends Phaser.Scene {
 
     this.drawRings(g, px);
     if (this.ctl.debug) this.drawDebug(g, world, px);
+    if (world.phase === 'ready') this.drawRangeRing(g, world, px);
 
     // Path preview (also before START).
     const player = world.player;
@@ -455,6 +523,7 @@ export class BattleScene extends Phaser.Scene {
     for (const b of world.boats) {
       if (b.sinkingSince !== null && world.sinkAnim(b) >= 1) continue;
       if (world.tuning.visuals.oceanReloadRings) this.drawReloadRings(g, world, b, px, 3);
+      this.drawCrewPips(g, world, b, px);
       this.drawBoatPips(g, world, b, px);
     }
     for (const e of world.enemies) this.drawEnemyArrow(g, e);
@@ -465,6 +534,27 @@ export class BattleScene extends Phaser.Scene {
       const k = clamp((this.clock - r.t) / r.dur, 0, 1);
       g.lineStyle(Math.max(px(1.5), 0.15), r.color, (1 - k) * 0.9);
       g.strokeCircle(r.x, r.y, r.r * (0.3 + 0.7 * Math.sqrt(k)));
+    }
+  }
+
+  /** Setup: your guns' reach as a dashed ring (the lookout grows it) and the two broadside arcs. */
+  private drawRangeRing(g: Phaser.GameObjects.Graphics, world: World, px: (n: number) => number): void {
+    const b = world.player;
+    const r = cannonRange(b, world.tuning);
+    const arc = boatTuning('player', world.tuning).cannons.arc * DEG;
+    const { x, y } = b.motion;
+    for (const side of [-1, 1]) {
+      const face = b.motion.heading + (side * Math.PI) / 2;
+      g.fillStyle(0xffd27a, 0.08);
+      g.slice(x, y, r, face - arc, face + arc, false);
+      g.fillPath();
+    }
+    const n = 72;
+    g.lineStyle(px(2), 0xffd27a, 0.6);
+    for (let i = 0; i < n; i += 2) {
+      const a0 = (i / n) * Math.PI * 2;
+      const a1 = ((i + 1) / n) * Math.PI * 2;
+      g.lineBetween(x + Math.cos(a0) * r, y + Math.sin(a0) * r, x + Math.cos(a1) * r, y + Math.sin(a1) * r);
     }
   }
 
@@ -566,9 +656,15 @@ export class BattleScene extends Phaser.Scene {
         g.lineBetween(x - r * 0.7, y + r * 0.7, x + r * 0.7, y - r * 0.7);
         continue;
       }
+      const manned = workerAt(b, c.station) !== null;
       g.fillStyle(0x000000, 0.35);
       g.fillCircle(x, y, r * 1.15);
-      g.lineStyle(px(1.8), COLOR.reload, c.load >= 1 ? 1 : 0.95);
+      if (!manned) {
+        // Unmanned: a dim empty ring (keeps whatever load it had).
+        g.lineStyle(px(1.2), COLOR.offline, 0.7);
+        g.strokeCircle(x, y, r);
+      }
+      g.lineStyle(px(1.8), COLOR.reload, manned ? (c.load >= 1 ? 1 : 0.95) : 0.35);
       g.beginPath();
       g.arc(x, y, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * c.load, false);
       g.strokePath();
@@ -576,6 +672,21 @@ export class BattleScene extends Phaser.Scene {
         g.fillStyle(COLOR.reload, 1);
         g.fillCircle(x, y, r * 0.45);
       }
+    }
+  }
+
+  /** Tiny figures on each deck so crew losses and movement read in the ocean view. Debug colors them by task. */
+  private drawCrewPips(g: Phaser.GameObjects.Graphics, world: World, b: Boat, px: (n: number) => number): void {
+    const alpha = 1 - world.sinkAnim(b);
+    const r = Math.max(px(1.7), 0.35);
+    for (const lee of b.crew.lees) {
+      if (!lee.alive) continue;
+      const p = toWorld(lee.pos, b.motion, b.motion.heading);
+      const color = this.ctl.debug ? ACTIVITY_COLOR[activity(lee, b)] : b.side === 'player' ? COLOR.pipPlayer : COLOR.pipEnemy;
+      g.fillStyle(0x000000, 0.75 * alpha);
+      g.fillCircle(p.x, p.y, r * 1.45);
+      g.fillStyle(color, alpha);
+      g.fillCircle(p.x, p.y, r);
     }
   }
 
@@ -649,12 +760,12 @@ export class BattleScene extends Phaser.Scene {
         g.lineStyle(px(1), online ? (c.load >= 1 ? 0x7dff8a : 0x2f8a3a) : 0x666666, 0.5);
         g.beginPath();
         g.moveTo(from.x, from.y);
-        g.arc(from.x, from.y, ct.range, face - ct.arc * DEG, face + ct.arc * DEG, false);
+        g.arc(from.x, from.y, cannonRange(b, world.tuning), face - ct.arc * DEG, face + ct.arc * DEG, false);
         g.closePath();
         g.strokePath();
       }
       g.lineStyle(px(1), 0xffffff, 0.15);
-      g.strokeCircle(b.motion.x, b.motion.y, ct.range);
+      g.strokeCircle(b.motion.x, b.motion.y, cannonRange(b, world.tuning));
     }
     // Each enemy's seek point and preferred range.
     for (const e of world.enemies) {
@@ -705,24 +816,26 @@ export class BattleScene extends Phaser.Scene {
       g.fillCircle(gx + up.x * h, gy + up.y * h, 0.6);
     }
 
-    if (show) this.drawReloadRings(g, world, b, px, 9);
+    const fight = world.phase !== 'ready';
+    if (this.crewView) {
+      this.crewView.update(world, g, px, fight, this.clock, this.ctl.debug);
+      for (const p of this.crewView.splashes) {
+        this.spray.explode(10, p.x, p.y);
+        this.rings.push({ x: p.x, y: p.y, t: this.clock, dur: 0.7, r: 2.5, color: 0xe0f4ff });
+      }
+    }
+    if (!show || !fight) return;
 
+    // Per-part HP and water bars, tucked along the bottom of a plain tile of the part (below crew feet).
+    const along = rotate({ x: 1, y: 0 }, m.heading);
+    const down = rotate({ x: 0, y: 1 }, m.heading);
     b.parts.forEach((part, i) => {
-      const label = this.labels[i];
-      if (!label) return;
-      const c = toWorld(part.center, m, m.heading);
-      const bw = Math.min(px(70), polygonWidth(part.def.polygon) * 0.7);
+      const anchor = this.partAnchor(i);
       const f = structureFraction(part);
       const fill = part.capacity > 0 ? part.water / part.capacity : 0;
-      const along = rotate({ x: 1, y: 0 }, m.heading);
-      const down = rotate({ x: 0, y: 1 }, m.heading);
+      const bw = Math.min(polygonWidth(part.def.polygon) * 0.7, b.grid.tileW * 0.8);
+      const c = toWorld(anchor, m, m.heading);
       const at = (dx: number, dy: number) => ({ x: c.x + along.x * dx + down.x * dy, y: c.y + along.y * dx + down.y * dy });
-      label.setPosition(at(0, -px(9)).x, at(0, -px(9)).y);
-      label.setRotation(m.heading);
-      label.setScale(this.dpr / cam.zoom / 2);
-      label.setVisible(show);
-      if (!show) return;
-      // HP bar and water bar, drawn as rotated quads.
       const bar = (dy: number, h: number, frac: number, color: number, bg: number) => {
         const quad = (w: number) => [at(-bw / 2, dy), at(-bw / 2 + w, dy), at(-bw / 2 + w, dy + h), at(-bw / 2, dy + h)];
         g.fillStyle(bg, 0.85);
@@ -732,9 +845,26 @@ export class BattleScene extends Phaser.Scene {
           g.fillPoints(quad(bw * clamp(frac, 0, 1)), true);
         }
       };
-      bar(px(1), px(5), f, hpColor(f), 0x1a1a1a);
-      bar(px(7.5), px(3.5), fill, COLOR.water, 0x0a1a2a);
+      bar(0, 0.24, f, hpColor(f), 0x1a1a1a);
+      bar(0.3, 0.17, fill, COLOR.water, 0x0a1a2a);
     });
+  }
+
+  /** Where a part's HP/water bars go (local frame): bottom of its plain tile nearest the part's middle. */
+  private partAnchor(partIndex: number): Vec {
+    const b = this.ctl.world.player;
+    const part = b.parts[partIndex];
+    let best: Vec | null = null;
+    let bestD = Infinity;
+    for (const t of b.grid.tiles) {
+      if (t.part !== partIndex || t.station) continue;
+      const d = dist(t.center, part.center);
+      if (d < bestD - 1e-9) {
+        bestD = d;
+        best = { x: t.center.x, y: t.center.y + b.grid.tileH * 0.32 };
+      }
+    }
+    return best ?? part.center;
   }
 }
 

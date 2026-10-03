@@ -1,8 +1,10 @@
-// Boat state: parts with layered damage, flooding, cannons, and the derived
-// movement stats that damage and water feed into.
+// Boat state: parts with layered damage, flooding, the deck grid and its crew,
+// cannons, and the derived movement stats that damage, water and crew feed into.
 
 import type { BoatLayout, PartDef } from '../config/boats';
 import type { BoatTuning, Side, Tuning } from '../config/tuning';
+import type { CrewState } from './crew';
+import { buildGrid, type Grid } from './grid';
 import { clamp, DEG, distToPolygon, polygonCentroid, toLocal, type Vec } from './math';
 import type { MotionParams, MotionState } from './steering';
 
@@ -31,6 +33,8 @@ export interface PartState {
 
 export interface CannonState {
   partIndex: number;
+  /** The cannon station (tile index) a gunner works it from. */
+  station: number;
   /** Mount point on the hull edge, local frame. */
   local: Vec;
   broadside: -1 | 1;
@@ -38,6 +42,18 @@ export interface CannonState {
   load: number;
   /** World time it last fired (for recoil/smoke). */
   lastFired: number;
+  /** What the gunner is aiming at for the next shot (rolled when loaded, cleared on firing). */
+  aim: AimPlan | null;
+}
+
+/** A gunner's aim for one shot: which boat, which part, where on it, and how well it leads. */
+export interface AimPlan {
+  boatId: number;
+  part: number;
+  /** Offset from the part's center in the target's local frame, m. */
+  offset: Vec;
+  /** Lead multiplier (1 = perfect lead). */
+  lead: number;
 }
 
 export interface Boat {
@@ -54,6 +70,12 @@ export interface Boat {
   sinkingSince: number | null;
   /** Total water that has leaked in (stat). */
   waterTaken: number;
+  grid: Grid;
+  crew: CrewState;
+  /** Speed and turn multipliers from oars and sails, updated by the crew each step. */
+  mobility: { speed: number; turn: number };
+  /** Cannon range multiplier from manned lookouts (the lookout spots targets farther out). */
+  rangeBonus: number;
 }
 
 export function advantageOf(side: Side, t: Tuning): number {
@@ -88,24 +110,27 @@ export function createBoat(
     };
   });
 
+  // One cannon per cannon station, mounted on its part's outboard edge.
+  const grid = buildGrid(layout);
   const cannons: CannonState[] = [];
-  const perSide = Math.max(0, Math.round(bt.cannons.perSide));
-  for (const part of parts) {
+  const perSide = { [-1]: 0, [1]: 0 } as Record<number, number>;
+  for (const tile of grid.tiles) {
+    const part = parts[tile.part];
     const side = part.def.broadside;
-    if (part.def.role !== 'cannon' || !side) continue;
-    let minX = Infinity;
-    let maxX = -Infinity;
+    if (tile.station !== 'cannon' || !side) continue;
     let edgeY = 0;
-    for (const p of part.def.polygon) {
-      minX = Math.min(minX, p.x);
-      maxX = Math.max(maxX, p.x);
-      edgeY = side > 0 ? Math.max(edgeY, p.y) : Math.min(edgeY, p.y);
-    }
-    for (let i = 0; i < perSide; i++) {
-      const x = minX + ((i + 0.5) * (maxX - minX)) / perSide;
-      // Stagger initial loads so a broadside ripples instead of firing in lockstep.
-      cannons.push({ partIndex: part.index, local: { x, y: edgeY }, broadside: side, load: 0.15 + 0.25 * i, lastFired: -99 });
-    }
+    for (const p of part.def.polygon) edgeY = side > 0 ? Math.max(edgeY, p.y) : Math.min(edgeY, p.y);
+    const i = perSide[side]++;
+    // Stagger initial loads so a broadside ripples instead of firing in lockstep.
+    cannons.push({
+      partIndex: part.index,
+      station: tile.index,
+      local: { x: tile.center.x, y: edgeY },
+      broadside: side,
+      load: 0.15 + 0.25 * i,
+      lastFired: -99,
+      aim: null,
+    });
   }
 
   const idle = bt.movement.idleSpeed;
@@ -128,6 +153,10 @@ export function createBoat(
     target: null,
     sinkingSince: null,
     waterTaken: 0,
+    grid,
+    crew: { lees: [], needs: [], thinkIn: 0 },
+    mobility: { speed: 1, turn: 1 },
+    rangeBonus: 1,
   };
 }
 
@@ -167,6 +196,11 @@ export function applyDamage(part: PartState, amount: number): DamageResult {
     if (i === part.layers.length - 1) structureDamage += take;
   }
   return { dealt, structureDamage };
+}
+
+/** How far this boat's guns reach right now, m (base range × lookout). */
+export function cannonRange(boat: Boat, t: Tuning): number {
+  return boatTuning(boat.side, t).cannons.range * boat.rangeBonus;
 }
 
 export function cannonOnline(boat: Boat, cannon: CannonState, t: Tuning): boolean {
@@ -235,6 +269,30 @@ export function stepFlooding(boat: Boat, t: Tuning, dt: number): number {
   return leaked;
 }
 
+/**
+ * Water let in by a hit. Anything the part can't hold spills into the parts it
+ * shares a bulkhead with. Returns the water added.
+ */
+export function floodPart(boat: Boat, part: PartState, amount: number): number {
+  let left = Math.max(0, amount);
+  const take = (p: PartState, want: number) => {
+    const add = Math.min(want, Math.max(0, p.capacity - p.water));
+    p.water += add;
+    return add;
+  };
+  let added = take(part, left);
+  left -= added;
+  if (left > 1e-9) {
+    const next = boat.layout.adjacency
+      .filter(([a, b]) => a === part.def.id || b === part.def.id)
+      .map(([a, b]) => boat.parts.find((p) => p.def.id === (a === part.def.id ? b : a))!)
+      .filter(Boolean);
+    for (const p of next) added += take(p, left / next.length);
+  }
+  boat.waterTaken += added;
+  return added;
+}
+
 // ---------------------------------------------------------------- movement
 
 /** Engine output multiplier from the engine part's HP. */
@@ -254,7 +312,7 @@ export function waterFactors(boat: Boat, t: Tuning): { speed: number; turn: numb
   return { speed: 1 - clamp(f.waterSpeedPenalty, 0, 1) * x, turn: 1 - clamp(f.waterTurnPenalty, 0, 1) * x };
 }
 
-/** Current movement stats after advantage, engine damage and flooding. */
+/** Current movement stats after advantage, engine damage, flooding and crew (oars, sails). */
 export function motionParams(boat: Boat, t: Tuning): MotionParams {
   const m = boatTuning(boat.side, t).movement;
   const adv = advantageOf(boat.side, t);
@@ -262,10 +320,10 @@ export function motionParams(boat: Boat, t: Tuning): MotionParams {
   const water = waterFactors(boat, t);
   const sinking = boat.sinkingSince !== null;
   return {
-    cruiseSpeed: m.cruiseSpeed * engine * water.speed,
+    cruiseSpeed: m.cruiseSpeed * engine * water.speed * boat.mobility.speed,
     acceleration: m.acceleration,
     drag: sinking ? Math.max(m.drag, 1.5) : m.drag,
-    turnRate: m.turnRate * DEG * Math.sqrt(adv) * engine * water.turn,
+    turnRate: m.turnRate * DEG * Math.sqrt(adv) * engine * water.turn * boat.mobility.turn,
     turnAcceleration: m.turnAcceleration * DEG,
     lateralDrag: m.lateralDrag,
     turnSpeedLoss: m.turnSpeedLoss,

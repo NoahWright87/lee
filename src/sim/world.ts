@@ -2,14 +2,18 @@
 // given seed and input sequence.
 
 import { SLOOP, type BoatLayout } from '../config/boats';
+import { CREWS } from '../config/crews';
+import { LEE_DEFS } from '../config/lees';
 import type { Side, Tuning } from '../config/tuning';
 import {
   advantageOf,
   applyDamage,
   boatTuning,
   cannonOnline,
+  cannonRange,
   createBoat,
   distanceToHull,
+  floodPart,
   isWrecked,
   motionParams,
   partAt,
@@ -17,10 +21,13 @@ import {
   stepFlooding,
   structureFraction,
   type Boat,
+  type AimPlan,
   type CannonState,
   type PartState,
 } from './boat';
-import { DEG, dist, NORTH, Rng, toWorld, wrapAngle, type Vec } from './math';
+import { createLee, damageCrewAt, leeStat, stepCrew, updateMobility, wetFactor, workerAt, type Lee } from './crew';
+import { buildGrid, tileAtCell } from './grid';
+import { DEG, dist, NORTH, Rng, toLocal, toWorld, wrapAngle, type Vec } from './math';
 import { stepMotion } from './steering';
 import { TelegraphSystem } from './telegraph';
 
@@ -36,6 +43,8 @@ export interface Shell {
   flightTime: number;
   damage: number;
   impactRadius: number;
+  /** The Lee who fired it (for per-Lee stats). */
+  leeId: number | null;
 }
 
 export type WorldEvent =
@@ -44,7 +53,9 @@ export type WorldEvent =
   | { type: 'splash'; pos: Vec; ownerSide: Side }
   | { type: 'offline'; boatId: number; part: number }
   | { type: 'wrecked'; boatId: number; part: number }
-  | { type: 'sinking'; boatId: number };
+  | { type: 'sinking'; boatId: number }
+  | { type: 'leeHurt'; boatId: number; leeId: number; damage: number }
+  | { type: 'leeLost'; boatId: number; leeId: number; pos: Vec };
 
 export interface SideStats {
   shellsFired: number;
@@ -53,6 +64,9 @@ export interface SideStats {
   damageTaken: number;
   shellsDodged: number;
   waterTaken: number;
+  leesLost: number;
+  hpRepaired: number;
+  waterBailed: number;
 }
 
 const emptyStats = (): SideStats => ({
@@ -62,6 +76,9 @@ const emptyStats = (): SideStats => ({
   damageTaken: 0,
   shellsDodged: 0,
   waterTaken: 0,
+  leesLost: 0,
+  hpRepaired: 0,
+  waterBailed: 0,
 });
 
 export interface Result {
@@ -94,6 +111,30 @@ export interface WorldOptions {
   /** Player damage from the previous fight; repaired by campaign.repairBetweenFights. */
   carry?: PlayerCarry;
   layout?: BoatLayout;
+  /**
+   * Your crew: each Lee's home tile index, or null for a Lee left in the tray
+   * (stays ashore). Omitted = the Auto-arrange layout.
+   */
+  crew?: CrewPlacement;
+}
+
+/** Home tile per Lee slot (null = in the tray). */
+export type CrewPlacement = (number | null)[];
+
+/** The Auto-arrange placement for a crew of `size` on a layout. */
+export function autoArrange(layout: BoatLayout, side: Side, size: number): CrewPlacement {
+  const grid = buildGrid(layout);
+  const out: CrewPlacement = [];
+  const used = new Set<number>();
+  for (const [col, row] of CREWS[side].homes) {
+    if (out.length >= size) break;
+    const t = tileAtCell(grid, col, row);
+    if (!t || used.has(t.index)) continue;
+    used.add(t.index);
+    out.push(t.index);
+  }
+  while (out.length < size) out.push(null);
+  return out;
 }
 
 /** How many enemy ships fight N has. */
@@ -125,6 +166,7 @@ export class World {
   /** Fight time at which the result screen should appear. */
   resultAt: number | null = null;
   private nextShellId = 1;
+  private nextLeeId = 1;
 
   constructor(tuning: Tuning, seed = (Math.random() * 2 ** 31) | 0, opts: WorldOptions = {}) {
     this.tuning = tuning;
@@ -134,6 +176,7 @@ export class World {
     const layout = opts.layout ?? SLOOP;
     this.player = createBoat(1, 'player', layout, tuning, { x: 0, y: 0 }, NORTH);
     if (opts.carry) this.applyCarry(opts.carry);
+    this.placePlayerCrew(opts.crew ?? autoArrange(layout, 'player', Math.round(tuning.player.crew.size)));
 
     // Enemies fan out around the first spawn point, alternating sides of it.
     const g = tuning.global;
@@ -155,10 +198,44 @@ export class World {
         }
       }
       this.enemies.push(e);
+      this.boardCrew(e, autoArrange(layout, 'enemy', Math.round(tuning.enemy.crew.size)), CREWS.enemy.lee);
       const jitter = tuning.enemyAI.rangeJitter;
       this.brains.set(e.id, { orbitDir: 0, range: tuning.enemyAI.preferredRange + this.rng.range(-jitter, jitter), seek: null });
     }
     this.boats = [this.player, ...this.enemies];
+  }
+
+  /** Put a crew aboard: one Lee per placed slot, standing on its home tile. */
+  private boardCrew(boat: Boat, placement: CrewPlacement, leeType: string): void {
+    const def = LEE_DEFS[leeType] ?? Object.values(LEE_DEFS)[0];
+    boat.crew.lees = [];
+    boat.crew.thinkIn = 0;
+    const used = new Set<number>();
+    placement.forEach((home, slot) => {
+      if (home === null || home < 0 || home >= boat.grid.tiles.length || used.has(home)) return;
+      used.add(home);
+      boat.crew.lees.push(createLee(this.nextLeeId++, slot + 1, def, boat.side, boat, home, this.tuning));
+    });
+    updateMobility(boat, this.tuning);
+  }
+
+  /** Replace your crew (setup mode only). */
+  placePlayerCrew(placement: CrewPlacement): void {
+    if (this.phase !== 'ready') return;
+    this.boardCrew(this.player, placement, CREWS.player.lee);
+  }
+
+  /** Every Lee in the world. */
+  allLees(): Lee[] {
+    return this.boats.flatMap((b) => b.crew.lees);
+  }
+
+  findLee(id: number): { lee: Lee; boat: Boat } | null {
+    for (const boat of this.boats) {
+      const lee = boat.crew.lees.find((l) => l.id === id);
+      if (lee) return { lee, boat };
+    }
+    return null;
   }
 
   /** Restore the player's damage from the last fight, minus the between-fight repair. */
@@ -209,7 +286,17 @@ export class World {
   step(dt: number): void {
     if (this.phase === 'ready') return;
     this.time += dt;
+    // Once the fight is decided, guns go quiet, nobody else floods, and the crews stand down.
+    const decided = this.result !== null;
 
+    if (!decided) {
+      for (const b of this.boats) {
+        const foes = this.boats.filter((o) => o.side !== b.side && !this.isSinking(o));
+        const r = stepCrew(b, { tuning: this.tuning, time: this.time, foes }, dt);
+        this.stats[b.side].hpRepaired += r.repaired;
+        this.stats[b.side].waterBailed += r.bailed;
+      }
+    }
     for (const e of this.enemies) this.thinkEnemy(e);
     for (const b of this.boats) {
       const target = this.isSinking(b) ? null : b.target;
@@ -218,8 +305,6 @@ export class World {
       if (b.side === 'enemy') params.orbitCapture = 0;
       stepMotion(b.motion, target, params, dt);
     }
-    // Once the fight is decided, guns go quiet and nobody else floods.
-    const decided = this.result !== null;
     if (!decided) for (const b of this.boats) this.stepCannons(b, dt);
     this.stepShells(dt);
     this.telegraphs.step(dt);
@@ -292,43 +377,59 @@ export class World {
     return t;
   }
 
-  /** Where `shooter` would aim from `from` at `part` of `target`, leading its current velocity. */
-  leadAim(shooter: Boat, from: Vec, target: Boat, part: PartState): { aim: Vec; time: number } {
-    const p = toWorld(part.center, target.motion, target.motion.heading);
+  /**
+   * Where `shooter` would aim from `from` at `part` of `target`, leading its current
+   * velocity. With a plan, aims at the plan's spot on the part and leads by its (imperfect) factor.
+   */
+  leadAim(shooter: Boat, from: Vec, target: Boat, part: PartState, plan?: AimPlan): { aim: Vec; time: number } {
+    const off = plan?.offset ?? { x: 0, y: 0 };
+    const p = toWorld({ x: part.center.x + off.x, y: part.center.y + off.y }, target.motion, target.motion.heading);
+    const lead = plan?.lead ?? 1;
     let aim = p;
     let time = this.flightTime(shooter, dist(from, p));
     for (let i = 0; i < 3; i++) {
-      aim = { x: p.x + target.motion.vx * time, y: p.y + target.motion.vy * time };
+      aim = { x: p.x + target.motion.vx * time * lead, y: p.y + target.motion.vy * time * lead };
       time = this.flightTime(shooter, dist(from, aim));
     }
     return { aim, time };
   }
 
-  /** Nearest part of the nearest enemy boat, from a world point. */
-  pickTarget(shooter: Boat, from: Vec): { boat: Boat; part: PartState } | null {
-    let best: { boat: Boat; part: PartState } | null = null;
-    let bestBoatD = Infinity;
+  /** The closest enemy boat inside this cannon's arc and range, or null. */
+  pickTarget(shooter: Boat, c: CannonState, from: Vec): Boat | null {
+    let best: Boat | null = null;
+    let bestD = Infinity;
     for (const b of this.boats) {
       if (b.side === shooter.side || this.isSinking(b)) continue;
       const d = dist(from, b.motion);
-      if (d >= bestBoatD) continue;
-      bestBoatD = d;
-      let bestPartD = Infinity;
-      for (const part of b.parts) {
-        const pd = dist(from, toWorld(part.center, b.motion, b.motion.heading));
-        if (pd < bestPartD) {
-          bestPartD = pd;
-          best = { boat: b, part };
-        }
+      if (d < bestD && this.canHit(shooter, c, from, b.motion)) {
+        bestD = d;
+        best = b;
       }
     }
     return best;
   }
 
+  /** Roll a gunner's aim at a boat: a random part, a random spot near it, an imperfect lead. */
+  planAim(shooter: Boat, target: Boat): AimPlan {
+    const ct = boatTuning(shooter.side, this.tuning).cannons;
+    const err = Math.max(0, ct.leadError);
+    return {
+      boatId: target.id,
+      part: Math.min(target.parts.length - 1, Math.floor(this.rng.next() * target.parts.length)),
+      offset: this.rng.inDisk(Math.max(0, ct.aimRadius)),
+      lead: 1 + this.rng.range(-err, err),
+    };
+  }
+
+  /** The gunner working a cannon right now, or null (an unmanned gun neither loads nor fires). */
+  gunnerOf(b: Boat, c: CannonState): Lee | null {
+    return workerAt(b, c.station);
+  }
+
   /** Is `aim` inside this cannon's arc and range? */
   canHit(b: Boat, c: CannonState, from: Vec, aim: Vec): boolean {
     const ct = boatTuning(b.side, this.tuning).cannons;
-    if (dist(from, aim) > ct.range) return false;
+    if (dist(from, aim) > cannonRange(b, this.tuning)) return false;
     const a = Math.atan2(aim.y - from.y, aim.x - from.x);
     return Math.abs(wrapAngle(a - this.cannonFacing(b, c))) <= ct.arc * DEG;
   }
@@ -348,19 +449,29 @@ export class World {
     const cap = Math.round(this.tuning.campaign.maxIncomingShells);
     b.cannons.forEach((c, i) => {
       if (!cannonOnline(b, c, this.tuning)) return;
-      c.load = Math.min(1, c.load + dt / reload);
+      const gunner = this.gunnerOf(b, c);
+      if (!gunner) return;
+      const speed = leeStat(gunner, 'loadSpeed', b, this.tuning) * wetFactor(gunner, b, this.tuning);
+      c.load = Math.min(1, c.load + (dt * speed) / reload);
       if (c.load < 1) return;
       // Threat budget: a loaded enemy gun holds fire while enough red X's are already up.
       if (b.side !== 'player' && cap > 0 && this.incomingShells() >= cap) return;
       const from = this.muzzle(b, c);
-      const tgt = this.pickTarget(b, from);
-      if (!tgt) return;
-      const { aim, time } = this.leadAim(b, from, tgt.boat, tgt.part);
+      // 1) closest boat this gun can reach, 2-4) a rolled aim at it (kept until the shot goes).
+      const target = this.pickTarget(b, c, from);
+      if (!target) {
+        c.aim = null;
+        return;
+      }
+      if (!c.aim || c.aim.boatId !== target.id) c.aim = this.planAim(b, target);
+      const { aim, time } = this.leadAim(b, from, target, target.parts[c.aim.part], c.aim);
       if (!this.canHit(b, c, from, aim)) return;
-      const off = this.rng.inDisk(Math.max(0, ct.spread));
+      const accuracy = Math.max(0.05, leeStat(gunner, 'accuracy', b, this.tuning));
+      const off = this.rng.inDisk(Math.max(0, ct.spread) / accuracy);
       const to = { x: aim.x + off.x, y: aim.y + off.y };
       c.load = 0;
       c.lastFired = this.time;
+      c.aim = null;
       this.shells.push({
         id: this.nextShellId++,
         ownerId: b.id,
@@ -371,8 +482,10 @@ export class World {
         flightTime: time,
         damage: ct.damage,
         impactRadius: ct.impactRadius,
+        leeId: gunner.id,
       });
       this.stats[b.side].shellsFired++;
+      gunner.stats.shellsFired++;
       // Only threats to the player get the red X.
       if (b.side !== 'player') {
         this.telegraphs.add('shell', to, time, this.tuning.telegraph.lingerTime);
@@ -421,8 +534,23 @@ export class World {
     const wasOnline = structureFraction(hitPart) > boatTuning(hitBoat.side, this.tuning).function.cannonOfflineAt;
     const wasWrecked = isWrecked(hitPart);
     const dmg = applyDamage(hitPart, s.damage);
+    // Every hit lets water in; a hit on a part that's already wrecked punches straight through.
+    const ht = boatTuning(s.ownerSide, this.tuning).cannons;
+    this.stats[hitBoat.side].waterTaken += floodPart(hitBoat, hitPart, wasWrecked ? ht.holeWater : ht.hitWater);
     this.stats[s.ownerSide].shellsHit++;
     this.stats[s.ownerSide].damageDealt += dmg.dealt;
+    const shooter = s.leeId !== null ? this.findLee(s.leeId) : null;
+    if (shooter) {
+      shooter.lee.stats.shellsHit++;
+      shooter.lee.stats.damageDealt += dmg.dealt;
+    }
+    for (const h of damageCrewAt(hitBoat, toLocal(s.to, hitBoat.motion, hitBoat.motion.heading), this.tuning, this.time)) {
+      this.events.push({ type: 'leeHurt', boatId: hitBoat.id, leeId: h.lee.id, damage: h.damage });
+      if (h.lost) {
+        this.stats[hitBoat.side].leesLost++;
+        this.events.push({ type: 'leeLost', boatId: hitBoat.id, leeId: h.lee.id, pos: toWorld(h.lee.pos, hitBoat.motion, hitBoat.motion.heading) });
+      }
+    }
     this.stats[hitBoat.side].damageTaken += dmg.dealt;
     this.events.push({ type: 'hit', boatId: hitBoat.id, part: hitPart.index, pos: s.to, damage: dmg.dealt });
     if (hitPart.def.role === 'cannon' && wasOnline && structureFraction(hitPart) <= boatTuning(hitBoat.side, this.tuning).function.cannonOfflineAt) {

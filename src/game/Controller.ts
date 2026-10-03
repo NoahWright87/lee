@@ -1,11 +1,22 @@
-// Owns the live tuning, the current World, and run-level settings (speed,
-// debug). The Phaser scene and the DOM HUD both talk to this.
+// Owns the live tuning, the current World, your crew arrangement, and
+// run-level settings (speed, debug). The Phaser scene and the DOM HUD both
+// talk to this.
 
+import { SLOOP } from '../config/boats';
 import { defaultTuning, mergeTuning, type Tuning } from '../config/tuning';
-import { World } from '../sim/world';
+import type { Vec } from '../sim/math';
+import { autoArrange, World, type CrewPlacement } from '../sim/world';
 
 const STORAGE_KEY = 'lee.tuning.current';
 const PRESETS_KEY = 'lee.tuning.presets';
+const CREW_KEY = 'lee.crew.arrangement';
+
+/** How the strip camera maps the boat's local frame to CSS pixels (set by the scene each frame). */
+export interface StripProjection {
+  toCss: (local: Vec) => Vec;
+  /** Top of the strip panel, CSS px. */
+  top: number;
+}
 
 function safeGet(key: string): string | null {
   try {
@@ -38,6 +49,11 @@ export class Controller {
   fight = 1;
   /** Enemy ships sunk in earlier fights of this run. */
   private sunkBefore = 0;
+  /** Your crew: home tile per Lee slot (null = in the tray). Persists between fights and sessions. */
+  arrangement: CrewPlacement;
+  /** Ocean share of the screen right now (animates between setup and fight). Written by the scene. */
+  oceanFrac = 0.75;
+  stripProjection: StripProjection | null = null;
   private listeners = new Set<Listener>();
   private frameListeners = new Set<Listener>();
 
@@ -51,7 +67,83 @@ export class Controller {
         /* corrupt save: use defaults */
       }
     }
-    this.world = new World(this.tuning);
+    this.arrangement = this.loadArrangement();
+    this.world = this.buildWorld(1);
+  }
+
+  private buildWorld(fight: number, carry?: ReturnType<World['playerCarry']>): World {
+    this.arrangement = this.normalized(this.arrangement);
+    return new World(this.tuning, undefined, { fight, carry, crew: this.arrangement });
+  }
+
+  // ------------------------------------------------------------ crew arrangement
+
+  crewSize(): number {
+    return Math.max(0, Math.round(this.tuning.player.crew.size));
+  }
+
+  /** Fit an arrangement to the current crew size and grid: one Lee per tile, extra Lees to the tray. */
+  private normalized(a: CrewPlacement): CrewPlacement {
+    const n = this.crewSize();
+    const tiles = this.world?.player.grid.tiles.length ?? 15;
+    const used = new Set<number>();
+    const out: CrewPlacement = [];
+    for (let i = 0; i < n; i++) {
+      const v = a[i];
+      if (typeof v === 'number' && v >= 0 && v < tiles && !used.has(v)) {
+        used.add(v);
+        out.push(v);
+      } else out.push(null);
+    }
+    return out;
+  }
+
+  private loadArrangement(): CrewPlacement {
+    const saved = safeGet(CREW_KEY);
+    if (saved) {
+      try {
+        const a = JSON.parse(saved);
+        if (Array.isArray(a)) return a;
+      } catch {
+        /* corrupt save: auto-arrange */
+      }
+    }
+    return autoArrange(SLOOP, 'player', this.crewSize());
+  }
+
+  /** Change the arrangement (setup mode): updates the frozen world's crew and saves. */
+  setArrangement(a: CrewPlacement): void {
+    this.arrangement = this.normalized(a);
+    safeSet(CREW_KEY, JSON.stringify(this.arrangement));
+    if (this.world.phase === 'ready') this.world.placePlayerCrew(this.arrangement);
+    this.notify();
+  }
+
+  /** Put Lee `slot` on `tile` (null = back to the tray). Whoever was there swaps into the slot's old spot. */
+  placeLee(slot: number, tile: number | null): void {
+    const a = [...this.normalized(this.arrangement)];
+    if (slot < 0 || slot >= a.length) return;
+    const from = a[slot];
+    if (tile !== null) {
+      const other = a.indexOf(tile);
+      if (other >= 0 && other !== slot) a[other] = from;
+    }
+    a[slot] = tile;
+    this.setArrangement(a);
+  }
+
+  clearCrew(): void {
+    this.setArrangement(this.arrangement.map(() => null));
+  }
+
+  autoArrangeCrew(): void {
+    this.setArrangement(autoArrange(this.world.player.layout, 'player', this.crewSize()));
+  }
+
+  /** True if nobody is placed on a cannon station. */
+  noGunners(): boolean {
+    const tiles = this.world.player.grid.tiles;
+    return !this.arrangement.some((t) => t !== null && tiles[t]?.station === 'cannon');
   }
 
   onChange(fn: Listener): () => void {
@@ -74,30 +166,37 @@ export class Controller {
   }
 
   start(): void {
+    this.world.placePlayerCrew(this.normalized(this.arrangement));
     this.world.start();
     this.notify();
   }
 
-  /** New run from fight 1 with the current tuning. `running` skips the START screen. */
+  /** New run from fight 1 with the current tuning and arrangement. `running` skips setup. */
   restart(running = false): void {
     this.fight = 1;
     this.sunkBefore = 0;
-    this.world = new World(this.tuning, undefined, { fight: 1 });
+    this.world = this.buildWorld(1);
     this.runId++;
     if (running) this.world.start();
     this.notify();
   }
 
-  /** After a win: the next fight, with more ships. Your damage carries over minus repairs. */
-  nextFight(): void {
+  /** After a win: the next fight, with more ships. Your damage carries over minus repairs; your crew returns at full HP. */
+  nextFight(running = true): void {
     const w = this.world;
     if (w.result?.winner !== 'player') return;
     this.sunkBefore = this.shipsSunk();
     this.fight++;
-    this.world = new World(this.tuning, undefined, { fight: this.fight, carry: w.playerCarry() });
+    this.world = this.buildWorld(this.fight, w.playerCarry());
     this.runId++;
-    this.world.start();
+    if (running) this.world.start();
     this.notify();
+  }
+
+  /** From the result screen: back to setup for the next fight (after a win) or a fresh run (after a loss). */
+  rearrange(): void {
+    if (this.world.result?.winner === 'player') this.nextFight(false);
+    else this.restart(false);
   }
 
   /** Enemy ships sunk this run, including the current fight. */
@@ -117,6 +216,11 @@ export class Controller {
 
   // ------------------------------------------------------------ tuning persistence
 
+  /** After a live tuning edit: keep setup in step (crew size changes the tray). */
+  tuningChanged(): void {
+    if (this.world.phase === 'ready' && this.arrangement.length !== this.crewSize()) this.setArrangement(this.arrangement);
+  }
+
   /** Call after mutating `tuning` in place. */
   saveTuning(): void {
     safeSet(STORAGE_KEY, JSON.stringify(this.tuning));
@@ -127,6 +231,7 @@ export class Controller {
     const merged = mergeTuning(defaultTuning(), next);
     assignDeep(this.tuning, merged);
     this.saveTuning();
+    this.tuningChanged();
     this.notify();
   }
 

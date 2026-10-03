@@ -6,9 +6,14 @@
 //   Top-down, bow pointing RIGHT, transparent background. The image is stretched
 //   to the part's bounding box in the boat layout (src/config/boats.ts), so draw
 //   at the same aspect ratio. Sloop part boxes (length × width, meters):
-//     bow      7 × 10      midship 12 × 5
-//     cannon  12 × 2.5     stern    9 × 10
-//   Suggested resolution: 24 px per meter (e.g. midship 288 × 120 px).
+//     bow      7 × 10      midship 12 × 3.33
+//     cannon  12 × 3.33    stern    9 × 10
+//   Suggested resolution: 24 px per meter (e.g. midship 288 × 80 px).
+//   The deck grid (5 × 3 tiles of 4 × 3.33 m) sits on top of these.
+//
+// LEES
+//   Set `art` on a Lee type in src/config/lees.ts: a standing figure, feet at
+//   the bottom, about 3:5 (e.g. 96 × 160 px). Drawn ~1.25 × 2 m on deck.
 //   The cannon sprite is drawn as the PORT section (top edge = outboard side);
 //   the starboard section uses the same image flipped.
 //

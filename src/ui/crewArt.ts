@@ -1,0 +1,233 @@
+// Placeholder crew art drawn on a plain canvas, so the Phaser scene (textures)
+// and the DOM setup screen (data URLs) share one look. Real art replaces the
+// Lee figure via LeeDef.art; icons stay code-drawn for now.
+
+import type { ActivityKind } from '../config/lees';
+
+export type IconKind = ActivityKind | 'cannon' | 'oars' | 'sails' | 'spyglass';
+
+const INK = '#f6e7c1';
+const OUTLINE = '#1a120a';
+
+/** Stick-figure Lee, drawn into a w × h box (feet at the bottom). */
+export function drawLeeFigure(ctx: CanvasRenderingContext2D, w: number, h: number, opts: { ghost?: boolean; shirt?: string } = {}): void {
+  const s = h / 80;
+  const cx = w / 2;
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  const limbs = (width: number, color: string) => {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.beginPath();
+    // Body.
+    ctx.moveTo(cx, 26 * s);
+    ctx.lineTo(cx, 52 * s);
+    // Arms.
+    ctx.moveTo(cx - 14 * s, 44 * s);
+    ctx.lineTo(cx, 33 * s);
+    ctx.lineTo(cx + 14 * s, 44 * s);
+    // Legs.
+    ctx.moveTo(cx - 11 * s, 76 * s);
+    ctx.lineTo(cx, 52 * s);
+    ctx.lineTo(cx + 11 * s, 76 * s);
+    ctx.stroke();
+  };
+  if (opts.ghost) {
+    ctx.setLineDash([5 * s, 4 * s]);
+    limbs(3.5 * s, INK);
+    ctx.beginPath();
+    ctx.arc(cx, 14 * s, 11 * s, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+    return;
+  }
+  limbs(11 * s, OUTLINE);
+  limbs(6 * s, opts.shirt ?? '#2b2018');
+  // Shirt band across the chest so the figure reads on any deck color.
+  ctx.fillStyle = opts.shirt ?? '#c0392b';
+  ctx.strokeStyle = OUTLINE;
+  ctx.lineWidth = 2.5 * s;
+  ctx.beginPath();
+  ctx.roundRect(cx - 8 * s, 28 * s, 16 * s, 16 * s, 4 * s);
+  ctx.fill();
+  ctx.stroke();
+  // Head.
+  ctx.fillStyle = INK;
+  ctx.lineWidth = 3 * s;
+  ctx.beginPath();
+  ctx.arc(cx, 14 * s, 11 * s, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = OUTLINE;
+  ctx.beginPath();
+  ctx.arc(cx - 4 * s, 13 * s, 1.6 * s, 0, Math.PI * 2);
+  ctx.arc(cx + 4 * s, 13 * s, 1.6 * s, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+/** A square icon (size × size), light ink with a dark outline so it reads on decks and water. */
+export function drawIcon(ctx: CanvasRenderingContext2D, kind: IconKind, size: number): void {
+  const s = size / 64;
+  ctx.save();
+  ctx.scale(s, s);
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  const both = (path: () => void, width: number, fill = false) => {
+    ctx.strokeStyle = OUTLINE;
+    ctx.lineWidth = width + 6;
+    path();
+    ctx.stroke();
+    ctx.strokeStyle = INK;
+    ctx.fillStyle = INK;
+    ctx.lineWidth = width;
+    path();
+    if (fill) ctx.fill();
+    ctx.stroke();
+  };
+  switch (kind) {
+    case 'gun':
+    case 'cannon':
+      both(() => {
+        ctx.beginPath();
+        ctx.moveTo(10, 30);
+        ctx.lineTo(52, 22);
+        ctx.lineTo(54, 32);
+        ctx.lineTo(12, 40);
+        ctx.closePath();
+      }, 4, true);
+      both(() => {
+        ctx.beginPath();
+        ctx.arc(24, 44, 9, 0, Math.PI * 2);
+      }, 4);
+      break;
+    case 'row':
+    case 'oars':
+      for (const flip of [1, -1]) {
+        both(() => {
+          ctx.beginPath();
+          ctx.moveTo(32 - 20 * flip, 8);
+          ctx.lineTo(32 + 12 * flip, 44);
+        }, 5);
+        both(() => {
+          ctx.beginPath();
+          ctx.ellipse(32 + 16 * flip, 50, 6, 10, -0.7 * flip, 0, Math.PI * 2);
+        }, 3, true);
+      }
+      break;
+    case 'sail':
+    case 'sails':
+      both(() => {
+        ctx.beginPath();
+        ctx.moveTo(26, 6);
+        ctx.lineTo(26, 58);
+      }, 4);
+      both(() => {
+        ctx.beginPath();
+        ctx.moveTo(30, 8);
+        ctx.quadraticCurveTo(60, 30, 30, 50);
+        ctx.closePath();
+      }, 3, true);
+      both(() => {
+        ctx.beginPath();
+        ctx.moveTo(10, 56);
+        ctx.lineTo(48, 56);
+      }, 4);
+      break;
+    case 'lookout':
+    case 'spyglass':
+      both(() => {
+        ctx.beginPath();
+        ctx.moveTo(8, 44);
+        ctx.lineTo(48, 18);
+        ctx.lineTo(54, 28);
+        ctx.lineTo(14, 52);
+        ctx.closePath();
+      }, 3, true);
+      both(() => {
+        ctx.beginPath();
+        ctx.moveTo(30, 30);
+        ctx.lineTo(36, 40);
+      }, 3);
+      break;
+    case 'repair':
+      both(() => {
+        ctx.beginPath();
+        ctx.moveTo(14, 52);
+        ctx.lineTo(38, 28);
+      }, 8);
+      both(() => {
+        ctx.beginPath();
+        ctx.arc(44, 20, 12, Math.PI * 0.9, Math.PI * 2.6);
+      }, 6);
+      break;
+    case 'bail':
+      both(() => {
+        ctx.beginPath();
+        ctx.moveTo(14, 24);
+        ctx.lineTo(50, 24);
+        ctx.lineTo(44, 56);
+        ctx.lineTo(20, 56);
+        ctx.closePath();
+      }, 3, true);
+      both(() => {
+        ctx.beginPath();
+        ctx.arc(32, 24, 16, Math.PI, 0);
+      }, 3);
+      ctx.fillStyle = '#3a9cf0';
+      ctx.beginPath();
+      ctx.ellipse(32, 30, 14, 3.5, 0, 0, Math.PI * 2);
+      ctx.fill();
+      break;
+    case 'walk':
+      for (const [x, y, r] of [[22, 40, -0.3], [42, 22, 0.3]] as const) {
+        both(() => {
+          ctx.beginPath();
+          ctx.ellipse(x, y, 7, 11, r, 0, Math.PI * 2);
+        }, 2, true);
+      }
+      break;
+    case 'idle':
+      both(() => {
+        ctx.beginPath();
+        ctx.moveTo(14, 22);
+        ctx.lineTo(32, 22);
+        ctx.lineTo(14, 44);
+        ctx.lineTo(32, 44);
+      }, 4);
+      both(() => {
+        ctx.beginPath();
+        ctx.moveTo(38, 34);
+        ctx.lineTo(50, 34);
+        ctx.lineTo(38, 50);
+        ctx.lineTo(50, 50);
+      }, 3);
+      break;
+  }
+  ctx.restore();
+}
+
+const urlCache = new Map<string, string>();
+
+function canvasUrl(key: string, w: number, h: number, draw: (ctx: CanvasRenderingContext2D) => void): string {
+  const hit = urlCache.get(key);
+  if (hit) return hit;
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  draw(c.getContext('2d')!);
+  const url = c.toDataURL();
+  urlCache.set(key, url);
+  return url;
+}
+
+export function iconUrl(kind: IconKind): string {
+  return canvasUrl(`icon:${kind}`, 64, 64, (ctx) => drawIcon(ctx, kind, 64));
+}
+
+export function leeUrl(art: string | null): string {
+  return art ?? canvasUrl('lee', 48, 80, (ctx) => drawLeeFigure(ctx, 48, 80));
+}
+
+export const STATION_ICON: Record<string, IconKind> = { cannon: 'cannon', oars: 'oars', sails: 'sails', lookout: 'spyglass' };
