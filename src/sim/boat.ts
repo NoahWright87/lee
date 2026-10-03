@@ -42,6 +42,18 @@ export interface CannonState {
   load: number;
   /** World time it last fired (for recoil/smoke). */
   lastFired: number;
+  /** What the gunner is aiming at for the next shot (rolled when loaded, cleared on firing). */
+  aim: AimPlan | null;
+}
+
+/** A gunner's aim for one shot: which boat, which part, where on it, and how well it leads. */
+export interface AimPlan {
+  boatId: number;
+  part: number;
+  /** Offset from the part's center in the target's local frame, m. */
+  offset: Vec;
+  /** Lead multiplier (1 = perfect lead). */
+  lead: number;
 }
 
 export interface Boat {
@@ -117,6 +129,7 @@ export function createBoat(
       broadside: side,
       load: 0.15 + 0.25 * i,
       lastFired: -99,
+      aim: null,
     });
   }
 
@@ -254,6 +267,30 @@ export function stepFlooding(boat: Boat, t: Tuning, dt: number): number {
 
   boat.waterTaken += leaked;
   return leaked;
+}
+
+/**
+ * Water let in by a hit. Anything the part can't hold spills into the parts it
+ * shares a bulkhead with. Returns the water added.
+ */
+export function floodPart(boat: Boat, part: PartState, amount: number): number {
+  let left = Math.max(0, amount);
+  const take = (p: PartState, want: number) => {
+    const add = Math.min(want, Math.max(0, p.capacity - p.water));
+    p.water += add;
+    return add;
+  };
+  let added = take(part, left);
+  left -= added;
+  if (left > 1e-9) {
+    const next = boat.layout.adjacency
+      .filter(([a, b]) => a === part.def.id || b === part.def.id)
+      .map(([a, b]) => boat.parts.find((p) => p.def.id === (a === part.def.id ? b : a))!)
+      .filter(Boolean);
+    for (const p of next) added += take(p, left / next.length);
+  }
+  boat.waterTaken += added;
+  return added;
 }
 
 // ---------------------------------------------------------------- movement

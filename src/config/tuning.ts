@@ -54,6 +54,14 @@ export function defaultBoatTuning() {
       flightTimePerMeter: 0.006,
       /** A shell lands on a part if within this distance of it, m. */
       impactRadius: 1.2,
+      /** Gunners aim at a random point within this distance of a random part's center, m. */
+      aimRadius: 3,
+      /** Lead error: the gunner leads a moving target by the right amount × (1 ± this), so fast or far targets are harder to hit. */
+      leadError: 0.1,
+      /** Water a hit lets into an intact part. */
+      hitWater: 1.5,
+      /** Water a hit lets in through a part that is already wrecked (it punches through the hull). */
+      holeWater: 10,
     },
     function: {
       /** A cannon section at or below this HP fraction is offline. */

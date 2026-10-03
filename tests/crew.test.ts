@@ -300,16 +300,20 @@ describe('one crew AI, both boats', () => {
   });
 
   test('no dice: crew decisions are identical across different random seeds', () => {
+    // Shots are the only randomness (aim and scatter), so hold fire and script the damage instead.
     const fight = (seed: number) => {
       const t = defaultTuning();
-      t.player.cannons.spread = 0;
-      t.enemy.cannons.spread = 0;
+      t.player.cannons.reloadTime = 1e9;
+      t.enemy.cannons.reloadTime = 1e9;
       t.enemyAI.rangeJitter = 0;
       const w = new World(t, seed);
       w.start();
       const log: string[] = [];
       for (let i = 0; i < 40 / FIXED_DT; i++) {
         w.player.target = { x: w.enemies[0].motion.x + 50, y: w.enemies[0].motion.y };
+        if (i === 600) part(w.player, 'bow').layers[0].hp *= 0.3;
+        if (i === 900) part(w.player, 'port').layers[0].hp *= 0.2;
+        if (i === 1200) part(w.player, 'midship').water = 50;
         w.step(FIXED_DT);
         if (i % 30 === 0) for (const l of w.allLees()) log.push(`${l.id}:${taskKey(l.task)}:${l.reason}`);
       }

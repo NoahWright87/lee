@@ -270,3 +270,87 @@ describe('several attackers and fight progression', () => {
     expect(w.stats.player.damageTaken).toBe(0);
   });
 });
+
+describe('hits, holes and aim', () => {
+  test('a hit lets a little water in; a hit on a wrecked part punches a hole', () => {
+    const t = quiet(defaultTuning());
+    const w = new World(t, 1);
+    w.start();
+    const ct = t.player.cannons;
+    const shoot = (partId: string) => {
+      const e = w.enemies[0];
+      const part = e.parts.find((p) => p.def.id === partId)!;
+      const at = toWorld(part.center, e.motion, e.motion.heading);
+      w.shells.push({ id: 500, ownerId: w.player.id, ownerSide: 'player', from: at, to: at, elapsed: 0, flightTime: FIXED_DT / 2, damage: 1, impactRadius: 0.5, leeId: null });
+      w.step(FIXED_DT);
+      return part;
+    };
+    const total = () => w.enemies[0].parts.reduce((a, p) => a + p.water, 0);
+    t.enemy.flooding.leakRate = 0;
+    let before = total();
+    shoot('midship');
+    expect(total() - before).toBeCloseTo(ct.hitWater, 3);
+    const mid = w.enemies[0].parts.find((p) => p.def.id === 'midship')!;
+    mid.layers[0].hp = 0;
+    before = total();
+    shoot('midship');
+    expect(total() - before).toBeCloseTo(ct.holeWater, 3);
+    // A full wrecked part spills the hole's water into its neighbors.
+    const bow = w.enemies[0].parts.find((p) => p.def.id === 'bow')!;
+    bow.layers[0].hp = 0;
+    bow.water = bow.capacity;
+    before = total();
+    shoot('bow');
+    expect(total() - before).toBeCloseTo(ct.holeWater, 3);
+  });
+
+  test('gunners spread their shots over different parts and aim points, with an imperfect lead', () => {
+    const w = new World(defaultTuning(), 4);
+    const target = w.enemies[0];
+    const plans = Array.from({ length: 200 }, () => w.planAim(w.player, target));
+    expect(new Set(plans.map((p) => p.part)).size).toBe(target.parts.length);
+    const ct = w.tuning.player.cannons;
+    for (const p of plans) {
+      expect(Math.hypot(p.offset.x, p.offset.y)).toBeLessThanOrEqual(ct.aimRadius + 1e-9);
+      expect(p.lead).toBeGreaterThanOrEqual(1 - ct.leadError);
+      expect(p.lead).toBeLessThanOrEqual(1 + ct.leadError);
+    }
+    expect(new Set(plans.map((p) => p.lead.toFixed(3))).size).toBeGreaterThan(50);
+  });
+
+  test('lead error grows with target speed and distance', () => {
+    const w = new World(defaultTuning(), 1);
+    const target = w.enemies[0];
+    const part = target.parts[0];
+    const miss = (speed: number, range: number) => {
+      target.motion.vx = speed;
+      target.motion.vy = 0;
+      const from = { x: target.motion.x, y: target.motion.y + range };
+      const plan = { boatId: target.id, part: 0, offset: { x: 0, y: 0 }, lead: 1.1 };
+      const good = w.leadAim(w.player, from, target, part).aim;
+      const off = w.leadAim(w.player, from, target, part, plan).aim;
+      return dist(good, off);
+    };
+    expect(miss(0, 80)).toBeCloseTo(0);
+    expect(miss(12, 80)).toBeGreaterThan(miss(6, 80));
+    expect(miss(12, 120)).toBeGreaterThan(miss(12, 60));
+  });
+
+  test('each gun targets the closest boat it can actually reach', () => {
+    const t = quiet(defaultTuning());
+    const w = new World(t, 1, { enemies: 2 });
+    const [near, far] = w.enemies;
+    // Player at the origin heading north: port guns face west.
+    near.motion.x = -60;
+    near.motion.y = 0;
+    far.motion.x = -110;
+    far.motion.y = 0;
+    const port = w.player.cannons.find((c) => c.broadside === -1)!;
+    const star = w.player.cannons.find((c) => c.broadside === 1)!;
+    expect(w.pickTarget(w.player, port, w.muzzle(w.player, port))).toBe(near);
+    expect(w.pickTarget(w.player, star, w.muzzle(w.player, star))).toBeNull();
+    near.motion.x = 60; // now off the starboard beam: port guns take the far one
+    expect(w.pickTarget(w.player, port, w.muzzle(w.player, port))).toBe(far);
+    expect(w.pickTarget(w.player, star, w.muzzle(w.player, star))).toBe(near);
+  });
+});

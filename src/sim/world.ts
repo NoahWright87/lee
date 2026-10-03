@@ -13,6 +13,7 @@ import {
   cannonRange,
   createBoat,
   distanceToHull,
+  floodPart,
   isWrecked,
   motionParams,
   partAt,
@@ -20,6 +21,7 @@ import {
   stepFlooding,
   structureFraction,
   type Boat,
+  type AimPlan,
   type CannonState,
   type PartState,
 } from './boat';
@@ -375,37 +377,48 @@ export class World {
     return t;
   }
 
-  /** Where `shooter` would aim from `from` at `part` of `target`, leading its current velocity. */
-  leadAim(shooter: Boat, from: Vec, target: Boat, part: PartState): { aim: Vec; time: number } {
-    const p = toWorld(part.center, target.motion, target.motion.heading);
+  /**
+   * Where `shooter` would aim from `from` at `part` of `target`, leading its current
+   * velocity. With a plan, aims at the plan's spot on the part and leads by its (imperfect) factor.
+   */
+  leadAim(shooter: Boat, from: Vec, target: Boat, part: PartState, plan?: AimPlan): { aim: Vec; time: number } {
+    const off = plan?.offset ?? { x: 0, y: 0 };
+    const p = toWorld({ x: part.center.x + off.x, y: part.center.y + off.y }, target.motion, target.motion.heading);
+    const lead = plan?.lead ?? 1;
     let aim = p;
     let time = this.flightTime(shooter, dist(from, p));
     for (let i = 0; i < 3; i++) {
-      aim = { x: p.x + target.motion.vx * time, y: p.y + target.motion.vy * time };
+      aim = { x: p.x + target.motion.vx * time * lead, y: p.y + target.motion.vy * time * lead };
       time = this.flightTime(shooter, dist(from, aim));
     }
     return { aim, time };
   }
 
-  /** Nearest part of the nearest enemy boat, from a world point. */
-  pickTarget(shooter: Boat, from: Vec): { boat: Boat; part: PartState } | null {
-    let best: { boat: Boat; part: PartState } | null = null;
-    let bestBoatD = Infinity;
+  /** The closest enemy boat inside this cannon's arc and range, or null. */
+  pickTarget(shooter: Boat, c: CannonState, from: Vec): Boat | null {
+    let best: Boat | null = null;
+    let bestD = Infinity;
     for (const b of this.boats) {
       if (b.side === shooter.side || this.isSinking(b)) continue;
       const d = dist(from, b.motion);
-      if (d >= bestBoatD) continue;
-      bestBoatD = d;
-      let bestPartD = Infinity;
-      for (const part of b.parts) {
-        const pd = dist(from, toWorld(part.center, b.motion, b.motion.heading));
-        if (pd < bestPartD) {
-          bestPartD = pd;
-          best = { boat: b, part };
-        }
+      if (d < bestD && this.canHit(shooter, c, from, b.motion)) {
+        bestD = d;
+        best = b;
       }
     }
     return best;
+  }
+
+  /** Roll a gunner's aim at a boat: a random part, a random spot near it, an imperfect lead. */
+  planAim(shooter: Boat, target: Boat): AimPlan {
+    const ct = boatTuning(shooter.side, this.tuning).cannons;
+    const err = Math.max(0, ct.leadError);
+    return {
+      boatId: target.id,
+      part: Math.min(target.parts.length - 1, Math.floor(this.rng.next() * target.parts.length)),
+      offset: this.rng.inDisk(Math.max(0, ct.aimRadius)),
+      lead: 1 + this.rng.range(-err, err),
+    };
   }
 
   /** The gunner working a cannon right now, or null (an unmanned gun neither loads nor fires). */
@@ -444,15 +457,21 @@ export class World {
       // Threat budget: a loaded enemy gun holds fire while enough red X's are already up.
       if (b.side !== 'player' && cap > 0 && this.incomingShells() >= cap) return;
       const from = this.muzzle(b, c);
-      const tgt = this.pickTarget(b, from);
-      if (!tgt) return;
-      const { aim, time } = this.leadAim(b, from, tgt.boat, tgt.part);
+      // 1) closest boat this gun can reach, 2-4) a rolled aim at it (kept until the shot goes).
+      const target = this.pickTarget(b, c, from);
+      if (!target) {
+        c.aim = null;
+        return;
+      }
+      if (!c.aim || c.aim.boatId !== target.id) c.aim = this.planAim(b, target);
+      const { aim, time } = this.leadAim(b, from, target, target.parts[c.aim.part], c.aim);
       if (!this.canHit(b, c, from, aim)) return;
       const accuracy = Math.max(0.05, leeStat(gunner, 'accuracy', b, this.tuning));
       const off = this.rng.inDisk(Math.max(0, ct.spread) / accuracy);
       const to = { x: aim.x + off.x, y: aim.y + off.y };
       c.load = 0;
       c.lastFired = this.time;
+      c.aim = null;
       this.shells.push({
         id: this.nextShellId++,
         ownerId: b.id,
@@ -515,6 +534,9 @@ export class World {
     const wasOnline = structureFraction(hitPart) > boatTuning(hitBoat.side, this.tuning).function.cannonOfflineAt;
     const wasWrecked = isWrecked(hitPart);
     const dmg = applyDamage(hitPart, s.damage);
+    // Every hit lets water in; a hit on a part that's already wrecked punches straight through.
+    const ht = boatTuning(s.ownerSide, this.tuning).cannons;
+    this.stats[hitBoat.side].waterTaken += floodPart(hitBoat, hitPart, wasWrecked ? ht.holeWater : ht.hitWater);
     this.stats[s.ownerSide].shellsHit++;
     this.stats[s.ownerSide].damageDealt += dmg.dealt;
     const shooter = s.leeId !== null ? this.findLee(s.leeId) : null;
