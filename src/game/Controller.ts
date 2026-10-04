@@ -10,6 +10,20 @@ import { autoArrange, World, type CrewPlacement } from '../sim/world';
 const STORAGE_KEY = 'lee.tuning.current';
 const PRESETS_KEY = 'lee.tuning.presets';
 const CREW_KEY = 'lee.crew.arrangement';
+const SPEED_KEY = 'lee.speeds';
+
+export type SpeedMode = 'ranged' | 'melee';
+
+function loadSpeeds(): Record<SpeedMode, 1 | 2> {
+  const out: Record<SpeedMode, 1 | 2> = { ranged: 1, melee: 1 };
+  try {
+    const saved = JSON.parse(safeGet(SPEED_KEY) ?? '{}');
+    for (const k of ['ranged', 'melee'] as const) if (saved[k] === 2) out[k] = 2;
+  } catch {
+    /* defaults */
+  }
+  return out;
+}
 
 /** How the strip camera maps the boat's local frame to CSS pixels (set by the scene each frame). */
 export interface StripProjection {
@@ -44,7 +58,11 @@ type Listener = () => void;
 export class Controller {
   tuning: Tuning;
   world: World;
-  speed: 1 | 2 = 1;
+  /**
+   * Game speed, remembered separately for sailing (ranged) and for close combat
+   * (while your boat is attached): 2x for the sailing doesn't carry into a boarding fight.
+   */
+  speeds: Record<SpeedMode, 1 | 2> = loadSpeeds();
   debug = false;
   /** True while the rotate-your-phone overlay is up. */
   blocked = false;
@@ -217,8 +235,19 @@ export class Controller {
     this.restart(false);
   }
 
+  /** Which speed setting applies right now. */
+  speedMode(): SpeedMode {
+    return this.world.phase === 'running' && this.world.isAttached(this.world.player) ? 'melee' : 'ranged';
+  }
+
+  /** Current game speed. */
+  get speed(): 1 | 2 {
+    return this.speeds[this.speedMode()];
+  }
+
   setSpeed(s: 1 | 2): void {
-    this.speed = s;
+    this.speeds[this.speedMode()] = s;
+    safeSet(SPEED_KEY, JSON.stringify(this.speeds));
     this.notify();
   }
 

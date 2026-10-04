@@ -43,8 +43,8 @@ export function defaultBoatTuning() {
       reloadTime: 3,
       /** Max range, m. */
       range: 130,
-      /** Minimum range, m: a boat closer than this (center to muzzle) can't be shelled by this gun. */
-      minRange: 30,
+      /** Minimum range, m (this ship's guns): a boat closer than this (center to muzzle) can't be shelled by them. */
+      minRange: 25,
       /** Half-width of each gun's firing arc around its beam, degrees. */
       arc: 35,
       /** HP damage per shell. */
@@ -52,18 +52,43 @@ export function defaultBoatTuning() {
       /** Random scatter radius around the aim point for a baseline gunner, m (÷ accuracy and lookout). */
       spread: 2,
       /** Shell flight time = base + perMeter * distance (seconds). */
-      flightTimeBase: 1.4,
-      flightTimePerMeter: 0.006,
+      flightTimeBase: 1.9,
+      flightTimePerMeter: 0.011,
       /** A shell lands on a part if within this distance of it, m. */
       impactRadius: 1.2,
       /** Gunners aim at a random point within this distance of a random part's center, m. */
-      aimRadius: 3,
+      aimRadius: 3.5,
       /** Lead error: the gunner leads a moving target by the right amount × (1 ± this), so fast or far targets are harder to hit. */
-      leadError: 0.1,
+      leadError: 0.2,
+      /**
+       * Gunners guess at your turn too: each shot follows a random 0..this fraction of the
+       * target's current turn rate over the flight time. Circling steadily stops being safe;
+       * changing direction (zigzagging) is what dodges.
+       */
+      turnLead: 0.8,
       /** Water a hit lets into an intact part. */
       hitWater: 1.5,
       /** Water a hit lets in through a part that is already wrecked (it punches through the hull). */
       holeWater: 10,
+    },
+    /** Gatling guns (G stations, between the cannons): bullets at cannon range that hurt Lees, barely boats. */
+    gatling: {
+      /** Bullets per second for a baseline gunner (× load speed). */
+      rate: 2.5,
+      /** Range, m (no minimum). */
+      range: 110,
+      /** Half-width of its swivel arc around the beam, degrees. */
+      arc: 60,
+      /** Damage to a Lee per hit. */
+      damage: 3,
+      /** Damage to a boat part when a bullet hits the hull instead. */
+      boatDamage: 0.15,
+      /** Scatter radius at the muzzle (÷ gunner accuracy), m... */
+      spread: 0.3,
+      /** ...plus this much per meter of distance. Close in, it shreds; at range, it sprays. */
+      spreadPerMeter: 0.03,
+      /** A bullet this close to its target Lee hits it, m. */
+      hitRadius: 0.7,
     },
     function: {
       /** A cannon section at or below this HP fraction is offline. */
@@ -119,7 +144,7 @@ export function defaultTuning() {
 
   // Standard (Sloop): what Phase 2 called "the enemy". Orbits at cannon range.
   const standard = defaultShipTuning();
-  standard.cannons.spread = 1.5;
+  standard.cannons.spread = 2.5;
   // The enemy is a slower, clumsier hull. playerAdvantage stacks on top of this.
   standard.movement.cruiseSpeed = 10;
   standard.movement.turnRate = 18;
@@ -137,8 +162,8 @@ export function defaultTuning() {
     stern: { hp: 40, waterCapacity: 20, leakMultiplier: 1 },
     cannon: { hp: 22, waterCapacity: 8, leakMultiplier: 0.4 },
   };
-  Object.assign(boarder.cannons, { reloadTime: 2.6, range: 110, minRange: 25, spread: 1.8 });
-  boarder.crew.size = 7;
+  Object.assign(boarder.cannons, { reloadTime: 2.6, range: 110, minRange: 25, spread: 3 });
+  boarder.crew.size = 6;
   Object.assign(boarder.ai, { preferredRange: 30, seekAttach: 1 });
 
   // Heavy (Hard Ship): big, slow, many guns with wide arcs. Weak inside its minimum range.
@@ -150,8 +175,9 @@ export function defaultTuning() {
     stern: { hp: 100, waterCapacity: 45, leakMultiplier: 0.8 },
     cannon: { hp: 50, waterCapacity: 16, leakMultiplier: 0.25 },
   };
-  Object.assign(heavy.cannons, { reloadTime: 3.2, range: 150, minRange: 55, arc: 45, spread: 1.6 });
-  heavy.crew.size = 9;
+  // Wide minimum range: get in close and its broadsides can't touch you, while your own guns still can.
+  Object.assign(heavy.cannons, { reloadTime: 4.2, range: 150, minRange: 75, arc: 45, spread: 3, damage: 8 });
+  heavy.crew.size = 6;
   Object.assign(heavy.ai, { preferredRange: 105 });
 
   return {
@@ -268,7 +294,7 @@ export function defaultTuning() {
     /** Crossing between attached decks. */
     boarding: {
       /** Seconds a baseline Lee takes to swing across (÷ swing speed). */
-      swingTime: 0.9,
+      swingTime: 1.6,
       /** 1 = Lees in mid-swing can be shot by pistols. */
       swingHittable: 0,
       /** Boarders leave a deck once its water passes this fraction of the sink line. */
@@ -277,11 +303,21 @@ export function defaultTuning() {
       minHomeCrew: 0,
       /** Points lost per Lee already fighting a boarder (low, so ganging up happens). */
       repelHelpPenalty: 8,
+      /** Most Lees (either side) that can stand on one tile. Swings and moves wait for room. */
+      tileCap: 2,
+      /** A Lee below this fraction of its HP falls back (boarders swing home) and fights with its pistol instead. */
+      retreatAt: 0.25,
+      /** Seconds between Lees leaving one boat for the same enemy boat (one at a time over the rail). */
+      swingInterval: 0.8,
+      /** Casting off (Disengage) takes at least this long, s... */
+      castOffMin: 1,
+      /** ...and at most this long: anyone of yours still over there by then is left behind. */
+      castOffTimeout: 8,
     },
     /** Pistols: every Lee carries one. Hurts opposing Lees; barely scratches boats. */
     pistol: {
       /** Damage to a Lee per hit. */
-      damage: 6,
+      damage: 4,
       /** Damage to a boat part when a shot lands on the hull instead. */
       boatDamage: 0.3,
       /** Range, m. Covers the gap between attached boats and a little more. */
@@ -300,7 +336,7 @@ export function defaultTuning() {
       /** Damage per hit. */
       damage: 4,
       /** Hits per second for a baseline Lee. */
-      rate: 0.8,
+      rate: 0.6,
     },
     /** Core stats per Lee type, live (1 = baseline). `hp` applies next fight. */
     lees: Object.fromEntries(Object.entries(LEE_DEFS).map(([id, d]) => [id, { ...d.stats }])) as Record<string, LeeStats>,
@@ -312,7 +348,7 @@ export function defaultTuning() {
       /** Baseline walking speed, m/s. */
       walkSpeed: 5,
       /** Baseline Lee HP (next fight). */
-      hp: 40,
+      hp: 70,
       /** Speed with every oar station empty, as a fraction of fully crewed. */
       oarBaseline: 0.6,
       /** Turn rate with every sail station empty, as a fraction of fully crewed. */
@@ -400,11 +436,13 @@ export function defaultTuning() {
     },
     telegraph: {
       /** Enemy shells always give at least this much warning, s. */
-      minWarningTime: 1.2,
+      minWarningTime: 1.6,
       /** Radius the countdown ring starts at, m. */
       ringStartRadius: 20,
-      /** Half-size of the red X, m. */
-      markerSize: 5,
+      /** Half-size of the red X at impact, m (the danger zone). */
+      markerSize: 4,
+      /** The X starts this many times bigger and shrinks onto the impact point. */
+      markerStartScale: 2.5,
       /** Seconds for the X to fade in. */
       fadeInTime: 0.12,
       /** Seconds the X lingers after impact. */

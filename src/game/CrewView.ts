@@ -1,6 +1,6 @@
 // Draws crews and stations in the close-up strip, for every deck it's shown
 // (your boat, plus any boat attached to it): station icons (dim when empty),
-// Lees of both sides with a team ring under their feet, a task icon and a
+// Lees of both sides (enemies in a different shirt), a task icon and a
 // progress bar over their heads, a ghost on the home tile of any of yours who
 // are away, a line to where a walking Lee is headed, swings as an arc across
 // the gap, and sword fights as a shared wiggle. Reads world state; never writes it.
@@ -30,8 +30,6 @@ const COLOR = {
   claim: 0xf6e7c1,
   offline: 0x8a8580,
   wet: 0x3a9cf0,
-  friend: 0xf6e7c1,
-  foe: 0xff7a3a,
 };
 
 interface LeeSprites {
@@ -242,10 +240,7 @@ export class CrewView {
         g.strokePoints(quad(deck, dest.x0 + 0.25, dest.y0 + 0.25, dest.x1 - 0.25, dest.y1 - 0.25), true);
       }
 
-      // Team ring under the feet: tells the two crews apart on a shared deck.
       const feet = S(base, 0, FIG_H * 0.45 - lift);
-      g.lineStyle(px(2.5), friend ? COLOR.friend : COLOR.foe, 0.9 * alpha);
-      g.strokeEllipse(feet.x, feet.y, 1.15, 0.45);
 
       // Wading.
       if (!lee.swing && isWet(lee, deck, t)) {

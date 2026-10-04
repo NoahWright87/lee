@@ -8,7 +8,7 @@
 // anything with a motion state, a hull capsule, parts and a deck can link
 // (a latching Ness later).
 
-import type { Tuning } from '../config/tuning';
+import type { Side, Tuning } from '../config/tuning';
 import { applyDamage, bowTipLocal, hullCapsule, keelSegment, partAt, type Boat, type PartState } from './boat';
 import { clamp, closestOnSegment, closestSegments, DEG, dist, lerp, rotate, toLocal, toWorld, wrapAngle, type Vec } from './math';
 
@@ -38,6 +38,11 @@ export interface Attachment {
   /** World time the link breaks (recall window running), or null. */
   breakAt: number | null;
   breakReason: string | null;
+  /**
+   * One side is casting off (Disengage): its boarders come home, and the link
+   * breaks once none are left over there. The other side's boarders stay and fight.
+   */
+  castOff: { side: Side; since: number } | null;
 }
 
 /** "This boat is about to touch that one": a ram X or a dock ring. Recomputed every step. */
@@ -165,6 +170,18 @@ export class AttachSystem {
       }
     }
     return [...seen].sort((x, y) => x.id - y.id);
+  }
+
+  /** Is this link on its way to breaking (timed, or a side casting off)? No new boarding across it. */
+  castingOff(l: Attachment): boolean {
+    return l.breakAt !== null || l.castOff !== null;
+  }
+
+  /** `side` casts off: its boarders come home first (see World), then the link breaks. */
+  startCastOff(l: Attachment, side: Side, time: number): void {
+    if (l.breakAt !== null || l.castOff) return;
+    l.castOff = { side, since: time };
+    l.breakReason = 'disengage';
   }
 
   /** Start the recall window on a link (no-op if it's already breaking). */
@@ -317,6 +334,7 @@ export class AttachSystem {
       ease: t.dockEaseTime > 0 ? { from, t: 0, dur: t.dockEaseTime } : null,
       breakAt: null,
       breakReason: null,
+      castOff: null,
     });
   }
 
@@ -395,6 +413,7 @@ export class AttachSystem {
       ease: null,
       breakAt: null,
       breakReason: null,
+      castOff: null,
     });
     return { type: 'rammed', rammer: r, target, part, damage: dmg, selfPart: bow, selfDamage: selfDmg, pos: tip, speed };
   }

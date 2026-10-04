@@ -1038,8 +1038,7 @@ body {
 
 .disengage-btn {
   position: absolute;
-  min-width: 112px;
-  max-width: 150px;
+  width: 150px;
   min-height: 52px;
   padding: 6px 12px;
   border-radius: 12px;

@@ -85,6 +85,8 @@ export function postHelp(tile: Tile, tiles: Tile[], t: Tuning): string {
   switch (tile.station) {
     case 'cannon':
       return 'Loads and fires this gun. Only guns facing the enemy can shoot, so gunners cross the deck to follow it.';
+    case 'gatling':
+      return 'Works the gatling: a spray of bullets at enemy crew in its arc, out to cannon range. Shreds Lees up close, barely scratches hulls.';
     case 'oars':
       return `Rows: +${pctText((1 - t.crew.oarBaseline) / n('oars'))} speed while manned. With every oar empty you sail at ${pctText(t.crew.oarBaseline)}.`;
     case 'sails':

@@ -74,7 +74,7 @@ describe('deck grid', () => {
     expect(grid.tiles).toHaveLength(15);
     for (const t of grid.tiles) expect(pointInPolygon(t.center, SLOOP.parts[t.part].polygon)).toBe(true);
     const count = (s: string | null) => grid.tiles.filter((t) => t.station === s).length;
-    expect([count('cannon'), count('oars'), count('sails'), count('lookout'), count(null)]).toEqual([4, 2, 1, 1, 7]);
+    expect([count('cannon'), count('gatling'), count('oars'), count('sails'), count('lookout'), count(null)]).toEqual([4, 2, 2, 1, 1, 5]);
     // Default crew is short-handed: fewer Lees than stations.
     expect(defaultTuning().player.crew.size).toBeLessThan(8);
     expect(grid.tiles[T.portCannon2].label).toBe('Port cannon 2');
@@ -83,7 +83,10 @@ describe('deck grid', () => {
 
   test('cannons sit on cannon stations', () => {
     const w = new World(defaultTuning(), 1);
-    expect(w.player.cannons.map((c) => c.station).sort()).toEqual([T.portCannon1, T.portCannon2, T.starCannon1, T.starCannon2].sort());
+    const guns = w.player.cannons.filter((c) => c.kind === 'cannon');
+    expect(guns.map((c) => c.station).sort()).toEqual([T.portCannon1, T.portCannon2, T.starCannon1, T.starCannon2].sort());
+    // A gatling between each pair.
+    expect(w.player.cannons.filter((c) => c.kind === 'gatling').map((c) => grid.tiles[c.station].label).sort()).toEqual(['Port gatling', 'Starboard gatling']);
   });
 });
 
@@ -305,6 +308,8 @@ describe('one crew AI, both boats', () => {
       const t = defaultTuning();
       t.player.cannons.reloadTime = 1e9;
       t.ships.standard.cannons.reloadTime = 1e9;
+      t.player.gatling.rate = 0;
+      t.ships.standard.gatling.rate = 0;
       t.enemyAI.rangeJitter = 0;
       const w = new World(t, seed);
       w.start();

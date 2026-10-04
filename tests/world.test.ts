@@ -329,7 +329,7 @@ describe('hits, holes and aim', () => {
       target.motion.vx = speed;
       target.motion.vy = 0;
       const from = { x: target.motion.x, y: target.motion.y + range };
-      const plan = { boatId: target.id, part: 0, offset: { x: 0, y: 0 }, lead: 1.1 };
+      const plan = { boatId: target.id, part: 0, offset: { x: 0, y: 0 }, lead: 1.1, turn: 0 };
       const good = w.leadAim(w.player, from, target, part).aim;
       const off = w.leadAim(w.player, from, target, part, plan).aim;
       return dist(good, off);
@@ -355,5 +355,25 @@ describe('hits, holes and aim', () => {
     near.motion.x = 60; // now off the starboard beam: port guns take the far one
     expect(w.pickTarget(w.player, port, w.muzzle(w.player, port))).toBe(far);
     expect(w.pickTarget(w.player, star, w.muzzle(w.player, star))).toBe(near);
+  });
+});
+
+describe('turn-aware aim', () => {
+  test('a gunner that follows your turn aims along the curve, so turning steadily stops dodging', () => {
+    const w = new World(defaultTuning(), 3);
+    const target = w.player;
+    Object.assign(target.motion, { x: 0, y: 0, heading: 0, vx: 12, vy: 0, omega: 0.35 });
+    const part = target.parts.find((x) => x.def.id === 'midship')!;
+    const from = { x: 0, y: 90 };
+    const base = { boatId: target.id, part: part.index, offset: { x: 0, y: 0 }, lead: 1 };
+    const straight = w.leadAim(w.enemies[0], from, target, part, { ...base, turn: 0 });
+    const follow = w.leadAim(w.enemies[0], from, target, part, { ...base, turn: 1 });
+    // Simulate the target actually holding that turn for the shell's flight.
+    const t = follow.time;
+    const a = 0.35 * t;
+    const c = part.center; // the part sits off the boat's center and turns with it
+    const truth = { x: (Math.sin(a) / 0.35) * 12 + c.x * Math.cos(a) - c.y * Math.sin(a), y: ((1 - Math.cos(a)) / 0.35) * 12 + c.x * Math.sin(a) + c.y * Math.cos(a) };
+    expect(dist(follow.aim, truth)).toBeLessThan(1);
+    expect(dist(straight.aim, truth)).toBeGreaterThan(3);
   });
 });

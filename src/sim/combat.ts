@@ -45,6 +45,8 @@ export function updateEngagement(lees: Lee[]): void {
   }
   for (const group of byTile.values()) {
     for (const l of group) {
+      // Walking through a tile isn't a fight; the wounded fall back instead of swinging a sword.
+      if (l.path.length || l.retreating) continue;
       const target = meleeTarget(l, group);
       if (!target) continue;
       l.engaged = true;

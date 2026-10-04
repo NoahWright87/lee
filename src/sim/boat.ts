@@ -32,13 +32,15 @@ export interface PartState {
 }
 
 export interface CannonState {
+  /** A cannon (shells, hurts boats) or a gatling (bullets, hurts Lees). */
+  kind: 'cannon' | 'gatling';
   partIndex: number;
   /** The cannon station (tile index) a gunner works it from. */
   station: number;
   /** Mount point on the hull edge, local frame. */
   local: Vec;
   broadside: -1 | 1;
-  /** Load progress 0..1; fires at 1. */
+  /** Load progress 0..1; fires at 1 (a gatling: the next bullet). */
   load: number;
   /** World time it last fired (for recoil/smoke). */
   lastFired: number;
@@ -54,6 +56,8 @@ export interface AimPlan {
   offset: Vec;
   /** Lead multiplier (1 = perfect lead). */
   lead: number;
+  /** Fraction of the target's current turn rate the gunner assumes it keeps up (0 = straight line). */
+  turn: number;
 }
 
 export interface Boat {
@@ -133,12 +137,13 @@ export function createBoat(
   for (const tile of grid.tiles) {
     const part = parts[tile.part];
     const side = part.def.broadside;
-    if (tile.station !== 'cannon' || !side) continue;
+    if ((tile.station !== 'cannon' && tile.station !== 'gatling') || !side) continue;
     let edgeY = 0;
     for (const p of part.def.polygon) edgeY = side > 0 ? Math.max(edgeY, p.y) : Math.min(edgeY, p.y);
     const i = perSide[side]++;
     // Stagger initial loads so a broadside ripples instead of firing in lockstep.
     cannons.push({
+      kind: tile.station,
       partIndex: part.index,
       station: tile.index,
       local: { x: tile.center.x, y: edgeY },

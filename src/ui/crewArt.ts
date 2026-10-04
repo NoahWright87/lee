@@ -4,7 +4,7 @@
 
 import type { ActivityKind } from '../config/lees';
 
-export type IconKind = ActivityKind | 'cannon' | 'oars' | 'sails' | 'spyglass' | 'pistol' | 'recall';
+export type IconKind = ActivityKind | 'cannon' | 'gatling' | 'oars' | 'sails' | 'spyglass' | 'pistol' | 'recall';
 
 const INK = '#f6e7c1';
 const OUTLINE = '#1a120a';
@@ -270,6 +270,27 @@ export function drawIcon(ctx: CanvasRenderingContext2D, kind: IconKind, size: nu
         ctx.lineTo(25, 30);
       }, 4);
       break;
+    case 'gatling':
+      // A bundle of barrels on a swivel.
+      for (const dy of [-7, 0, 7]) {
+        both(() => {
+          ctx.beginPath();
+          ctx.moveTo(18, 30 + dy);
+          ctx.lineTo(56, 30 + dy * 0.6);
+        }, 3.5);
+      }
+      both(() => {
+        ctx.beginPath();
+        ctx.arc(18, 30, 10, 0, Math.PI * 2);
+      }, 3, true);
+      both(() => {
+        ctx.beginPath();
+        ctx.moveTo(18, 40);
+        ctx.lineTo(12, 58);
+        ctx.moveTo(18, 40);
+        ctx.lineTo(26, 58);
+      }, 3);
+      break;
     case 'pistol':
       both(() => {
         ctx.beginPath();
@@ -326,4 +347,4 @@ export function leeUrl(art: string | null): string {
   return art ?? canvasUrl('lee', 48, 80, (ctx) => drawLeeFigure(ctx, 48, 80));
 }
 
-export const STATION_ICON: Record<string, IconKind> = { cannon: 'cannon', oars: 'oars', sails: 'sails', lookout: 'spyglass' };
+export const STATION_ICON: Record<string, IconKind> = { cannon: 'cannon', gatling: 'gatling', oars: 'oars', sails: 'sails', lookout: 'spyglass' };

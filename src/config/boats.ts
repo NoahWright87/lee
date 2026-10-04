@@ -25,13 +25,13 @@ export interface PartDef {
 }
 
 /** What standing on (and working) a tile does. Plain tiles have none. */
-export type StationKind = 'cannon' | 'oars' | 'sails' | 'lookout';
+export type StationKind = 'cannon' | 'gatling' | 'oars' | 'sails' | 'lookout';
 
 /**
  * The deck grid Lees stand on. Rows run port (top) to starboard (bottom),
  * columns stern (left) to bow (right), matching the close-up strip.
  * `parts` names the part each tile belongs to ('-' = no tile there).
- * `stations` marks stations: C cannon, O oars, S sails, L lookout, . plain deck.
+ * `stations` marks stations: C cannon, G gatling, O oars, S sails, L lookout, . plain deck.
  */
 export interface GridDef {
   cols: number;
@@ -137,7 +137,7 @@ export const SLOOP: BoatLayout = {
     ['port', 'stern'],
     ['starboard', 'stern'],
   ],
-  // Cannons sit on the cannon stations: two per broadside.
+  // Cannons sit on the cannon stations: two per broadside, a gatling between them.
   grid: {
     cols: 5,
     rows: 3,
@@ -150,9 +150,9 @@ export const SLOOP: BoatLayout = {
       'stern starboard starboard starboard bow',
     ],
     stations: [
-      'O C . C .',
+      'O C G C .',
       '. . S . L',
-      'O C . C .',
+      'O C G C .',
     ],
   },
 };
@@ -229,14 +229,14 @@ export const FRIEND_SHIP: BoatLayout = {
       'stern starboard starboard bow',
     ],
     stations: [
-      'O C . .',
+      'O C G .',
       '. . S .',
-      'O C . .',
+      'O C G .',
     ],
   },
 };
 
-/** Hard Ship (heavy): long, slow and heavily built, three guns a side and two lookouts. */
+/** Hard Ship (heavy): long, slow and heavily built, three guns and a gatling a side, two lookouts. */
 export const HARD_SHIP: BoatLayout = {
   id: 'hardship',
   length: 40,
@@ -307,10 +307,10 @@ export const HARD_SHIP: BoatLayout = {
       'stern starboard starboard starboard starboard starboard bow',
     ],
     stations: [
-      'O C . C . C .',
+      'O C G C . C .',
       '. . . S . . L',
       '. . . S . . L',
-      'O C . C . C .',
+      'O C G C . C .',
     ],
   },
 };

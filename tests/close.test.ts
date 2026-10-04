@@ -337,21 +337,87 @@ describe('boarding: who goes and why', () => {
     expect(leastHome).toBeGreaterThanOrEqual(Math.min(2, w.player.crew.lees.filter((l) => l.alive).length));
   });
 
-  test('disengage: boarders swing home in the recall window, then the link breaks and the boats push apart', () => {
+  test('disengage: your boarders fight their way home, then you cast off; theirs stay aboard and fight', () => {
     const t = quiet(defaultTuning());
     t.ships.standard.crew.size = 4;
     const { w, e, hold } = docked(t, [T.portCannon2, T.portOars, T.sails], ['standard']);
-    run(w, 4, hold);
+    run(w, 6, hold);
+    const theirsOnUs = () => e.crew.lees.filter((l) => l.alive && (l.deck === w.player || l.swing?.to === w.player)).length;
+    const theirsBefore = theirsOnUs();
     expect(w.disengage(e)).toBe(true);
     expect(w.stats.player.disengages).toBe(1);
-    run(w, t.attach.recallWindow - 0.1, hold);
+    // Still attached for at least the minimum, and while any of yours are over there.
+    run(w, t.boarding.castOffMin - 0.1, hold);
     expect(w.isAttached(w.player)).toBe(true);
-    run(w, 0.3);
+    let brokeAt = -1;
+    run(w, t.boarding.castOffTimeout + 1, () => {
+      hold();
+      if (brokeAt < 0 && !w.isAttached(w.player)) brokeAt = w.time;
+    });
+    expect(brokeAt).toBeGreaterThan(0);
+    // Yours are home (or dead); theirs on your deck weren't recalled.
+    for (const l of w.player.crew.lees.filter((x) => x.alive)) expect(l.deck).toBe(w.player);
+    if (theirsBefore > 0) expect(e.crew.lees.some((l) => l.deck === w.player)).toBe(true);
+  });
+
+  test('cast-off pushes the boats apart', () => {
+    const t = quiet(defaultTuning());
+    t.ships.standard.crew.size = 0;
+    const { w, e } = docked(t, [T.portCannon2], ['standard']);
+    run(w, 0.2);
+    w.disengage(e);
+    run(w, t.boarding.castOffMin + 0.2);
     expect(w.isAttached(w.player)).toBe(false);
-    for (const l of w.allLees().filter((x) => x.alive)) expect(l.deck).toBe(l.boat);
-    // Pushed apart: moving away from each other.
     const rel = (e.motion.vx - w.player.motion.vx) * (e.motion.x - w.player.motion.x) + (e.motion.vy - w.player.motion.vy) * (e.motion.y - w.player.motion.y);
     expect(rel).toBeGreaterThan(0);
+  });
+
+  test('no more than tileCap Lees ever stand on one tile', () => {
+    const t = quiet(defaultTuning());
+    t.ships.standard.crew.size = 6;
+    const { w, hold } = docked(t, [T.portCannon2, T.portOars, T.sails, T.midDeck, T.starCannon2, tile(2, 0)], ['standard']);
+    let worst = 0;
+    run(w, 25, () => {
+      hold();
+      const count = new Map<string, number>();
+      for (const l of w.allLees()) {
+        if (!l.alive || l.swing || l.path.length) continue;
+        const k = `${l.deck.id}:${l.tile}`;
+        count.set(k, (count.get(k) ?? 0) + 1);
+      }
+      for (const n of count.values()) worst = Math.max(worst, n);
+    });
+    expect(worst).toBeLessThanOrEqual(t.boarding.tileCap);
+  });
+
+  test('a wounded Lee falls back and shoots instead of sword-fighting', () => {
+    const t = quiet(defaultTuning());
+    t.ships.standard.crew.size = 1;
+    const { w, e, hold } = docked(t, [T.midDeck], ['standard', 'heavy'], [{ x: 0, y: -400 }]);
+    t.ships.heavy.crew.size = 0;
+    const me = mine(w, 1);
+    const foe = e.crew.lees[0];
+    Object.assign(foe, { deck: w.player, tile: me.tile, pos: { ...me.pos }, path: [], dest: me.tile });
+    me.hp = me.maxHp * 0.2;
+    run(w, 3, hold);
+    expect(me.retreating || !me.alive).toBe(true);
+    expect(me.engaged).toBe(false);
+    expect(me.stats.meleeDealt).toBe(0);
+    expect(me.stats.pistolShots).toBeGreaterThan(0);
+  });
+
+  test('boarders cross one at a time', () => {
+    const t = quiet(defaultTuning());
+    t.ships.standard.crew.size = 4;
+    t.boarding.swingInterval = 1;
+    const { w, hold } = docked(t, [T.portCannon2, T.portOars, T.sails, T.midDeck], ['standard']);
+    const starts: number[] = [];
+    run(w, 8, () => {
+      hold();
+      for (const l of w.player.crew.lees) if (l.swing && !l.swing.back && l.swing.t === 0) starts.push(w.time);
+    });
+    starts.sort((a, b) => a - b);
+    for (let i = 1; i < starts.length; i++) expect(starts[i] - starts[i - 1]).toBeGreaterThanOrEqual(1 - 1e-6);
   });
 
   test('crews do not swing across and back over and over', () => {
@@ -510,8 +576,9 @@ describe('enemy ship types', () => {
     const w = new World(t, 3, { encounter: ['standard', 'boarder', 'heavy'] });
     expect(w.enemies.map((e) => e.layout.id)).toEqual(['sloop', 'friendship', 'hardship']);
     expect(w.enemies.map((e) => e.crew.lees.length)).toEqual([t.ships.standard.crew.size, t.ships.boarder.crew.size, t.ships.heavy.crew.size]);
-    expect(w.enemies[2].cannons.length).toBeGreaterThan(w.enemies[0].cannons.length);
-    expect(w.enemies[1].cannons.length).toBeLessThan(w.enemies[0].cannons.length);
+    const guns = (b: Boat) => b.cannons.filter((c) => c.kind === 'cannon').length;
+    expect(guns(w.enemies[2])).toBeGreaterThan(guns(w.enemies[0]));
+    expect(guns(w.enemies[1])).toBeLessThan(guns(w.enemies[0]));
   });
 
   test('intro fights bring one new type each, alone; later fights mix by weight (seeded)', () => {
@@ -570,5 +637,43 @@ describe('end of fight while boarded', () => {
     expect(w.result?.winner).toBe('player');
     expect(w.stats.player.lostBy.sank).toBe(0);
     for (const l of w.player.crew.lees.filter((x) => x.alive)) expect(l.deck).toBe(w.player);
+  });
+});
+
+describe('gatling guns', () => {
+  test('a manned gatling shreds crew on an enemy deck in its arc but barely scratches the hull', () => {
+    const t = quiet(defaultTuning());
+    t.player.cannons.reloadTime = 1e9; // gatling only
+    t.ships.standard.crew.size = 4;
+    t.ships.standard.cannons.reloadTime = 1e9;
+    t.ships.standard.gatling.rate = 0;
+    const gat = grid.tiles.find((x) => x.label === 'Port gatling')!.index;
+    const w = new World(t, 3, { encounter: ['standard'], crew: [gat] });
+    w.start();
+    const e = w.enemies[0];
+    const hp0 = e.parts.reduce((a, p) => a + p.layers[0].hp, 0);
+    run(w, 20, () => {
+      pin(w, w.player, { x: 0, y: 0 });
+      pin(w, e, { x: -40, y: 0 });
+    });
+    expect(mine(w, 1).task).toEqual({ type: 'station', target: gat });
+    expect(w.stats.player.gatlingShots).toBeGreaterThan(20);
+    expect(w.stats.player.gatlingHits).toBeGreaterThan(0);
+    expect(w.stats.player.gatlingDealt).toBeGreaterThan(0);
+    const lost = hp0 - e.parts.reduce((a, p) => a + p.layers[0].hp, 0);
+    expect(lost).toBeLessThan(10);
+  });
+
+  test('a gatling never fires at its own deck', () => {
+    const t = quiet(defaultTuning());
+    t.ships.standard.crew.size = 0;
+    const gat = grid.tiles.find((x) => x.label === 'Port gatling')!.index;
+    const w = new World(t, 3, { encounter: ['standard'], crew: [gat] });
+    w.start();
+    run(w, 5, () => {
+      pin(w, w.player, { x: 0, y: 0 });
+      pin(w, w.enemies[0], { x: 0, y: -400 });
+    });
+    expect(w.stats.player.gatlingShots).toBe(0);
   });
 });

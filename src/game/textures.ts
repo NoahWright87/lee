@@ -57,7 +57,7 @@ export function preloadArt(scene: Phaser.Scene): void {
 
 const ICONS: IconKind[] = [
   'gun', 'row', 'sail', 'lookout', 'repair', 'bail', 'walk', 'idle', 'cannon', 'oars', 'sails', 'spyglass',
-  'board', 'repel', 'melee', 'swing', 'recall', 'pistol',
+  'board', 'repel', 'melee', 'swing', 'recall', 'pistol', 'gatling',
 ];
 
 /** Enemy Lees wear a different shirt so the two crews read apart on a shared deck. */

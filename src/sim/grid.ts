@@ -45,7 +45,7 @@ export interface Grid {
   next: number[][];
 }
 
-const STATION_CODES: Record<string, StationKind | null> = { C: 'cannon', O: 'oars', S: 'sails', L: 'lookout', '.': null };
+const STATION_CODES: Record<string, StationKind | null> = { C: 'cannon', G: 'gatling', O: 'oars', S: 'sails', L: 'lookout', '.': null };
 
 export function buildGrid(layout: BoatLayout): Grid {
   const g = layout.grid;
@@ -136,6 +136,9 @@ function labelTiles(layout: BoatLayout, tiles: Tile[], rows: number): void {
         t.label = `${side} cannon ${cannonCount[side]}`.trim();
         break;
       }
+      case 'gatling':
+        t.label = side ? `${side} gatling` : 'Gatling';
+        break;
       case 'oars':
         t.label = side ? `${side} oars` : 'Oars';
         break;

@@ -30,9 +30,9 @@ import {
   type PartState,
 } from './boat';
 import { updateEngagement, stepMelee, stepPistols, type CombatEvent } from './combat';
-import { createLee, damageCrewAt, leeStat, loseLee, stepCrew, updateMobility, wetFactor, workerAt, type CrewContext, type Lee, type LossCause } from './crew';
+import { createLee, damageCrewAt, hurtLee, leeStat, loseLee, stepCrew, updateMobility, wetFactor, workerAt, type CrewContext, type Lee, type LossCause } from './crew';
 import { buildGrid, tileAtCell } from './grid';
-import { DEG, dist, NORTH, Rng, toLocal, toWorld, wrapAngle, type Vec } from './math';
+import { DEG, dist, NORTH, Rng, rotate, toLocal, toWorld, wrapAngle, type Vec } from './math';
 import { alongsideCommand, stepMotion, type AlongsideSpec } from './steering';
 import { TelegraphSystem } from './telegraph';
 
@@ -68,7 +68,8 @@ export type WorldEvent =
   | { type: 'bump'; pos: Vec; speed: number }
   | { type: 'linkBroken'; a: number; b: number; reason: string }
   | { type: 'swing'; leeId: number; back: boolean }
-  | { type: 'crewLost'; boatId: number };
+  | { type: 'crewLost'; boatId: number }
+  | { type: 'gatling'; boatId: number; cannon: number; from: Vec; to: Vec; hit: boolean; side: Side };
 
 export interface SideStats {
   shellsFired: number;
@@ -91,6 +92,9 @@ export interface SideStats {
   pistolShots: number;
   pistolHits: number;
   pistolDealt: number;
+  gatlingShots: number;
+  gatlingHits: number;
+  gatlingDealt: number;
   ramsDone: number;
   ramsTaken: number;
   /** Ram damage dealt to the struck boat (by this side's rams) and taken (by this side's boats, both ways). */
@@ -111,7 +115,10 @@ const emptyStats = (): SideStats => ({
   leesLost: 0,
   hpRepaired: 0,
   waterBailed: 0,
-  lostBy: { cannon: 0, melee: 0, pistol: 0, sank: 0 },
+  lostBy: { cannon: 0, gatling: 0, melee: 0, pistol: 0, sank: 0 },
+  gatlingShots: 0,
+  gatlingHits: 0,
+  gatlingDealt: 0,
   boardings: 0,
   enemyDeckTime: 0,
   meleeKills: 0,
@@ -347,14 +354,16 @@ export class World {
   }
 
   /**
-   * Disengage from an attached boat: your boarders there (and theirs on you)
-   * swing home during the recall window, then the link breaks and the boats
-   * are pushed apart. Returns false if there's no such link.
+   * Disengage from an attached boat: cast off. Your boarders over there fight
+   * their way back aboard; once they're all home (at least castOffMin, at most
+   * castOffTimeout) the link breaks and the boats are pushed apart. Their
+   * boarders on your deck don't get a free ride home: they stay and fight.
+   * Returns false if there's no such link.
    */
   disengage(other: Boat, from: Boat = this.player): boolean {
     const l = this.links.linkBetween(from, other);
-    if (!l || l.breakAt !== null || this.result) return false;
-    this.links.breakLink(l, 'disengage', this.time, this.tuning.attach.recallWindow);
+    if (!l || this.links.castingOff(l) || this.result) return false;
+    this.links.startCastOff(l, from.side, this.time);
     this.stats[from.side].disengages++;
     if (this.alongside?.boatId === other.id) this.alongside = null;
     // Boarders hear the recall now, not at the next think.
@@ -396,6 +405,34 @@ export class World {
       }
     }
     return best;
+  }
+
+  /** Lees of `side` still over on `deck` (standing there, or in the air on the way). */
+  private stillAcross(side: Side, deck: Boat): number {
+    return this.allLees().filter((l) => l.alive && l.side === side && (l.swing ? l.swing.to === deck : l.deck === deck)).length;
+  }
+
+  /** Disengage button text: who you're still waiting for. */
+  castOffStatus(other: Boat): string {
+    const l = this.links.linkBetween(this.player, other);
+    if (!l) return '';
+    if (l.breakAt !== null) return `${Math.max(0, l.breakAt - this.time).toFixed(1)}s`;
+    const n = this.stillAcross(this.player.side, other);
+    return n ? `${n} still aboard them` : 'pushing off';
+  }
+
+  /** Casting off: break the link once that side's boarders are home (or time's up). */
+  private stepCastOffs(): void {
+    const b = this.tuning.boarding;
+    for (const l of this.links.links) {
+      if (!l.castOff || l.breakAt !== null) continue;
+      const other = l.a.side === l.castOff.side ? l.b : l.a;
+      const age = this.time - l.castOff.since;
+      const home = this.stillAcross(l.castOff.side, other) === 0;
+      if ((home && age >= Math.max(0, b.castOffMin)) || age >= Math.max(b.castOffMin, b.castOffTimeout)) {
+        l.breakAt = this.time;
+      }
+    }
   }
 
   /** Opposing boats this boat's guns may fire on: not attached to it, nor to any boat on its side (§4.6). */
@@ -498,6 +535,7 @@ export class World {
       stepMotion(b.motion, target, params, dt);
     }
     this.links.moveGroups(this.tuning, dt);
+    this.stepCastOffs();
     for (const ev of this.links.step({ tuning: this.tuning, time: this.time, boats: this.boats, playerAlongside: this.alongside?.boatId ?? null }, dt)) {
       this.handleLinkEvent(ev);
     }
@@ -770,12 +808,27 @@ export class World {
    */
   leadAim(shooter: Boat, from: Vec, target: Boat, part: PartState, plan?: AimPlan): { aim: Vec; time: number } {
     const off = plan?.offset ?? { x: 0, y: 0 };
-    const p = toWorld({ x: part.center.x + off.x, y: part.center.y + off.y }, target.motion, target.motion.heading);
+    const m = target.motion;
+    const p = toWorld({ x: part.center.x + off.x, y: part.center.y + off.y }, m, m.heading);
     const lead = plan?.lead ?? 1;
+    // Assume the target keeps turning at this fraction of its current rate (0 = holds course).
+    const w = m.omega * (plan?.turn ?? 0);
+    const predict = (time: number): Vec => {
+      const tl = time * lead;
+      const a = w * tl;
+      if (Math.abs(a) < 1e-4) return { x: p.x + m.vx * tl, y: p.y + m.vy * tl };
+      // Center moves along an arc; the aim point turns with the hull around it.
+      const s = Math.sin(a) / w;
+      const c = (1 - Math.cos(a)) / w;
+      const cx = m.x + s * m.vx - c * m.vy;
+      const cy = m.y + c * m.vx + s * m.vy;
+      const r = rotate({ x: p.x - m.x, y: p.y - m.y }, a);
+      return { x: cx + r.x, y: cy + r.y };
+    };
     let aim = p;
     let time = this.flightTime(shooter, dist(from, p));
     for (let i = 0; i < 3; i++) {
-      aim = { x: p.x + target.motion.vx * time * lead, y: p.y + target.motion.vy * time * lead };
+      aim = predict(time);
       time = this.flightTime(shooter, dist(from, aim));
     }
     return { aim, time };
@@ -804,6 +857,7 @@ export class World {
       part: Math.min(target.parts.length - 1, Math.floor(this.rng.next() * target.parts.length)),
       offset: this.rng.inDisk(Math.max(0, ct.aimRadius)),
       lead: 1 + this.rng.range(-err, err),
+      turn: this.rng.range(0, Math.max(0, ct.turnLead)),
     };
   }
 
@@ -819,6 +873,62 @@ export class World {
     if (d > cannonRange(b, this.tuning) || d < ct.minRange) return false;
     const a = Math.atan2(aim.y - from.y, aim.x - from.x);
     return Math.abs(wrapAngle(a - this.cannonFacing(b, c))) <= ct.arc * DEG;
+  }
+
+  /**
+   * A gatling sprays bullets at the nearest enemy Lee on an enemy deck in its
+   * arc and range (attached decks too). Each bullet scatters in a disk that
+   * grows with distance; a miss that lands on an enemy hull barely scratches it.
+   */
+  private stepGatling(b: Boat, c: CannonState, gunner: Lee, speed: number, dt: number): void {
+    const gt = boatTuning(b, this.tuning).gatling;
+    c.load = Math.min(1, c.load + dt * Math.max(0, gt.rate) * speed);
+    if (c.load < 1) return;
+    const from = this.muzzle(b, c);
+    const face = this.cannonFacing(b, c);
+    let target: Lee | null = null;
+    let at: Vec | null = null;
+    let bestD = Infinity;
+    for (const l of this.allLees()) {
+      if (!l.alive || l.swing || l.side === b.side || l.deck.side === b.side || this.isSinking(l.deck)) continue;
+      const p = toWorld(l.pos, l.deck.motion, l.deck.motion.heading);
+      const d = dist(from, p);
+      if (d > gt.range || Math.abs(wrapAngle(Math.atan2(p.y - from.y, p.x - from.x) - face)) > gt.arc * DEG) continue;
+      if (d < bestD - 1e-9 || (Math.abs(d - bestD) <= 1e-9 && target && l.id < target.id)) {
+        bestD = d;
+        target = l;
+        at = p;
+      }
+    }
+    if (!target || !at) return; // stays spun up, ready
+    c.load = 0;
+    c.lastFired = this.time;
+    const accuracy = Math.max(0.05, leeStat(gunner, 'accuracy', b, this.tuning));
+    const off = this.rng.inDisk((Math.max(0, gt.spread) + Math.max(0, gt.spreadPerMeter) * bestD) / accuracy);
+    const to = { x: at.x + off.x, y: at.y + off.y };
+    const hit = dist(to, at) <= Math.max(0, gt.hitRadius);
+    const st = this.stats[b.side];
+    st.gatlingShots++;
+    gunner.stats.gatlingShots++;
+    if (hit) {
+      st.gatlingHits++;
+      st.gatlingDealt += gt.damage;
+      gunner.stats.gatlingHits++;
+      const killed = hurtLee(target, gt.damage, this.time, 'gatling');
+      this.events.push({ type: 'leeHurt', boatId: target.deck.id, leeId: target.id, damage: gt.damage });
+      if (killed) {
+        this.noteLost(target);
+        updateMobility(target.boat, this.tuning);
+      }
+    } else if (gt.boatDamage > 0) {
+      const part = partAt(target.deck, to, 0);
+      if (part) {
+        const dealt = applyDamage(part, gt.boatDamage).dealt;
+        st.damageDealt += dealt;
+        this.stats[target.deck.side].damageTaken += dealt;
+      }
+    }
+    this.events.push({ type: 'gatling', boatId: b.id, cannon: b.cannons.indexOf(c), from, to, hit, side: b.side });
   }
 
   /** Enemy shells currently in the air. */
@@ -839,6 +949,10 @@ export class World {
       const gunner = this.gunnerOf(b, c);
       if (!gunner) return;
       const speed = leeStat(gunner, 'loadSpeed', b, this.tuning) * wetFactor(gunner, b, this.tuning);
+      if (c.kind === 'gatling') {
+        this.stepGatling(b, c, gunner, speed, dt);
+        return;
+      }
       c.load = Math.min(1, c.load + (dt * speed) / reload);
       if (c.load < 1) return;
       // Threat budget: a loaded enemy gun holds fire while enough red X's are already up.

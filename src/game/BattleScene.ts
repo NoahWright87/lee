@@ -460,6 +460,7 @@ export class BattleScene extends Phaser.Scene {
           this.rings.push({ x: e.pos.x, y: e.pos.y, t: this.clock, dur: 0.22, r: e.killed ? 1.6 : 0.9, color: e.killed ? 0xff6040 : 0xfff3d6 });
           break;
         case 'pistol':
+        case 'gatling':
           this.tracers.push({ from: e.from, to: e.to, t: this.clock, hit: e.hit, player: e.side === 'player' });
           break;
         case 'rammed':
@@ -754,17 +755,7 @@ export class BattleScene extends Phaser.Scene {
         g.strokePath();
         continue;
       }
-      const s = Math.max(world.tuning.telegraph.markerSize, px(9));
-      const ring = lerp(Math.max(world.tuning.telegraph.ringStartRadius, px(30)), s * 1.15, w.progress);
-      g.lineStyle(px(2), color, 0.85);
-      g.strokeCircle(x, y, ring);
-      const ss = s * (1 + 0.1 * Math.sin(this.clock * 20) * w.progress);
-      g.lineStyle(px(6), w.byPlayer ? COLOR.pathDark : COLOR.threatDark, 0.6);
-      g.lineBetween(x - ss, y - ss, x + ss, y + ss);
-      g.lineBetween(x - ss, y + ss, x + ss, y - ss);
-      g.lineStyle(px(3.5), color, 1);
-      g.lineBetween(x - ss, y - ss, x + ss, y + ss);
-      g.lineBetween(x - ss, y + ss, x + ss, y - ss);
+      this.drawThreatX(g, w.pos, w.progress, false, 1, color, w.byPlayer ? COLOR.pathDark : COLOR.threatDark, world, px);
     }
   }
 
@@ -853,26 +844,46 @@ export class BattleScene extends Phaser.Scene {
       const k = TelegraphSystem.progress(t);
       const fadeIn = clamp(t.elapsed / Math.max(0.01, tt.fadeInTime), 0, 1);
       const fadeOut = t.impacted ? clamp(t.linger / Math.max(0.01, tt.lingerTime), 0, 1) : 1;
-      const a = fadeIn * fadeOut;
-      const s = Math.max(tt.markerSize, px(8));
-      const { x, y } = t.pos;
-      // Countdown ring shrinks onto the X.
-      if (!t.impacted) {
-        const r = lerp(Math.max(tt.ringStartRadius, px(30)), s * 1.15, k);
-        g.lineStyle(px(4), COLOR.threatDark, 0.45 * a);
-        g.strokeCircle(x, y, r);
-        g.lineStyle(px(2), COLOR.threat, 0.9 * a);
-        g.strokeCircle(x, y, r);
-      }
-      const pulse = t.impacted ? 1.25 : 1 + 0.08 * Math.sin(this.clock * 20) * k;
-      const ss = s * pulse;
-      g.lineStyle(px(6), COLOR.threatDark, 0.6 * a);
-      g.lineBetween(x - ss, y - ss, x + ss, y + ss);
-      g.lineBetween(x - ss, y + ss, x + ss, y - ss);
-      g.lineStyle(px(3.5), COLOR.threat, a);
-      g.lineBetween(x - ss, y - ss, x + ss, y + ss);
-      g.lineBetween(x - ss, y + ss, x + ss, y - ss);
+      this.drawThreatX(g, t.pos, k, t.impacted, fadeIn * fadeOut, COLOR.threat, COLOR.threatDark, world, px);
     }
+  }
+
+  /**
+   * An incoming-hit marker: an X that starts big and shrinks onto the impact
+   * point as the hit approaches (its final size is the danger zone), with a
+   * faint dashed ring closing in for timing.
+   */
+  private drawThreatX(
+    g: Phaser.GameObjects.Graphics,
+    pos: Vec,
+    k: number,
+    impacted: boolean,
+    a: number,
+    color: number,
+    dark: number,
+    world: World,
+    px: (n: number) => number,
+  ): void {
+    const tt = world.tuning.telegraph;
+    const { x, y } = pos;
+    const end = Math.max(tt.markerSize, px(6));
+    if (!impacted) {
+      const r = lerp(Math.max(tt.ringStartRadius, px(30)), end, k);
+      g.lineStyle(px(1.2), color, 0.35 * a);
+      const n = 24;
+      for (let i = 0; i < n; i += 2) {
+        const a0 = (i / n) * Math.PI * 2 + this.clock;
+        const a1 = ((i + 1) / n) * Math.PI * 2 + this.clock;
+        g.lineBetween(x + Math.cos(a0) * r, y + Math.sin(a0) * r, x + Math.cos(a1) * r, y + Math.sin(a1) * r);
+      }
+    }
+    const ss = impacted ? end * 1.15 : lerp(end * Math.max(1, tt.markerStartScale), end, k * k);
+    g.lineStyle(px(4.5), dark, 0.5 * a);
+    g.lineBetween(x - ss, y - ss, x + ss, y + ss);
+    g.lineBetween(x - ss, y + ss, x + ss, y - ss);
+    g.lineStyle(px(2.5), color, (0.55 + 0.45 * k) * a);
+    g.lineBetween(x - ss, y - ss, x + ss, y + ss);
+    g.lineBetween(x - ss, y + ss, x + ss, y - ss);
   }
 
   /** Loading rings beside each gun. Offline guns show a grey slashed ring. */
@@ -885,6 +896,7 @@ export class BattleScene extends Phaser.Scene {
   ): void {
     const r = px(radiusPx);
     for (const c of b.cannons) {
+      if (c.kind === 'gatling') continue;
       const pos = toWorld({ x: c.local.x, y: c.local.y + c.broadside * 2.6 }, b.motion, b.motion.heading);
       const off = toWorld({ x: 0, y: c.broadside * (r * 1.2) }, { x: 0, y: 0 }, b.motion.heading);
       const x = pos.x + off.x;
@@ -993,14 +1005,17 @@ export class BattleScene extends Phaser.Scene {
         g.strokePoints(part.def.polygon.map((p) => toWorld(p, b.motion, b.motion.heading)), true);
       }
       // Firing arcs and range.
+      const gt = boatTuning(b, world.tuning).gatling;
       for (const c of b.cannons) {
         const from = world.muzzle(b, c);
         const face = world.cannonFacing(b, c);
         const online = cannonOnline(b, c, world.tuning);
-        g.lineStyle(px(1), online ? (c.load >= 1 ? 0x7dff8a : 0x2f8a3a) : 0x666666, 0.5);
+        const gat = c.kind === 'gatling';
+        g.lineStyle(px(1), gat ? 0xffa0d0 : online ? (c.load >= 1 ? 0x7dff8a : 0x2f8a3a) : 0x666666, gat ? 0.35 : 0.5);
         g.beginPath();
         g.moveTo(from.x, from.y);
-        g.arc(from.x, from.y, cannonRange(b, world.tuning), face - ct.arc * DEG, face + ct.arc * DEG, false);
+        const arc = (gat ? gt.arc : ct.arc) * DEG;
+        g.arc(from.x, from.y, gat ? gt.range : cannonRange(b, world.tuning), face - arc, face + arc, false);
         g.closePath();
         g.strokePath();
       }

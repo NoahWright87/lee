@@ -193,10 +193,13 @@ export class Hud {
       this.disengage.delete(id);
     }
     if (!proj) return;
-    const H = this.root.clientHeight || window.innerHeight;
     const W = this.root.clientWidth || window.innerWidth;
-    const used: number[] = [];
-    for (const b of attached) {
+    // At the seam between the ocean and the close-up, centered: never over the fight itself.
+    const bw = 150;
+    const bh = 52;
+    const gap = 8;
+    const total = attached.length * bw + (attached.length - 1) * gap;
+    attached.forEach((b, i) => {
       let btn = this.disengage.get(b.id);
       if (!btn) {
         btn = el('button', 'disengage-btn');
@@ -209,30 +212,29 @@ export class Hud {
         this.disengage.set(b.id, btn);
       }
       const link = w.links.linkBetween(w.player, b);
-      const breaking = link?.breakAt != null;
-      const label = breaking ? `Casting off… ${Math.max(0, link!.breakAt! - w.time).toFixed(1)}s` : `Disengage\n${shipName(b.type)}`;
+      const casting = link ? w.links.castingOff(link) : false;
+      const label = casting ? `Casting off…\n${w.castOffStatus(b)}` : attached.length > 1 ? `Disengage\n${shipName(b.type)}` : 'Disengage';
       if (btn.textContent !== label) btn.textContent = label;
-      btn.disabled = breaking;
-      btn.classList.toggle('breaking', breaking);
-      // Beside the deck: on whichever screen side the deck's center is farther from, vertically level with it.
-      const c = proj.worldToCss(b.motion);
-      const bh = 52;
-      const minY = proj.top + 30;
-      const maxY = H * 0.74 - bh;
-      let y = Math.min(maxY, Math.max(minY, c.y - bh / 2));
-      for (const u of used) if (Math.abs(u - y) < bh + 6) y = u + (y >= u ? bh + 6 : -(bh + 6));
-      used.push(y);
-      btn.style.top = `${Math.round(y)}px`;
-      const left = c.x > W / 2;
-      btn.style.left = left ? '8px' : '';
-      btn.style.right = left ? '' : '8px';
-    }
+      btn.disabled = casting;
+      btn.classList.toggle('breaking', casting);
+      btn.style.left = `${Math.round(W / 2 - total / 2 + i * (bw + gap))}px`;
+      // Resting on the seam, just above it, so it covers neither the strip's gauges nor the decks.
+      btn.style.top = `${Math.round(proj.top - bh - 6)}px`;
+    });
+  }
+
+  /** Speed buttons show the setting for the current mode (sailing or close combat). */
+  private syncSpeed(): void {
+    const ctl = this.ctl;
+    this.speedBtns.forEach((b, i) => b.classList.toggle('on', ctl.speed === i + 1));
+    const melee = ctl.speedMode() === 'melee';
+    for (const b of this.speedBtns) b.title = melee ? 'Speed during close combat' : 'Speed while sailing';
   }
 
   private sync(): void {
     const { ctl } = this;
     const w = ctl.world;
-    this.speedBtns.forEach((b, i) => b.classList.toggle('on', ctl.speed === i + 1));
+    this.syncSpeed();
     this.debugBtn.classList.toggle('on', ctl.debug);
     if (w.phase === 'over' && w.result) {
       if (this.shownResultFor !== ctl.runId) {
@@ -260,6 +262,7 @@ export class Hud {
     this.setup.frame();
     this.crewDebug.frame();
     this.syncDisengage();
+    this.syncSpeed();
     const setupMode = w.phase === 'ready';
     this.gauges.classList.toggle('hidden', setupMode);
     this.root.classList.toggle('setup-mode', setupMode);
@@ -276,7 +279,7 @@ export class Hud {
     this.waterFill.classList.toggle('danger', s > 0.7);
     this.waterText.textContent = `${Math.round(s * 100)}%`;
     // Manned guns of those still online.
-    const online = p.cannons.filter((c) => cannonOnline(p, c, w.tuning));
+    const online = p.cannons.filter((c) => c.kind === 'cannon' && cannonOnline(p, c, w.tuning));
     const manned = online.filter((c) => w.gunnerOf(p, c) !== null).length;
     this.gunsText.textContent = `${manned}/${online.length}`;
     this.sinkBanner.classList.toggle('hidden', p.sinkingSince === null);
@@ -335,7 +338,7 @@ export class Hud {
     ];
     const e = w.stats.enemy;
     const lost = (x: SideStats) =>
-      (['cannon', 'melee', 'pistol', 'sank'] as const)
+      (['cannon', 'gatling', 'melee', 'pistol', 'sank'] as const)
         .filter((k) => x.lostBy[k] > 0)
         .map((k) => `${x.lostBy[k]} ${k === 'sank' ? 'sank' : k}`)
         .join(', ') || 'none';
@@ -355,6 +358,9 @@ export class Hud {
     if (s.pistolShots || e.pistolShots) {
       const pp = s.pistolShots ? Math.round((100 * s.pistolHits) / s.pistolShots) : 0;
       rows.push(['Pistol shots / hits', `${s.pistolShots} / ${s.pistolHits} (${pp}%) · dmg ${Math.round(s.pistolDealt)}`]);
+    }
+    if (s.gatlingShots || e.gatlingShots) {
+      rows.push(['Gatling hits (you / enemy)', `${s.gatlingHits} of ${s.gatlingShots} / ${e.gatlingHits} of ${e.gatlingShots}`]);
     }
     if (s.ramsDone || s.ramsTaken) {
       rows.push(['Rams done / taken', `${s.ramsDone} / ${s.ramsTaken} · dealt ${Math.round(s.ramDealt)} · took ${Math.round(s.ramTaken)}`, true]);
@@ -414,6 +420,7 @@ export class Hud {
       if (st.boardings) bits.push(`boarded ${st.boardings}× · ${Math.round(st.onEnemyDeck)}s on enemy decks`);
       if (st.time.melee >= 0.5) bits.push(`melee ${Math.round(st.time.melee)}s · ${st.meleeKills} kills · dealt ${Math.round(st.meleeDealt)} · took ${Math.round(st.meleeTaken)}`);
       if (st.pistolShots) bits.push(`pistol ${st.pistolShots} shots · ${st.pistolHits} hits`);
+      if (st.gatlingShots) bits.push(`gatling ${st.gatlingShots} rounds · ${st.gatlingHits} hits`);
       if (!lee.alive && lee.lostCause) bits.push(`lost to ${lee.lostCause === 'sank' ? 'the sea' : lee.lostCause}`);
       bits.push(`away ${Math.round((100 * st.awayFromHome) / total)}%`, `idle ${Math.round((100 * st.time.idle) / total)}%`, `${st.switches} switches`);
       row.append(head, bar, el('div', 'crew-row-sub', bits.join(' · ')));
