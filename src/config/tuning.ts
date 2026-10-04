@@ -1,4 +1,10 @@
-import { LEE_DEFS, type LeeStats } from './lees';
+import { defaultAiProfiles, type AiProfile } from './encounters';
+import { defaultItemParams } from './items';
+import { defaultTraits, LEE_DEFS, type LeeStats } from './lees';
+import { defaultShipStats, type ShipStats } from './ships';
+
+/** Bump when the tuning shape changes incompatibly (saved tuning from another version is dropped). */
+export const TUNING_VERSION = 4;
 
 // Every gameplay number lives here. The sim reads from a live Tuning object, so
 // most changes apply the next frame. Values marked "next run" in the tuning
@@ -7,15 +13,15 @@ import { LEE_DEFS, type LeeStats } from './lees';
 export function defaultBoatTuning() {
   return {
     movement: {
-      /** Forward speed at full throttle, m/s. */
+      /** Forward speed at full throttle, m/s (× the ship's speed). */
       cruiseSpeed: 12,
       /** Speed while drifting before START, m/s. */
       idleSpeed: 3,
-      /** How fast forward speed rises toward cruise, m/s². */
+      /** How fast forward speed rises toward cruise, m/s² (× the ship's accel). */
       acceleration: 3,
       /** How fast forward speed above the target bleeds off, 1/s. */
       drag: 0.8,
-      /** Max turn rate, deg/s. Orbit radius ≈ speed / turn rate. */
+      /** Max turn rate, deg/s (× the ship's turn). Orbit radius ≈ speed / turn rate. */
       turnRate: 20,
       /** How fast the turn rate can change, deg/s². Lower = lazier rudder. */
       turnAcceleration: 70,
@@ -28,71 +34,16 @@ export function defaultBoatTuning() {
       /** Bend into an orbit within this many orbit radii of the target. 0 = pure seek (loops through the point). */
       orbitCapture: 2,
     },
+    /** Per-part stat blocks (× the ship's hullHp, capacity and leak). Each layout part names one. */
     parts: {
       bow: { hp: 40, waterCapacity: 20, leakMultiplier: 0.6 },
       midship: { hp: 100, waterCapacity: 60, leakMultiplier: 1.6 },
       stern: { hp: 60, waterCapacity: 30, leakMultiplier: 0.9 },
-      cannon: { hp: 30, waterCapacity: 10, leakMultiplier: 0.3 },
-    },
-    crew: {
-      /** Lees aboard (next fight). Yours fill the setup tray; an enemy type's homes come from src/config/ships.ts. */
-      size: 6,
-    },
-    cannons: {
-      /** Seconds for a baseline gunner to load one shot. */
-      reloadTime: 3,
-      /** Max range, m. */
-      range: 130,
-      /** Minimum range, m (this ship's guns): a boat closer than this (center to muzzle) can't be shelled by them. */
-      minRange: 25,
-      /** Half-width of each gun's firing arc around its beam, degrees. */
-      arc: 35,
-      /** HP damage per shell. */
-      damage: 10,
-      /** Random scatter radius around the aim point for a baseline gunner, m (÷ accuracy and lookout). */
-      spread: 2,
-      /** Shell flight time = base + perMeter * distance (seconds). */
-      flightTimeBase: 1.9,
-      flightTimePerMeter: 0.011,
-      /** A shell lands on a part if within this distance of it, m. */
-      impactRadius: 1.2,
-      /** Gunners aim at a random point within this distance of a random part's center, m. */
-      aimRadius: 3.5,
-      /** Lead error: the gunner leads a moving target by the right amount × (1 ± this), so fast or far targets are harder to hit. */
-      leadError: 0.2,
-      /**
-       * Gunners guess at your turn too: each shot follows a random 0..this fraction of the
-       * target's current turn rate over the flight time. Circling steadily stops being safe;
-       * changing direction (zigzagging) is what dodges.
-       */
-      turnLead: 0.8,
-      /** Water a hit lets into an intact part. */
-      hitWater: 1.5,
-      /** Water a hit lets in through a part that is already wrecked (it punches through the hull). */
-      holeWater: 10,
-    },
-    /** Gatling guns (G stations, between the cannons): bullets at cannon range that hurt Lees, barely boats. */
-    gatling: {
-      /** Bullets per second for a baseline gunner (× load speed). */
-      rate: 2.5,
-      /** Range, m (no minimum). */
-      range: 110,
-      /** Half-width of its swivel arc around the beam, degrees. */
-      arc: 60,
-      /** Damage to a Lee per hit. */
-      damage: 3,
-      /** Damage to a boat part when a bullet hits the hull instead. */
-      boatDamage: 0.15,
-      /** Scatter radius at the muzzle (÷ gunner accuracy), m... */
-      spread: 0.3,
-      /** ...plus this much per meter of distance. Close in, it shreds; at range, it sprays. */
-      spreadPerMeter: 0.03,
-      /** A bullet this close to its target Lee hits it, m. */
-      hitRadius: 0.7,
+      side: { hp: 30, waterCapacity: 10, leakMultiplier: 0.3 },
     },
     function: {
-      /** A cannon section at or below this HP fraction is offline. */
-      cannonOfflineAt: 0.4,
+      /** Guns on a part at or below this HP fraction are offline. */
+      gunOfflineAt: 0.4,
       /** Speed/turn multiplier when the engine is wrecked (scales up linearly with engine HP). */
       engineMinFactor: 0.4,
     },
@@ -118,76 +69,57 @@ export function defaultBoatTuning() {
 export type BoatTuning = ReturnType<typeof defaultBoatTuning>;
 export type PartStatKey = keyof BoatTuning['parts'];
 
-/** AI preferences for an enemy ship type. */
-export function defaultShipAI() {
+/** The standard cannon. Every gun's numbers (tuning.items.<gun>) are multipliers on these. */
+export function defaultGunTuning() {
   return {
-    /** Distance this type tries to keep from you while orbiting, m. */
-    preferredRange: 85,
-    /** 0 = orbit at preferredRange (cannon boat), 1 = close in to dock or ram, then board. */
-    seekAttach: 0,
-    /** Boarders ram when their heading is within this many degrees of a clean line onto your hull. */
-    ramLine: 20,
-    /** ...and you are closer than this, m. */
-    ramRange: 70,
+    /** Seconds for a baseline gunner to load one shot. */
+    reloadTime: 3,
+    /** Max range, m. */
+    range: 130,
+    /** Minimum range, m: a boat closer than this (center to muzzle) can't be shelled. */
+    minRange: 25,
+    /** HP damage per shell to the part it lands on. */
+    damage: 10,
+    /** Damage to each Lee on the tile a shell lands on. */
+    crewDamage: 10,
+    /** Fraction of that dealt to Lees on orthogonally neighboring tiles (a splash ×2 gun reaches 2 tiles). */
+    crewSplash: 0.25,
+    /** Random scatter radius around the aim point for a baseline gunner, m (÷ accuracy and lookout). */
+    spread: 2,
+    /** Shell flight time = (base + perMeter × distance) ÷ the gun's shell speed (seconds). */
+    flightTimeBase: 1.9,
+    flightTimePerMeter: 0.011,
+    /** A shell lands on a part if within this distance of it, m. */
+    impactRadius: 1.2,
+    /** Gunners aim at a random point within this distance of a random part's center, m. */
+    aimRadius: 3.5,
+    /** Lead error: the gunner leads a moving target by the right amount × (1 ± this), so fast or far targets are harder to hit. */
+    leadError: 0.2,
+    /**
+     * Gunners guess at your turn too: each shot follows a random 0..this fraction of the
+     * target's current turn rate over the flight time. Changing direction is what dodges.
+     */
+    turnLead: 0.8,
+    /** Water a hit lets into an intact part. */
+    hitWater: 1.5,
+    /** Water a hit lets in through a part that is already wrecked (it punches through the hull). */
+    holeWater: 10,
+    /** A bullet or pellet this close to a Lee hits it, m. */
+    hitRadius: 0.7,
   };
 }
-
-/** An enemy ship type's tuning: a full boat block plus its AI. */
-export function defaultShipTuning() {
-  return { ...defaultBoatTuning(), ai: defaultShipAI() };
-}
-
-export type ShipTuning = ReturnType<typeof defaultShipTuning>;
 
 export function defaultTuning() {
-  const player = defaultBoatTuning();
-
-  // Standard (Sloop): what Phase 2 called "the enemy". Orbits at cannon range.
-  const standard = defaultShipTuning();
-  standard.cannons.spread = 2.5;
-  // The enemy is a slower, clumsier hull. playerAdvantage stacks on top of this.
-  standard.movement.cruiseSpeed = 10;
-  standard.movement.turnRate = 18;
-  // Fewer hands than you: the test fight should still favor the player. Its guns
-  // load faster to make up for rarely having more than one manned on a broadside.
-  standard.crew.size = 4;
-  standard.cannons.reloadTime = 2.2;
-
-  // Boarder (Friend Ship): fast, light, few guns, a big crew. Wants to close in.
-  const boarder = defaultShipTuning();
-  Object.assign(boarder.movement, { cruiseSpeed: 13.5, turnRate: 24, acceleration: 3.5 });
-  boarder.parts = {
-    bow: { hp: 34, waterCapacity: 14, leakMultiplier: 0.7 },
-    midship: { hp: 60, waterCapacity: 36, leakMultiplier: 1.8 },
-    stern: { hp: 40, waterCapacity: 20, leakMultiplier: 1 },
-    cannon: { hp: 22, waterCapacity: 8, leakMultiplier: 0.4 },
-  };
-  Object.assign(boarder.cannons, { reloadTime: 2.6, range: 110, minRange: 25, spread: 3 });
-  boarder.crew.size = 6;
-  Object.assign(boarder.ai, { preferredRange: 30, seekAttach: 1 });
-
-  // Heavy (Hard Ship): big, slow, many guns with wide arcs. Weak inside its minimum range.
-  const heavy = defaultShipTuning();
-  Object.assign(heavy.movement, { cruiseSpeed: 7, turnRate: 10, turnAcceleration: 35, acceleration: 1.6 });
-  heavy.parts = {
-    bow: { hp: 70, waterCapacity: 30, leakMultiplier: 0.5 },
-    midship: { hp: 170, waterCapacity: 110, leakMultiplier: 1.3 },
-    stern: { hp: 100, waterCapacity: 45, leakMultiplier: 0.8 },
-    cannon: { hp: 50, waterCapacity: 16, leakMultiplier: 0.25 },
-  };
-  // Wide minimum range: get in close and its broadsides can't touch you, while your own guns still can.
-  Object.assign(heavy.cannons, { reloadTime: 4.2, range: 150, minRange: 75, arc: 45, spread: 3, damage: 8 });
-  heavy.crew.size = 6;
-  Object.assign(heavy.ai, { preferredRange: 105 });
-
   return {
+    /** Bumped when the tuning shape changes: older saved tuning is dropped instead of half-merged. */
+    meta: { version: TUNING_VERSION },
     global: {
       /**
-       * Scales the player's HP (×), reload time (÷), leak multipliers (÷) and turn rate
-       * (× sqrt). 1 = boats are equal apart from their own tuning.
+       * Sandbox assist (1 = off). Scales the player's HP (×), reload time (÷), leak (÷) and
+       * turn rate (× sqrt). Ignored in a run: enemies and player follow the same rules there.
        */
-      playerAdvantage: 1.4,
-      /** Multiplies every core stat of your Lees (1 = same Lees as the enemy). */
+      playerAdvantage: 1,
+      /** Sandbox assist (1 = off): multiplies every core stat of your Lees. Ignored in a run. */
       playerCrewStats: 1,
       /** Seconds of motion the path preview shows. */
       previewHorizon: 6,
@@ -201,41 +133,35 @@ export function defaultTuning() {
       enemyStartNorth: 200,
       enemyStartEast: 90,
     },
-    player,
-    /** Enemy ship types (see src/config/ships.ts): boat stats, crew size and AI per type. */
-    ships: { standard, boarder, heavy } as Record<string, ShipTuning>,
+    /** The baseline hull every ship scales (movement, part blocks, function loss, flooding). */
+    boat: defaultBoatTuning(),
+    /** Per-ship multipliers on the baseline, crew limits and treasure slots (src/config/ships.ts). */
+    ships: defaultShipStats() as Record<string, ShipStats>,
+    /** The standard cannon (every gun's numbers are multipliers on these). */
+    guns: defaultGunTuning(),
+    /** Numbers of every item, Treasure and Trinket (src/config/items.ts). Mostly next fight. */
+    items: defaultItemParams(),
+    /** Enemy AI profiles, chosen by the encounter (src/config/encounters.ts). */
+    ai: defaultAiProfiles() as Record<string, AiProfile>,
     enemyAI: {
       /** Degrees the enemy bends its course per meter it is off its preferred range. */
       rangeCorrection: 1,
       /** How far ahead of itself the enemy places its seek point, m. Bigger = smoother, lazier. */
       lookAhead: 60,
-      /** Each ship's preferred range (its type's ai.preferredRange) is randomly ± this much, so a pack spreads out, m. */
+      /** Each ship's preferred range (its AI profile's) is randomly ± this much, so a pack spreads out, m. */
       rangeJitter: 15,
       /** Ships in a pack steer apart when closer than this, m. */
       spacing: 70,
       /** 0 = pick the side needing the smaller turn at the start, 1 = clockwise, -1 = counter-clockwise. */
       orbitDirection: 0,
     },
-    campaign: {
-      /** Enemy ships in the first fight. */
-      firstFightEnemies: 1,
-      /** Ships added per fight won (fractions accumulate: 0.5 = one more every other fight). */
-      enemiesAddedPerFight: 1,
-      /** Most enemy ships in one fight. */
-      maxEnemies: 5,
-      /**
-       * Each enemy's HP × (ships in the fight)^-this. 0 = every ship full strength;
-       * 0.8 = two ships at 57% each, three at 42%, five at 28%.
-       */
-      packHullScaling: 0.8,
-      /** Each enemy's reload time × (ships in the fight)^this. 0.8 = two ships reload 74% slower each, three 141%. */
-      packReloadScaling: 0.8,
+    fights: {
+      /** Sandbox assist (0 = off): each enemy's HP × (ships in the fight)^-this. Ignored in a run. */
+      packHullScaling: 0,
+      /** Sandbox assist (0 = off): each enemy's reload time × (ships in the fight)^this. Ignored in a run. */
+      packReloadScaling: 0,
       /** Angle between neighboring enemy spawn points, degrees. */
       spawnSpread: 28,
-      /** Fraction of your damage and water repaired between fights (1 = fresh boat each fight). */
-      repairBetweenFights: 1,
-      /** Seconds before the next fight starts on its own after a win. 0 = wait for a tap. */
-      nextFightDelay: 4,
       /**
        * Threat budget: most enemy shells in the air at once (0 = no limit). Loaded guns
        * hold fire until a slot frees, so a pack stays dodgeable instead of a wall of X's.
@@ -243,10 +169,30 @@ export function defaultTuning() {
       maxIncomingShells: 3,
       /** 1 = enemy shells can hit other enemies (crossfire), 0 = they pass through. */
       friendlyFire: 1,
-      /** 1 = fights 1-3 introduce one ship type each, alone (Sloop, Friend Ship, Hard Ship). 0 = mix from fight 1. */
-      introFights: 1,
-      /** Weights for drawing each ship's type after the intro fights (0 = never). */
-      mix: { standard: 2, boarder: 1, heavy: 1 } as Record<string, number>,
+    },
+    /** Tiles are units: shells damage them, and a blown-out tile loses its fixture. */
+    tiles: {
+      /** Durability of a tile (× floor upgrades). */
+      durability: 30,
+      /** Tile damage per point of shell hull damage. */
+      hitScale: 1,
+      /** Fraction of that dealt to orthogonally neighboring tiles. */
+      splash: 0.35,
+      /** Damage to each Lee on a tile when it blows out. */
+      blowoutLeeDamage: 25,
+    },
+    /** Volatile parts (the Powder Store) exploding when their tile blows out. Chains. */
+    explosion: {
+      /** Reach in tiles (Manhattan distance; 1 = the tile and its orthogonal neighbors). */
+      radius: 1,
+      /** Damage to each tile in reach (can blow out more volatile parts). */
+      tileDamage: 40,
+      /** Damage to the hull part under each tile in reach. */
+      partDamage: 20,
+      /** Damage to each Lee in reach. */
+      leeDamage: 30,
+      /** Water let into each part hit. */
+      water: 6,
     },
     /** Docking, ramming and the links they form. */
     attach: {
@@ -340,6 +286,8 @@ export function defaultTuning() {
     },
     /** Core stats per Lee type, live (1 = baseline). `hp` applies next fight. */
     lees: Object.fromEntries(Object.entries(LEE_DEFS).map(([id, d]) => [id, { ...d.stats }])) as Record<string, LeeStats>,
+    /** Trait strengths per Lee type (Bodyguard 0.6 = neighbors take 60% damage; Shouting 1.25 = neighbors load 25% faster). */
+    traits: defaultTraits(),
     crew: {
       /** HP/s a baseline Lee restores while repairing. */
       repairRate: 3,
@@ -349,22 +297,16 @@ export function defaultTuning() {
       walkSpeed: 5,
       /** Baseline Lee HP (next fight). */
       hp: 70,
-      /** Speed with every oar station empty, as a fraction of fully crewed. */
+      /** Speed with no manned oars (each manned set of Oars adds its boost × rowing). */
       oarBaseline: 0.6,
-      /** Turn rate with every sail station empty, as a fraction of fully crewed. */
+      /** Turn rate with no manned sail (each manned Sail adds its boost × sail handling). */
       sailBaseline: 0.6,
-      /** Most a crew can push speed/turning past "fully crewed" (stronger Lees later). */
+      /** Most a crew can push speed/turning (× the ship's own numbers). */
       mobilityCap: 1.5,
-      /** Cannon range bonus per manned lookout at baseline spotting (0.25 = guns reach 25% farther). */
-      lookoutRange: 0.25,
       /** Repairs can only bring a part back to this fraction of its max HP. */
       repairCeiling: 0.6,
       /** 1 = parts at 0 HP can be repaired mid-fight, 0 = wrecked stays wrecked. */
       wreckedRepairable: 0,
-      /** Damage to each Lee on the tile a shell hits. */
-      hitDamage: 10,
-      /** Fraction of that dealt to Lees on orthogonally neighboring tiles. 0 = direct hits only. */
-      splashFraction: 0.25,
       /** A part this full of water (fraction of capacity) slows the Lees in it. */
       wetThreshold: 0.3,
       /** Work and walking speed lost while wet (0..1). */
@@ -390,8 +332,8 @@ export function defaultTuning() {
       walkPenalty: 3,
       /** Points lost per Lee already on a repair/bail job (so extra hands help only when nothing else needs them). */
       helpPenalty: 45,
-      /** Points per +1.0 of the stat a task uses (role affinity for stronger Lees). */
-      statAffinity: 10,
+      /** Points per +1.0 of the stat a task uses: the best-qualified Lee takes a job (a weight, not an override of placement). */
+      statAffinity: 15,
       /** A part this full (fraction) is a flooding emergency. */
       floodPartAt: 0.55,
       /** The whole boat this close to its sink line (0..1) is a flooding emergency. */
@@ -415,14 +357,75 @@ export function defaultTuning() {
       otherDamage: 40,
       /** Swing across to an attached enemy boat (surplus Lees only). */
       board: 35,
-      /** Empty oars or sails → man them. */
+      /** Empty oars, sails or boarding hooks → man them. */
       mobility: 30,
-      /** Empty lookout → man it. */
+      /** Empty support station (lookout, powder store) → man it. */
       lookout: 15,
       /** Cannons with nothing to shoot at. */
       idleCannon: 0,
       /** Extra points within a tier by severity (lowest HP, most water...). */
       severitySpan: 10,
+    },
+    /** The run between fights (the temporary loop; the sea map replaces it later). */
+    run: {
+      /** Lee cards per draft round. */
+      draftChoices: 3,
+      /** Parts offered after the draft (pick one). */
+      startPartChoices: 3,
+      /** Cards offered after a fight (pick one). */
+      rewardChoices: 3,
+      /** Chance one of the reward cards is a recruit... */
+      recruitChance: 0.45,
+      /** ...guaranteed after every Nth fight (0 = never guaranteed). */
+      recruitEvery: 3,
+      /** Level of a new recruit: 1 + this × fights won (0 = always level 1). */
+      recruitLevelPerFight: 0,
+      /** Fraction of hull damage and water repaired between fights (1 = fresh boat). */
+      repairBetweenFights: 1,
+      /** Fraction of lost HP surviving Lees heal between fights (1 = full). */
+      healBetweenFights: 1,
+      /** Most items in the cargo hold (0 = unlimited). */
+      cargoLimit: 0,
+      /** Trinket slots per Lee. */
+      trinketSlots: 2,
+      /** Reward card weights by kind (a recruit is decided first, by recruitChance). */
+      weightPart: 5,
+      weightTreasure: 1.5,
+      weightTrinket: 2.5,
+    },
+    /** XP and level-ups (the same for enemy Lees, picked automatically). */
+    leveling: {
+      /** XP for surviving a fight. */
+      survivalXp: 40,
+      /** XP per point of damage dealt to hulls. */
+      xpPerDamage: 0.4,
+      /** XP per HP repaired. */
+      xpPerRepair: 0.5,
+      /** XP per unit of water bailed or pumped. */
+      xpPerBail: 1,
+      /** XP per point of damage dealt to Lees (swords, pistols, gatlings). */
+      xpPerLeeDamage: 0.4,
+      /** XP per melee kill. */
+      xpPerKill: 12,
+      /** XP per second spent working a station or a job. */
+      xpPerWorkSecond: 0.15,
+      /** XP needed for level 2; each level after needs levelGrowth × the one before. */
+      firstLevelXp: 60,
+      levelGrowth: 1.4,
+      levelCap: 10,
+      /** A stat bonus is ×(1 + this). */
+      bonusSize: 0.08,
+      /** An HP bonus is ×(1 + this). */
+      hpBonusSize: 0.1,
+      /** Bonuses offered per level-up. */
+      choices: 3,
+    },
+    /** After the temporary encounter list runs out: repeat the last one, harder. */
+    escalation: {
+      /** Crew levels added per repeat. */
+      levelsPerRepeat: 1,
+      /** Every Nth repeat adds one more Lee to each enemy boat (up to its ship's max). 0 = never. */
+      extraCrewEvery: 2,
     },
     layout: {
       /** Ocean share of the screen in setup mode (the deck grid gets the rest). */

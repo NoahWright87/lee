@@ -1,8 +1,12 @@
 // Draws one boat into the world: part sprites, crack overlays, deck water,
-// cannon barrels, and hit flashes. Reads Boat state; never writes it.
+// its equipment (every gun type its own barrel, station markers, plating,
+// rail items, floor upgrades), blown-out tiles, and hit flashes. Drawn in
+// world space, so both views show it. Reads Boat state; never writes it.
 
 import Phaser from 'phaser';
-import { cannonOnline, structureFraction, type Boat } from '../sim/boat';
+import { FACING_ANGLE } from '../config/slots';
+import { gunOnline, structureFraction, type Boat, type GunState } from '../sim/boat';
+import type { Tile } from '../sim/grid';
 import { clamp, lerp, pointInPolygon, polygonBounds, Rng, toWorld, type Vec } from '../sim/math';
 import type { World } from '../sim/world';
 import { CRACK_STAGES, crackTextureKey, partTextureKey, suppliedArt } from './textures';
@@ -58,7 +62,7 @@ export class BoatView {
     this.deck = scene.add.graphics().setDepth(12);
     this.objects.push(this.deck);
     if (scene.textures.exists('art:barrel')) {
-      for (let i = 0; i < boat.cannons.length; i++) {
+      for (let i = 0; i < boat.guns.length; i++) {
         const img = scene.add.image(0, 0, 'art:barrel').setDepth(13);
         this.barrels.push(img);
         this.objects.push(img);
@@ -144,48 +148,253 @@ export class BoatView {
       g.fillPoints(part.def.polygon.map(W), true);
     });
 
-    // Cannon barrels with recoil; gatlings as a short barrel cluster that shivers while firing.
-    boat.cannons.forEach((c, i) => {
-      const online = cannonOnline(boat, c, world.tuning);
-      if (c.kind === 'gatling') {
-        this.barrels[i]?.setVisible(false);
-        const s = c.broadside;
-        const firing = world.time - c.lastFired < 0.25 ? Math.sin(world.time * 90) * 0.12 : 0;
-        for (const dx of [-0.3, 0, 0.3]) {
-          const a = W({ x: c.local.x + dx + firing, y: c.local.y - s * 0.3 });
-          const b = W({ x: c.local.x + dx * 0.6 + firing, y: c.local.y + s * 1.6 });
-          g.lineStyle(0.22, online ? 0x2a2d31 : 0x6d6862, alpha);
+    this.drawEquipment(g, W, alpha);
+
+    // Guns: each type its own barrel, pointing the way its slot faces; recoil after a shot.
+    boat.guns.forEach((c, i) => this.drawGun(world, g, W, c, i, heading, alpha));
+  }
+
+  /** Floors, plating, stations, rails and blown-out tiles. */
+  private drawEquipment(g: Phaser.GameObjects.Graphics, W: (p: Vec) => Vec, alpha: number): void {
+    const boat = this.boat;
+    // Plating: a thick iron rim around its part.
+    boat.parts.forEach((part) => {
+      if (part.layers.length < 2) return;
+      const armor = part.layers[0];
+      g.lineStyle(0.45, 0x8e979f, (armor.hp > 0 ? 0.95 : 0.35) * alpha);
+      g.strokePoints(part.def.polygon.map(W), true);
+    });
+    for (const tile of boat.grid.tiles) {
+      const q = (x0: number, y0: number, x1: number, y1: number) => [W({ x: x0, y: y0 }), W({ x: x1, y: y0 }), W({ x: x1, y: y1 }), W({ x: x0, y: y1 })];
+      if (tile.floor === 'reinforcedPlanks') {
+        g.fillStyle(0x6b4a2a, 0.35 * alpha);
+        g.fillPoints(q(tile.x0 + 0.15, tile.y0 + 0.15, tile.x1 - 0.15, tile.y1 - 0.15), true);
+        g.lineStyle(0.12, 0x3a2614, 0.6 * alpha);
+        for (let x = tile.x0 + 0.6; x < tile.x1 - 0.3; x += 0.8) {
+          const a = W({ x, y: tile.y0 + 0.2 });
+          const b = W({ x, y: tile.y1 - 0.2 });
           g.lineBetween(a.x, a.y, b.x, b.y);
         }
-        const hub = W({ x: c.local.x, y: c.local.y - s * 0.2 });
-        g.fillStyle(online ? 0x3a3f45 : 0x6d6862, alpha);
-        g.fillCircle(hub.x, hub.y, 0.45);
-        return;
+      } else if (tile.floor === 'grippy') {
+        g.fillStyle(0x2a2a2a, 0.45 * alpha);
+        for (let x = tile.x0 + 0.5; x < tile.x1 - 0.2; x += 0.7) {
+          for (let y = tile.y0 + 0.5; y < tile.y1 - 0.2; y += 0.7) {
+            const p = W({ x, y });
+            g.fillCircle(p.x, p.y, 0.09);
+          }
+        }
       }
-      const since = world.time - c.lastFired;
-      const recoil = since < 0.45 ? 1 - since / 0.45 : 0;
-      const s = c.broadside;
-      const inner = c.local.y - s * (0.5 + recoil * 0.7);
-      const outer = c.local.y + s * (2.1 - recoil * 0.7);
-      const hw = 0.42;
-      const img = this.barrels[i];
-      if (img) {
-        const mid = W({ x: c.local.x, y: (inner + outer) / 2 });
-        img.setPosition(mid.x, mid.y).setRotation(heading + (s * Math.PI) / 2);
-        img.setDisplaySize(Math.abs(outer - inner), hw * 2).setAlpha(alpha).setTint(online ? 0xffffff : 0x8a8580);
-        return;
+      if (tile.blown) {
+        const c = W(tile.center);
+        g.fillStyle(0x1a1008, 0.75 * alpha);
+        g.fillCircle(c.x, c.y, Math.min(tile.x1 - tile.x0, tile.y1 - tile.y0) * 0.42);
+        g.fillStyle(0x3a2412, 0.6 * alpha);
+        g.fillCircle(c.x + 0.3, c.y - 0.2, Math.min(tile.x1 - tile.x0, tile.y1 - tile.y0) * 0.22);
       }
-      const corners = [
-        { x: c.local.x - hw, y: inner },
-        { x: c.local.x + hw, y: inner },
-        { x: c.local.x + hw * 0.85, y: outer },
-        { x: c.local.x - hw * 0.85, y: outer },
-      ].map(W);
-      g.fillStyle(online ? 0x1f2225 : 0x6d6862, alpha);
-      g.fillPoints(corners, true);
-      g.lineStyle(0.18, online ? 0x000000 : 0x3a3633, alpha);
-      g.strokePoints(corners, true);
-    });
+      this.drawStation(g, W, tile, alpha);
+      for (const r of tile.rails) this.drawRail(g, W, tile, r.kind, r.facing, r.destroyed, alpha);
+    }
+  }
+
+  /** A small marker for a station's module (the strip adds its icon on top). */
+  private drawStation(g: Phaser.GameObjects.Graphics, W: (p: Vec) => Vec, tile: Tile, alpha: number): void {
+    const st = tile.station;
+    if (!st || st === 'gun') return;
+    const dead = tile.fixture?.destroyed;
+    const c = tile.center;
+    const ink = dead ? 0x6d6862 : 0x2b1a0e;
+    switch (st) {
+      case 'oars': {
+        // Two oar shafts sticking out past the rail on the slot's side.
+        const f = tile.edges.find((e) => e === 'port' || e === 'starboard') ?? tile.edges[0] ?? 'port';
+        const a = FACING_ANGLE[f];
+        const dx = Math.cos(a);
+        const dy = Math.sin(a);
+        for (const off of [-0.9, 0.9]) {
+          const from = W({ x: c.x + off - dx * 0.6, y: c.y - dy * 0.6 });
+          const to = W({ x: c.x + off * 1.6 + dx * 3.2, y: c.y + dy * 3.2 });
+          g.lineStyle(0.22, dead ? 0x6d6862 : 0x7a5530, alpha);
+          g.lineBetween(from.x, from.y, to.x, to.y);
+        }
+        break;
+      }
+      case 'sails': {
+        const m = W(c);
+        g.fillStyle(0xe8dcc0, 0.85 * alpha);
+        g.fillPoints([W({ x: c.x + 0.2, y: c.y - 1.3 }), W({ x: c.x + 1.4, y: c.y }), W({ x: c.x + 0.2, y: c.y + 1.3 })], true);
+        g.fillStyle(ink, alpha);
+        g.fillCircle(m.x, m.y, 0.35);
+        break;
+      }
+      case 'lookout': {
+        const m = W(c);
+        g.lineStyle(0.18, ink, alpha);
+        g.strokeCircle(m.x, m.y, 0.75);
+        g.fillStyle(ink, alpha);
+        g.fillCircle(m.x, m.y, 0.25);
+        break;
+      }
+      case 'pump': {
+        const m = W(c);
+        g.fillStyle(dead ? 0x6d6862 : 0x355d7a, alpha);
+        g.fillRect(m.x - 0.45, m.y - 0.45, 0.9, 0.9);
+        break;
+      }
+      case 'hooks': {
+        const f = tile.edges[0] ?? 'port';
+        const a = FACING_ANGLE[f];
+        const tip = W({ x: c.x + Math.cos(a) * 1.4, y: c.y + Math.sin(a) * 1.4 });
+        const m = W(c);
+        g.lineStyle(0.16, ink, alpha);
+        g.lineBetween(m.x, m.y, tip.x, tip.y);
+        g.strokeCircle(tip.x, tip.y, 0.3);
+        break;
+      }
+      case 'powder': {
+        const m = W(c);
+        g.fillStyle(dead ? 0x3a2a20 : 0xa0302a, alpha);
+        g.fillCircle(m.x, m.y, 0.7);
+        g.lineStyle(0.14, 0x1a0e06, alpha);
+        g.strokeCircle(m.x, m.y, 0.7);
+        g.lineBetween(m.x - 0.7, m.y, m.x + 0.7, m.y);
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  /** A rail item along the outer edge of its tile. */
+  private drawRail(g: Phaser.GameObjects.Graphics, W: (p: Vec) => Vec, tile: Tile, kind: string, facing: keyof typeof FACING_ANGLE, destroyed: boolean, alpha: number): void {
+    // The edge segment: along the tile's side that faces `facing`.
+    const a = FACING_ANGLE[facing];
+    const nx = Math.round(Math.cos(a));
+    const ny = Math.round(Math.sin(a));
+    const ex = nx > 0 ? tile.x1 : nx < 0 ? tile.x0 : 0;
+    const ey = ny > 0 ? tile.y1 : ny < 0 ? tile.y0 : 0;
+    const p0 = nx !== 0 ? { x: ex, y: tile.y0 + 0.2 } : { x: tile.x0 + 0.2, y: ey };
+    const p1 = nx !== 0 ? { x: ex, y: tile.y1 - 0.2 } : { x: tile.x1 - 0.2, y: ey };
+    const n = 5;
+    if (kind === 'spikes') {
+      g.fillStyle(destroyed ? 0x5a5550 : 0xb8bec4, alpha);
+      for (let i = 0; i < n; i++) {
+        const t0 = i / n;
+        const t1 = (i + 1) / n;
+        const b0 = { x: p0.x + (p1.x - p0.x) * t0, y: p0.y + (p1.y - p0.y) * t0 };
+        const b1 = { x: p0.x + (p1.x - p0.x) * t1, y: p0.y + (p1.y - p0.y) * t1 };
+        const tip = { x: (b0.x + b1.x) / 2 + nx * 0.9, y: (b0.y + b1.y) / 2 + ny * 0.9 };
+        const pts = [W(b0), W(tip), W(b1)];
+        g.fillTriangle(pts[0].x, pts[0].y, pts[1].x, pts[1].y, pts[2].x, pts[2].y);
+      }
+    } else if (kind === 'fence') {
+      if (destroyed) return;
+      const a0 = W({ x: p0.x - nx * 0.3, y: p0.y - ny * 0.3 });
+      const a1 = W({ x: p1.x - nx * 0.3, y: p1.y - ny * 0.3 });
+      g.lineStyle(0.3, 0x8a6a3a, alpha);
+      g.lineBetween(a0.x, a0.y, a1.x, a1.y);
+      g.fillStyle(0x5a3a1a, alpha);
+      for (let i = 0; i <= n; i++) {
+        const p = W({ x: p0.x + (p1.x - p0.x) * (i / n) - nx * 0.3, y: p0.y + (p1.y - p0.y) * (i / n) - ny * 0.3 });
+        g.fillCircle(p.x, p.y, 0.2);
+      }
+    } else if (kind === 'planks') {
+      const m = { x: (p0.x + p1.x) / 2, y: (p0.y + p1.y) / 2 };
+      const along = { x: (p1.x - p0.x) / 2, y: (p1.y - p0.y) / 2 };
+      const half = Math.hypot(along.x, along.y) || 1;
+      const ax = (along.x / half) * 0.5;
+      const ay = (along.y / half) * 0.5;
+      const pts = [
+        W({ x: m.x - ax, y: m.y - ay }),
+        W({ x: m.x + ax, y: m.y + ay }),
+        W({ x: m.x + ax + nx * 1.8, y: m.y + ay + ny * 1.8 }),
+        W({ x: m.x - ax + nx * 1.8, y: m.y - ay + ny * 1.8 }),
+      ];
+      g.fillStyle(destroyed ? 0x5a5550 : 0xb08a58, alpha);
+      g.fillPoints(pts, true);
+    }
+  }
+
+  /** One gun, drawn by type: the shape of its barrel says what it is. */
+  private drawGun(world: World, g: Phaser.GameObjects.Graphics, W: (p: Vec) => Vec, c: GunState, i: number, heading: number, alpha: number): void {
+    const boat = this.boat;
+    const online = gunOnline(boat, c, world.tuning);
+    // Turret guns that fire all the way around point at the nearest target.
+    let face = c.face;
+    if (c.item === 'swivel') {
+      const muzzle = toWorld(c.local, boat.motion, boat.motion.heading);
+      let best = Infinity;
+      for (const t of world.gunTargets(boat)) {
+        const d = Math.hypot(t.motion.x - muzzle.x, t.motion.y - muzzle.y);
+        if (d < best) {
+          best = d;
+          face = Math.atan2(t.motion.y - muzzle.y, t.motion.x - muzzle.x) - boat.motion.heading;
+        }
+      }
+    }
+    const dx = Math.cos(face);
+    const dy = Math.sin(face);
+    const px = -dy;
+    const py = dx;
+    const since = world.time - c.lastFired;
+    const recoil = since < 0.45 ? 1 - since / 0.45 : 0;
+    const at = (along: number, across: number) => W({ x: c.local.x + dx * along + px * across, y: c.local.y + dy * along + py * across });
+    const dim = 0x6d6862;
+    if (c.item === 'gatling') {
+      this.barrels[i]?.setVisible(false);
+      const shiver = since < 0.25 ? Math.sin(world.time * 90) * 0.12 : 0;
+      for (const off of [-0.3, 0, 0.3]) {
+        const a = at(-1.6, off + shiver);
+        const b = at(0.3, off * 0.6 + shiver);
+        g.lineStyle(0.22, online ? 0x2a2d31 : dim, alpha);
+        g.lineBetween(a.x, a.y, b.x, b.y);
+      }
+      const hub = at(-1.7, 0);
+      g.fillStyle(online ? 0x3a3f45 : dim, alpha);
+      g.fillCircle(hub.x, hub.y, 0.45);
+      return;
+    }
+    if (c.item === 'mortar') {
+      this.barrels[i]?.setVisible(false);
+      const m = W(c.local);
+      g.fillStyle(online ? 0x2a2a2a : dim, alpha);
+      g.fillCircle(m.x, m.y, 0.95 - recoil * 0.15);
+      g.fillStyle(0x0a0a0a, alpha);
+      g.fillCircle(m.x, m.y, 0.5);
+      // A tick showing which half it covers.
+      const tip = at(1.3, 0);
+      g.lineStyle(0.18, online ? 0x2a2a2a : dim, alpha);
+      g.lineBetween(m.x, m.y, tip.x, tip.y);
+      return;
+    }
+    // Barrel guns: [length, breech half-width, muzzle half-width, color].
+    const shape: Record<string, [number, number, number, number]> = {
+      cannon: [2.6, 0.42, 0.36, 0x1f2225],
+      longGun: [3.8, 0.3, 0.24, 0x23364a],
+      carronade: [1.8, 0.62, 0.55, 0x3a2416],
+      swivel: [1.5, 0.2, 0.18, 0x5a524a],
+      scrap: [2.4, 0.32, 0.72, 0x4a3a28],
+    };
+    const [len, wBack, wFront, color] = shape[c.item] ?? shape.cannon;
+    const outer = 0.2 - recoil * 0.7;
+    const inner = outer - len;
+    const img = this.barrels[i];
+    if (img && c.item === 'cannon') {
+      const mid = at((inner + outer) / 2, 0);
+      img.setVisible(true).setPosition(mid.x, mid.y).setRotation(heading + face);
+      img.setDisplaySize(len, wBack * 2).setAlpha(alpha).setTint(online ? 0xffffff : 0x8a8580);
+      return;
+    }
+    img?.setVisible(false);
+    const corners = [at(inner, -wBack), at(outer, -wFront), at(outer, wFront), at(inner, wBack)];
+    g.fillStyle(online ? color : dim, alpha);
+    g.fillPoints(corners, true);
+    g.lineStyle(0.16, online ? 0x000000 : 0x3a3633, alpha);
+    g.strokePoints(corners, true);
+    if (c.item === 'swivel') {
+      const post = W(c.local);
+      g.fillStyle(online ? 0x3a332c : dim, alpha);
+      g.fillCircle(post.x, post.y, 0.4);
+    }
   }
 }
 

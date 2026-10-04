@@ -14,14 +14,14 @@ import Phaser from 'phaser';
 import { LAYOUTS } from '../config/boats';
 import { shipName } from '../config/ships';
 import {
-  boatTuning,
-  cannonOnline,
-  cannonRange,
+  gunOnline,
+  gunSpec,
   isDerelict,
   motionParams,
   sinkProgress,
   structureFraction,
   type Boat,
+  type GunState,
 } from '../sim/boat';
 import { leeWorldPos } from '../sim/combat';
 import { activity, workerAt } from '../sim/crew';
@@ -329,7 +329,7 @@ export class BattleScene extends Phaser.Scene {
     const dt = Math.min(deltaMs / 1000, 0.1);
     this.clock += dt;
     this.animatePanels(dt);
-    if (!ctl.blocked && world.phase !== 'ready') {
+    if (!ctl.blocked && !ctl.paused && world.phase !== 'ready') {
       this.acc += dt * ctl.speed;
       let steps = 0;
       while (this.acc >= FIXED_DT && steps < 12) {
@@ -428,10 +428,24 @@ export class BattleScene extends Phaser.Scene {
       switch (e.type) {
         case 'fire': {
           const dir = Math.atan2(e.to.y - e.from.y, e.to.x - e.from.x) / DEG;
-          this.smoke.setEmitterAngle({ min: dir - 25, max: dir + 25 });
-          this.smoke.explode(6, e.from.x, e.from.y);
+          const puff = e.gun === 'swivel' ? 3 : e.gun === 'carronade' || e.gun === 'scrap' ? 10 : e.gun === 'mortar' ? 8 : 6;
+          this.smoke.setEmitterAngle({ min: dir - (e.gun === 'scrap' ? 40 : 25), max: dir + (e.gun === 'scrap' ? 40 : 25) });
+          this.smoke.explode(puff, e.from.x, e.from.y);
           break;
         }
+        case 'blowout':
+          this.chips.explode(18, e.pos.x, e.pos.y);
+          this.smoke.setEmitterAngle({ min: 0, max: 360 });
+          this.smoke.explode(6, e.pos.x, e.pos.y);
+          break;
+        case 'explosion':
+          this.chips.explode(40, e.pos.x, e.pos.y);
+          this.smoke.setEmitterAngle({ min: 0, max: 360 });
+          this.smoke.explode(20, e.pos.x, e.pos.y);
+          this.rings.push({ x: e.pos.x, y: e.pos.y, t: this.clock, dur: 0.7, r: 12, color: 0xffa040 });
+          this.rings.push({ x: e.pos.x, y: e.pos.y, t: this.clock, dur: 0.35, r: 6, color: 0xfff0a0 });
+          this.cameras.main.shake(260, 0.01);
+          break;
         case 'hit':
           this.chips.explode(14, e.pos.x, e.pos.y);
           this.viewFor(e.boatId)?.flashPart(e.part);
@@ -510,7 +524,7 @@ export class BattleScene extends Phaser.Scene {
     const p = world.player.motion;
     // Frame you plus every enemy still on the water (sinking ones until they're under).
     const others = world.enemies.filter((e) => world.sinkAnim(e) < 1).map((e) => e.motion);
-    const focus = others.length ? others : world.enemies.map((e) => e.motion);
+    const focus = others.length ? others : world.enemies.length ? world.enemies.map((e) => e.motion) : [p];
     const mean = focus.reduce((a, m) => ({ x: a.x + m.x / focus.length, y: a.y + m.y / focus.length }), { x: 0, y: 0 });
     const bias = clamp(t.enemyBias, 0, 1);
     const cx = lerp(p.x, mean.x, bias);
@@ -664,19 +678,23 @@ export class BattleScene extends Phaser.Scene {
       }
     }
 
-    // Shells in flight: ball above its shadow.
+    // Shells in flight: ball above its shadow, sized and lobbed by gun (a mortar arcs high, pellets are specks).
     const arcH = world.tuning.visuals.shellArcHeight;
     for (const s of world.shells) {
+      const look = SHELL_LOOK[s.gun] ?? SHELL_LOOK.cannon;
       const k = clamp(s.elapsed / s.flightTime, 0, 1);
       const gx = lerp(s.from.x, s.to.x, k);
       const gy = lerp(s.from.y, s.to.y, k);
-      const h = 4 * arcH * k * (1 - k);
+      const h = 4 * arcH * look.arc * k * (1 - k);
+      const r = look.size;
       g.fillStyle(0x000000, 0.3);
-      g.fillCircle(gx, gy, Math.max(0.5, px(2)));
-      g.fillStyle(0x15171a, 1);
-      g.fillCircle(gx, gy - h, Math.max(0.7, px(3)));
-      g.fillStyle(0x9aa3ad, 1);
-      g.fillCircle(gx - px(0.8), gy - h - px(0.8), Math.max(0.2, px(1)));
+      g.fillCircle(gx, gy, Math.max(0.4 * r, px(2 * r)));
+      g.fillStyle(look.color, 1);
+      g.fillCircle(gx, gy - h, Math.max(0.6 * r, px(3 * r)));
+      if (r >= 0.8) {
+        g.fillStyle(0x9aa3ad, 1);
+        g.fillCircle(gx - px(0.8 * r), gy - h - px(0.8 * r), Math.max(0.2, px(r)));
+      }
     }
 
     this.drawTelegraphs(g, world, px);
@@ -720,10 +738,14 @@ export class BattleScene extends Phaser.Scene {
   private drawMinRangeRings(g: Phaser.GameObjects.Graphics, world: World, px: (n: number) => number): void {
     for (const b of world.boats) {
       if (b.sinkingSince !== null) continue;
-      const r = boatTuning(b, world.tuning).cannons.minRange;
-      if (r <= 0) continue;
-      g.lineStyle(px(1.5), b.side === 'player' ? COLOR.path : COLOR.minRange, 0.35);
-      g.strokeCircle(b.motion.x, b.motion.y, r);
+      // One faint ring per distinct minimum range among its shell-firing guns.
+      const rings = new Set<number>();
+      for (const gun of b.guns) if (gun.mode !== 'stream') rings.add(Math.round(gunSpec(b, gun, world.tuning).minRange));
+      for (const r of rings) {
+        if (r <= 0) continue;
+        g.lineStyle(px(1.5), b.side === 'player' ? COLOR.path : COLOR.minRange, 0.3);
+        g.strokeCircle(b.motion.x, b.motion.y, r);
+      }
     }
   }
 
@@ -767,24 +789,44 @@ export class BattleScene extends Phaser.Scene {
     }
   }
 
-  /** Setup: your guns' reach as a dashed ring (the lookout grows it) and the two broadside arcs. */
+  /**
+   * Setup: every gun's arc as a faint wedge from its muzzle (so you can see where
+   * each can fire from the slot it's in), and the selected gun's arc bright,
+   * with its minimum and maximum range.
+   */
   private drawRangeRing(g: Phaser.GameObjects.Graphics, world: World, px: (n: number) => number): void {
     const b = world.player;
-    const r = cannonRange(b, world.tuning);
-    const arc = boatTuning(world.player, world.tuning).cannons.arc * DEG;
-    const { x, y } = b.motion;
-    for (const side of [-1, 1]) {
-      const face = b.motion.heading + (side * Math.PI) / 2;
-      g.fillStyle(0xffd27a, 0.08);
-      g.slice(x, y, r, face - arc, face + arc, false);
-      g.fillPath();
+    const sel = this.ctl.arcPreview;
+    for (const gun of b.guns) {
+      const on = sel !== null && gun.slot === sel;
+      this.drawGunArc(g, world, b, gun, px, on ? 0.28 : sel ? 0.05 : 0.09, on);
     }
-    const n = 72;
-    g.lineStyle(px(2), 0xffd27a, 0.6);
-    for (let i = 0; i < n; i += 2) {
-      const a0 = (i / n) * Math.PI * 2;
-      const a1 = ((i + 1) / n) * Math.PI * 2;
-      g.lineBetween(x + Math.cos(a0) * r, y + Math.sin(a0) * r, x + Math.cos(a1) * r, y + Math.sin(a1) * r);
+  }
+
+  /** One gun's arc: a wedge from its muzzle between its minimum and maximum range. */
+  private drawGunArc(g: Phaser.GameObjects.Graphics, world: World, b: Boat, gun: GunState, px: (n: number) => number, alpha: number, outline: boolean): void {
+    const spec = gunSpec(b, gun, world.tuning);
+    const from = world.muzzle(b, gun);
+    const face = world.gunFacing(b, gun);
+    const color = gun.targets === 'crew' ? 0xffa0d0 : 0xffd27a;
+    const full = spec.arcHalf >= Math.PI - 1e-6;
+    const a0 = full ? 0 : face - spec.arcHalf;
+    const a1 = full ? Math.PI * 2 : face + spec.arcHalf;
+    const n = Math.max(8, Math.ceil(((a1 - a0) / DEG) / 4));
+    const pts: Vec[] = [];
+    for (let i = 0; i <= n; i++) {
+      const a = a0 + ((a1 - a0) * i) / n;
+      pts.push({ x: from.x + Math.cos(a) * spec.range, y: from.y + Math.sin(a) * spec.range });
+    }
+    for (let i = n; i >= 0; i--) {
+      const a = a0 + ((a1 - a0) * i) / n;
+      pts.push({ x: from.x + Math.cos(a) * spec.minRange, y: from.y + Math.sin(a) * spec.minRange });
+    }
+    g.fillStyle(color, alpha);
+    g.fillPoints(pts, true);
+    if (outline) {
+      g.lineStyle(px(2), color, 0.85);
+      g.strokePoints(pts, true);
     }
   }
 
@@ -844,7 +886,21 @@ export class BattleScene extends Phaser.Scene {
       const k = TelegraphSystem.progress(t);
       const fadeIn = clamp(t.elapsed / Math.max(0.01, tt.fadeInTime), 0, 1);
       const fadeOut = t.impacted ? clamp(t.linger / Math.max(0.01, tt.lingerTime), 0, 1) : 1;
-      this.drawThreatX(g, t.pos, k, t.impacted, fadeIn * fadeOut, COLOR.threat, COLOR.threatDark, world, px);
+      const a = fadeIn * fadeOut;
+      if (t.kind === 'area') {
+        // A burst of pellets: one shaded disk where they'll land, a ring closing in for timing.
+        const r = Math.max(t.size, px(10));
+        g.fillStyle(COLOR.threat, (0.12 + 0.22 * k) * a);
+        g.fillCircle(t.pos.x, t.pos.y, r);
+        g.lineStyle(px(2), COLOR.threat, (0.5 + 0.4 * k) * a);
+        g.strokeCircle(t.pos.x, t.pos.y, r);
+        if (!t.impacted) {
+          g.lineStyle(px(1.2), COLOR.threat, 0.4 * a);
+          g.strokeCircle(t.pos.x, t.pos.y, lerp(r * 2.2, r, k));
+        }
+        continue;
+      }
+      this.drawThreatX(g, t.pos, k, t.impacted, a, COLOR.threat, COLOR.threatDark, world, px, t.size);
     }
   }
 
@@ -863,10 +919,11 @@ export class BattleScene extends Phaser.Scene {
     dark: number,
     world: World,
     px: (n: number) => number,
+    size = 1,
   ): void {
     const tt = world.tuning.telegraph;
     const { x, y } = pos;
-    const end = Math.max(tt.markerSize, px(6));
+    const end = Math.max(tt.markerSize * size, px(6));
     if (!impacted) {
       const r = lerp(Math.max(tt.ringStartRadius, px(30)), end, k);
       g.lineStyle(px(1.2), color, 0.35 * a);
@@ -895,13 +952,15 @@ export class BattleScene extends Phaser.Scene {
     radiusPx: number,
   ): void {
     const r = px(radiusPx);
-    for (const c of b.cannons) {
-      if (c.kind === 'gatling') continue;
-      const pos = toWorld({ x: c.local.x, y: c.local.y + c.broadside * 2.6 }, b.motion, b.motion.heading);
-      const off = toWorld({ x: 0, y: c.broadside * (r * 1.2) }, { x: 0, y: 0 }, b.motion.heading);
+    for (const c of b.guns) {
+      if (c.mode === 'stream') continue;
+      const dx = Math.cos(c.face);
+      const dy = Math.sin(c.face);
+      const pos = toWorld({ x: c.local.x + dx * 2.4, y: c.local.y + dy * 2.4 }, b.motion, b.motion.heading);
+      const off = toWorld({ x: dx * r * 1.2, y: dy * r * 1.2 }, { x: 0, y: 0 }, b.motion.heading);
       const x = pos.x + off.x;
       const y = pos.y + off.y;
-      if (!cannonOnline(b, c, world.tuning)) {
+      if (!gunOnline(b, c, world.tuning)) {
         g.lineStyle(px(1.5), COLOR.offline, 0.9);
         g.strokeCircle(x, y, r);
         g.lineBetween(x - r * 0.7, y + r * 0.7, x + r * 0.7, y - r * 0.7);
@@ -998,29 +1057,39 @@ export class BattleScene extends Phaser.Scene {
 
   private drawDebug(g: Phaser.GameObjects.Graphics, world: World, px: (n: number) => number): void {
     for (const b of world.boats) {
-      const ct = boatTuning(b, world.tuning).cannons;
       // Hitboxes.
       g.lineStyle(px(1), COLOR.debug, 0.9);
       for (const part of b.parts) {
         g.strokePoints(part.def.polygon.map((p) => toWorld(p, b.motion, b.motion.heading)), true);
       }
-      // Firing arcs and range.
-      const gt = boatTuning(b, world.tuning).gatling;
-      for (const c of b.cannons) {
+      // Every gun's arc, facing and range rings (minimum and maximum).
+      for (const c of b.guns) {
+        const spec = gunSpec(b, c, world.tuning);
         const from = world.muzzle(b, c);
-        const face = world.cannonFacing(b, c);
-        const online = cannonOnline(b, c, world.tuning);
-        const gat = c.kind === 'gatling';
-        g.lineStyle(px(1), gat ? 0xffa0d0 : online ? (c.load >= 1 ? 0x7dff8a : 0x2f8a3a) : 0x666666, gat ? 0.35 : 0.5);
+        const face = world.gunFacing(b, c);
+        const online = gunOnline(b, c, world.tuning);
+        const crew = c.targets === 'crew';
+        const color = crew ? 0xffa0d0 : online ? (c.load >= 1 ? 0x7dff8a : 0x2f8a3a) : 0x666666;
+        g.lineStyle(px(1), color, crew ? 0.35 : 0.5);
         g.beginPath();
-        g.moveTo(from.x, from.y);
-        const arc = (gat ? gt.arc : ct.arc) * DEG;
-        g.arc(from.x, from.y, gat ? gt.range : cannonRange(b, world.tuning), face - arc, face + arc, false);
-        g.closePath();
-        g.strokePath();
+        if (spec.arcHalf >= Math.PI - 1e-6) {
+          g.strokeCircle(from.x, from.y, spec.range);
+        } else {
+          g.moveTo(from.x, from.y);
+          g.arc(from.x, from.y, spec.range, face - spec.arcHalf, face + spec.arcHalf, false);
+          g.closePath();
+          g.strokePath();
+        }
+        if (spec.minRange > 0) {
+          g.lineStyle(px(1), color, 0.3);
+          g.beginPath();
+          g.arc(from.x, from.y, spec.minRange, face - Math.min(Math.PI, spec.arcHalf), face + Math.min(Math.PI, spec.arcHalf), false);
+          g.strokePath();
+        }
+        // Facing tick.
+        g.lineStyle(px(2), color, 0.8);
+        g.lineBetween(from.x, from.y, from.x + Math.cos(face) * px(18), from.y + Math.sin(face) * px(18));
       }
-      g.lineStyle(px(1), 0xffffff, 0.15);
-      g.strokeCircle(b.motion.x, b.motion.y, cannonRange(b, world.tuning));
     }
     // Each enemy's seek point and preferred range.
     for (const e of world.enemies) {
@@ -1108,6 +1177,23 @@ export class BattleScene extends Phaser.Scene {
     for (const deck of decks) {
       if (world.sinkAnim(deck) >= 1 || (deck === b && !show)) continue;
       this.drawPartBars(g, deck, along, down);
+      if (this.ctl.debug) this.drawTileBars(g, deck, along, down);
+    }
+  }
+
+  /** Debug: each damaged tile's durability as a thin bar along its top edge. */
+  private drawTileBars(g: Phaser.GameObjects.Graphics, b: Boat, along: Vec, down: Vec): void {
+    for (const tile of b.grid.tiles) {
+      if (tile.hp >= tile.maxHp && !tile.blown) continue;
+      const c = toWorld({ x: tile.center.x, y: tile.y0 + 0.25 }, b.motion, b.motion.heading);
+      const w = (tile.x1 - tile.x0) * 0.8;
+      const at = (dx: number, dy: number) => ({ x: c.x + along.x * dx + down.x * dy, y: c.y + along.y * dx + down.y * dy });
+      const quad = (x0: number, x1: number) => [at(x0, 0), at(x1, 0), at(x1, 0.16), at(x0, 0.16)];
+      g.fillStyle(0x000000, 0.7);
+      g.fillPoints(quad(-w / 2, w / 2), true);
+      const f = clamp(tile.hp / tile.maxHp, 0, 1);
+      g.fillStyle(0xd08a40, 1);
+      if (f > 0) g.fillPoints(quad(-w / 2, -w / 2 + w * f), true);
     }
   }
 
@@ -1150,6 +1236,16 @@ export class BattleScene extends Phaser.Scene {
     return best ?? part.center;
   }
 }
+
+/** How each gun's shot looks in flight: ball size (× a cannon ball), arc height (× the base) and color. */
+const SHELL_LOOK: Record<string, { size: number; arc: number; color: number }> = {
+  cannon: { size: 1, arc: 1, color: 0x15171a },
+  longGun: { size: 0.75, arc: 0.6, color: 0x1c2a3a },
+  carronade: { size: 1.35, arc: 0.7, color: 0x1a120c },
+  swivel: { size: 0.55, arc: 0.6, color: 0x2a2622 },
+  mortar: { size: 1.6, arc: 3, color: 0x0e0e0e },
+  scrap: { size: 0.35, arc: 0.3, color: 0x4a3a28 },
+};
 
 function polygonWidth(poly: readonly Vec[]): number {
   let lo = Infinity;

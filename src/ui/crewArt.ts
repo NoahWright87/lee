@@ -10,7 +10,8 @@ const INK = '#f6e7c1';
 const OUTLINE = '#1a120a';
 
 /** Stick-figure Lee, drawn into a w × h box (feet at the bottom). */
-export function drawLeeFigure(ctx: CanvasRenderingContext2D, w: number, h: number, opts: { ghost?: boolean; shirt?: string } = {}): void {
+/** Stick-figure Lee. `shirt` tells types apart; `band` (a bandana) marks the enemy crew. */
+export function drawLeeFigure(ctx: CanvasRenderingContext2D, w: number, h: number, opts: { ghost?: boolean; shirt?: string; band?: string } = {}): void {
   const s = h / 80;
   const cx = w / 2;
   ctx.save();
@@ -64,6 +65,24 @@ export function drawLeeFigure(ctx: CanvasRenderingContext2D, w: number, h: numbe
   ctx.arc(cx - 4 * s, 13 * s, 1.6 * s, 0, Math.PI * 2);
   ctx.arc(cx + 4 * s, 13 * s, 1.6 * s, 0, Math.PI * 2);
   ctx.fill();
+  if (opts.band) {
+    // Bandana: a band over the top of the head and a knot.
+    ctx.fillStyle = opts.band;
+    ctx.strokeStyle = OUTLINE;
+    ctx.lineWidth = 2 * s;
+    ctx.beginPath();
+    ctx.arc(cx, 14 * s, 11 * s, Math.PI * 1.05, Math.PI * 1.95);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx + 9 * s, 8 * s);
+    ctx.lineTo(cx + 16 * s, 4 * s);
+    ctx.lineTo(cx + 15 * s, 11 * s);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+  }
   ctx.restore();
 }
 
@@ -305,6 +324,67 @@ export function drawIcon(ctx: CanvasRenderingContext2D, kind: IconKind, size: nu
         ctx.closePath();
       }, 3, true);
       break;
+    case 'pump':
+      // A hand pump: a box, a handle and a spout.
+      both(() => {
+        ctx.beginPath();
+        ctx.rect(18, 26, 22, 30);
+      }, 3, true);
+      both(() => {
+        ctx.beginPath();
+        ctx.moveTo(29, 26);
+        ctx.lineTo(29, 12);
+        ctx.lineTo(52, 8);
+        ctx.moveTo(40, 34);
+        ctx.lineTo(54, 34);
+      }, 4);
+      ctx.fillStyle = '#3a9cf0';
+      ctx.beginPath();
+      ctx.arc(55, 44, 5, 0, Math.PI * 2);
+      ctx.fill();
+      break;
+    case 'hooks':
+      // A grappling hook.
+      both(() => {
+        ctx.beginPath();
+        ctx.moveTo(32, 6);
+        ctx.lineTo(32, 46);
+      }, 4);
+      for (const flip of [1, -1]) {
+        both(() => {
+          ctx.beginPath();
+          ctx.arc(32 + 10 * flip, 46, 10, flip > 0 ? Math.PI : 0, flip > 0 ? Math.PI * 1.8 : -Math.PI * 0.8, flip < 0);
+        }, 4);
+      }
+      both(() => {
+        ctx.beginPath();
+        ctx.arc(32, 8, 4, 0, Math.PI * 2);
+      }, 3);
+      break;
+    case 'powder':
+      // A powder keg with a fuse.
+      both(() => {
+        ctx.beginPath();
+        ctx.ellipse(32, 38, 16, 18, 0, 0, Math.PI * 2);
+      }, 3, true);
+      ctx.strokeStyle = OUTLINE;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(17, 30);
+      ctx.lineTo(47, 30);
+      ctx.moveTo(17, 46);
+      ctx.lineTo(47, 46);
+      ctx.stroke();
+      both(() => {
+        ctx.beginPath();
+        ctx.moveTo(32, 20);
+        ctx.quadraticCurveTo(40, 10, 48, 12);
+      }, 3);
+      ctx.fillStyle = '#ff8a3a';
+      ctx.beginPath();
+      ctx.arc(49, 11, 4, 0, Math.PI * 2);
+      ctx.fill();
+      break;
     case 'idle':
       both(() => {
         ctx.beginPath();
@@ -343,8 +423,15 @@ export function iconUrl(kind: IconKind): string {
   return canvasUrl(`icon:${kind}`, 64, 64, (ctx) => drawIcon(ctx, kind, 64));
 }
 
-export function leeUrl(art: string | null): string {
-  return art ?? canvasUrl('lee', 48, 80, (ctx) => drawLeeFigure(ctx, 48, 80));
+/** A Lee's figure as an image URL: supplied art, or the stick figure in its type's shirt. */
+export function leeUrl(art: string | null, shirt = '#c0392b', band?: string): string {
+  return art ?? canvasUrl(`lee:${shirt}:${band ?? ''}`, 48, 80, (ctx) => drawLeeFigure(ctx, 48, 80, { shirt, band }));
 }
 
-export const STATION_ICON: Record<string, IconKind> = { cannon: 'cannon', gatling: 'gatling', oars: 'oars', sails: 'sails', lookout: 'spyglass' };
+/** Station icon by station kind (guns: by gun item, see gunIcon). */
+export const STATION_ICON: Record<string, IconKind> = { gun: 'cannon', cannon: 'cannon', gatling: 'gatling', oars: 'oars', sails: 'sails', lookout: 'spyglass', pump: 'pump', hooks: 'hooks', powder: 'powder' };
+
+/** Icon for a gun station: the gatling has its own, every other gun the cannon. */
+export function gunIcon(item: string | undefined): IconKind {
+  return item === 'gatling' ? 'gatling' : 'cannon';
+}

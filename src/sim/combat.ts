@@ -7,6 +7,7 @@
 import type { Tuning } from '../config/tuning';
 import { applyDamage, partAt, type Boat, type PartState } from './boat';
 import { hurtLee, leeStat, standingTile, type Lee } from './crew';
+import { itemParam } from './loadout';
 import { dist, lerp, toWorld, type Rng, type Vec } from './math';
 
 export interface CombatContext {
@@ -92,6 +93,7 @@ export function stepMelee(ctx: CombatContext, dt: number): CombatEvent[] {
     if (!h.target.alive) continue; // already killed by a hit resolved this step
     const killed = hurtLee(h.target, h.damage, ctx.time, 'melee');
     h.attacker.stats.meleeDealt += h.damage;
+    h.attacker.stats.leeDamage += h.damage;
     h.target.stats.meleeTaken += h.damage;
     if (killed) h.attacker.stats.meleeKills++;
     out.push({ type: 'melee', attacker: h.attacker, target: h.target, damage: h.damage, killed, pos: leeWorldPos(h.target) });
@@ -113,7 +115,14 @@ export function stepPistols(ctx: CombatContext, dt: number): CombatEvent[] {
   const range = Math.max(0, p.range);
   const hittable = t.boarding.swingHittable > 0;
   const where = new Map<number, Vec>();
-  for (const l of ctx.lees) if (l.alive && (!l.swing || hittable)) where.set(l.id, leeWorldPos(l));
+  // Lees swinging from boarding planks are exposed mid-air.
+  for (const l of ctx.lees) if (l.alive && (!l.swing || hittable || l.boardBuff?.exposed)) where.set(l.id, leeWorldPos(l));
+  // A Lee up the lookout is a tall target: pistols reach it from farther away.
+  const reach = (o: Lee): number => {
+    if (o.swing || o.deck !== o.boat) return range;
+    const tile = o.deck.grid.tiles[o.tile];
+    return tile?.station === 'lookout' && tile.fixture && o.working ? range * Math.max(1, itemParam(t, tile.fixture.item, 'exposure')) : range;
+  };
   for (const l of ctx.lees) {
     if (!l.alive || l.swing || l.engaged) continue;
     if (l.pistolCd > 0) l.pistolCd -= dt * Math.max(0, p.rate) * leeStat(l, 'pistolRate', l.boat, t);
@@ -126,7 +135,7 @@ export function stepPistols(ctx: CombatContext, dt: number): CombatEvent[] {
       const at = where.get(o.id);
       if (!at) continue;
       const d = dist(from, at);
-      if (d > range) continue;
+      if (d > reach(o)) continue;
       if (d < bestD - 1e-9 || (Math.abs(d - bestD) <= 1e-9 && target && o.id < target.id)) {
         bestD = d;
         target = o;
@@ -150,10 +159,11 @@ export function stepPistols(ctx: CombatContext, dt: number): CombatEvent[] {
     let part: PartState | null = null;
     let boatDamage = 0;
     if (hit) {
-      damage = Math.max(0, p.damage);
+      damage = Math.max(0, p.damage) * leeStat(l, 'pistolDamage', l.boat, t) * Math.max(0, leeStat(target, 'pistolTaken', target.boat, t));
       killed = hurtLee(target, damage, ctx.time, 'pistol');
       l.stats.pistolHits++;
       l.stats.pistolDealt += damage;
+      l.stats.leeDamage += damage;
     } else if (p.boatDamage > 0) {
       // A miss that lands on an opposing hull scratches it.
       for (const b of ctx.boats) {

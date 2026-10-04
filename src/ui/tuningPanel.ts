@@ -2,7 +2,6 @@
 // so any new number added to src/config/tuning.ts shows up automatically.
 
 import GUI, { type Controller as GuiController } from 'lil-gui';
-import { SHIP_TYPES } from '../config/ships';
 import type { Controller } from '../game/Controller';
 
 type Range = [min: number, max: number, step: number];
@@ -167,43 +166,59 @@ const PATH_RANGES: [RegExp, Range][] = [
   [/^pistol\.range$/, [0, 40, 0.5]],
   [/^(pistol|melee)\.rate$/, [0, 3, 0.05]],
   [/^pistol\.spread$/, [0, 5, 0.05]],
-  [/^campaign\.mix\./, [0, 5, 0.25]],
+  [/^items\.\w+\.arc$/, [5, 360, 5]],
+  [/^items\./, [0, 5, 0.01]],
+  [/^traits\./, [0, 3, 0.05]],
+  [/^ships\.\w+\.(crewMin|crewMax|treasures)$/, [0, 16, 1]],
+  [/^ships\./, [0.2, 3, 0.05]],
+  [/^guns\.reloadTime$/, [0.3, 10, 0.1]],
 ];
 
 /** Keys read only when a fight is built. */
-const NEXT_RUN = /(^|\.)(parts\..*|crew\.size|crew\.hp|lees\.\w+\.hp|global\.enemyStart\w+|campaign\.(packHullScaling|firstFightEnemies|enemiesAddedPerFight|maxEnemies|spawnSpread|repairBetweenFights|introFights|mix\.\w+)|enemyAI\.rangeJitter|ai\.preferredRange)$/;
+const NEXT_RUN = /^(boat\.parts\..*|ships\..*|items\..*|crew\.hp|lees\.\w+\.hp|global\.(enemyStart\w+|playerAdvantage|playerCrewStats)|fights\.(packHullScaling|spawnSpread)|tiles\.durability|enemyAI\.rangeJitter|ai\..*|run\..*|escalation\..*)$/;
 
 const FOLDER_NAMES: Record<string, string> = {
-  global: 'Global',
-  player: 'Player boat',
-  ships: 'Enemy ship types',
-  'ships.standard': 'Sloop (standard)',
-  'ships.boarder': 'Friend Ship (boarder)',
-  'ships.heavy': 'Hard Ship (heavy)',
-  ai: 'AI',
+  meta: 'Version',
+  global: 'Global (and sandbox assists)',
+  boat: 'Baseline hull (every ship scales this)',
+  ships: 'Ships (multipliers, crew limits, treasures)',
+  'ships.sloop': 'Sloop',
+  'ships.skiff': 'Skiff',
+  'ships.friendship': 'Friend Ship',
+  'ships.hardship': 'Hard Ship',
+  guns: 'Guns: the standard cannon',
+  items: 'Items (parts, Treasures, Trinkets; next fight)',
+  ai: 'Enemy AI profiles',
   attach: 'Docking & ramming',
   boarding: 'Boarding',
   pistol: 'Pistols',
-  gatling: 'Gatling guns',
   melee: 'Swords (melee)',
-  'campaign.mix': 'Ship mix (after the intro fights)',
-  enemyAI: 'Enemy AI',
-  campaign: 'Fights & progression',
+  enemyAI: 'Enemy AI (steering)',
+  fights: 'Fights',
+  tiles: 'Tiles (durability, blow-outs)',
+  explosion: 'Explosions (volatile parts)',
+  run: 'Run (draft, rewards, recruits, between fights)',
+  leveling: 'XP and levels',
+  escalation: 'Escalation (after the encounter list)',
+  traits: 'Lee traits',
   telegraph: 'Telegraph (red X)',
   camera: 'Camera',
   input: 'Input',
   visuals: 'Visuals',
   movement: 'Movement',
   parts: 'Parts (next fight)',
-  cannons: 'Cannons',
   function: 'Part function loss',
   flooding: 'Flooding & sinking',
-  'player.crew': 'Crew',
-  crew: 'Crew (rates, damage, flooding)',
+  crew: 'Crew (rates, mobility, flooding)',
   crewAI: 'Crew AI',
   ladder: 'Urgency ladder (crew)',
   lees: 'Lee stats (per type)',
   basic: 'Basic Lee',
+  hard: 'Hard Lee',
+  quick: 'Quick Lee',
+  deft: 'Deft Lee',
+  handy: 'Handy Lee',
+  loud: 'Loud Lee',
   layout: 'Setup layout',
 };
 
@@ -229,15 +244,11 @@ export class TuningPanel {
     bar.className = 'tune-bar';
     const title = document.createElement('span');
     title.textContent = 'Tuning';
-    const restart = document.createElement('button');
-    restart.className = 'hud-btn';
-    restart.textContent = 'Restart';
-    restart.onclick = () => ctl.restart(false);
     const close = document.createElement('button');
     close.className = 'hud-btn';
     close.textContent = 'Close';
     close.onclick = () => this.close();
-    bar.append(title, restart, close);
+    bar.append(title, close);
 
     const body = document.createElement('div');
     body.className = 'tune-body';
@@ -246,7 +257,6 @@ export class TuningPanel {
     this.gui = new GUI({ container: body, title: 'Values (saved automatically)', width: 0 });
     this.gui.domElement.style.width = '100%';
     this.buildFolder(this.gui, ctl.tuning as unknown as Record<string, unknown>, '');
-    this.buildEncounter();
     this.buildPresets();
     this.gui.folders.forEach((f, i) => {
       if (i > 0) f.close();
@@ -257,13 +267,15 @@ export class TuningPanel {
     for (const [key, value] of Object.entries(obj)) {
       const p = path ? `${path}.${key}` : key;
       if (value && typeof value === 'object') {
-        const folder = gui.addFolder(FOLDER_NAMES[p] ?? (/^ships\.\w+\.crew$/.test(p) ? 'Crew' : undefined) ?? FOLDER_NAMES[key] ?? key);
+        if (p === 'meta') continue;
+        const folder = gui.addFolder(FOLDER_NAMES[p] ?? FOLDER_NAMES[key] ?? key);
         this.buildFolder(folder, value as Record<string, unknown>, p);
         if (path) folder.close();
         continue;
       }
       if (typeof value !== 'number') continue;
       const [min, max, step] = PATH_RANGES.find(([re]) => re.test(p))?.[1] ?? RANGES[key] ?? autoRange(value);
+      if (p.startsWith('meta.')) continue;
       const label = NEXT_RUN.test(p) && !p.includes('.parts.') ? `${key} (next fight)` : key;
       gui
         .add(obj, key, Math.min(min, value), Math.max(max, value), step)
@@ -273,28 +285,6 @@ export class TuningPanel {
           this.ctl.tuningChanged();
         });
     }
-  }
-
-  /** Spawn any mix of enemy ship types (fight 1 with that mix) to playtest them. */
-  private buildEncounter(): void {
-    const f = this.gui.addFolder('Encounter picker');
-    const counts: Record<string, number> = Object.fromEntries(Object.keys(SHIP_TYPES).map((k) => [k, 0]));
-    counts.standard = 1;
-    for (const [id, def] of Object.entries(SHIP_TYPES)) f.add(counts, id, 0, 5, 1).name(def.name);
-    const actions = {
-      spawn: () => {
-        const mix = Object.entries(counts).flatMap(([id, n]) => Array(Math.max(0, Math.round(n))).fill(id) as string[]);
-        if (!mix.length) return;
-        this.ctl.setEncounter(mix);
-        this.close();
-      },
-      campaign: () => {
-        this.ctl.setEncounter(null);
-        this.close();
-      },
-    };
-    f.add(actions, 'spawn').name('Spawn this mix (restarts)');
-    f.add(actions, 'campaign').name('Back to the campaign');
   }
 
   private buildPresets(): void {

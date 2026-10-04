@@ -10,6 +10,8 @@
 
 import type { Side, Tuning } from '../config/tuning';
 import { applyDamage, bowTipLocal, hullCapsule, keelSegment, partAt, type Boat, type PartState } from './boat';
+import type { RailState } from './grid';
+import { itemParam } from './loadout';
 import { clamp, closestOnSegment, closestSegments, DEG, dist, lerp, rotate, toLocal, toWorld, wrapAngle, type Vec } from './math';
 
 export type AttachSide = 'port' | 'starboard' | 'bow' | 'stern';
@@ -103,6 +105,18 @@ export function sideFacing(boat: Boat, world: Vec): AttachSide {
   if (l.x > half && Math.abs(l.y) < boat.layout.beam * 0.35) return 'bow';
   if (l.x < -half && Math.abs(l.y) < boat.layout.beam * 0.35) return 'stern';
   return l.y >= 0 ? 'starboard' : 'port';
+}
+
+/** Intact spikes on a side of a boat (rail items facing that way). */
+export function spikesOn(boat: Boat, side: AttachSide): RailState[] {
+  const out: RailState[] = [];
+  for (const tile of boat.grid.tiles) for (const r of tile.rails) if (r.kind === 'spikes' && !r.destroyed && r.facing === side) out.push(r);
+  return out;
+}
+
+/** Grapple time for a pair: manned boarding hooks on either boat shorten it. */
+function grappleTime(a: Boat, b: Boat, t: Tuning): number {
+  return Math.max(0, t.attach.grappleTime) * Math.min(a.fx.grapple, b.fx.grapple);
 }
 
 const pairKey = (a: Boat, b: Boat) => (a.id < b.id ? `${a.id}-${b.id}` : `${b.id}-${a.id}`);
@@ -261,7 +275,7 @@ export class AttachSystem {
         }
         const now = prev + dt;
         this.grapple.set(key, now);
-        if (now >= Math.max(0, t.grappleTime)) {
+        if (now >= grappleTime(a, b, ctx.tuning)) {
           this.grapple.delete(key);
           this.dock(ctx, a, b);
           out.push({ type: 'docked', a, b });
@@ -283,7 +297,7 @@ export class AttachSystem {
         actorId: a.id,
         targetId: b.id,
         pos: { x: (pa.x + pb.x) / 2, y: (pa.y + pb.y) / 2 },
-        progress: clamp(timer / Math.max(0.01, t.grappleTime), 0, 1),
+        progress: clamp(timer / Math.max(0.01, grappleTime(a, b, ctx.tuning)), 0, 1),
         shownFor: timer,
         byPlayer: player !== null && ctx.playerAlongside === other.id,
       });
@@ -384,9 +398,11 @@ export class AttachSystem {
   private ram(ctx: AttachContext, r: Boat, target: Boat, tip: Vec, q: Vec, side: AttachSide, speed: number): AttachEvent {
     const t = ctx.tuning.attach;
     const part = partAt(target, tip, 4) ?? nearestPart(target, tip);
-    const dmg = applyDamage(part, speed * Math.max(0, t.ramDamage)).dealt;
+    // Spikes on either contacting edge make the other boat's struck part hurt more.
+    const bonus = (rails: RailState[]) => 1 + rails.reduce((m, x) => Math.max(m, itemParam(ctx.tuning, x.item, 'ramBonus')), 0);
+    const dmg = applyDamage(part, speed * Math.max(0, t.ramDamage) * bonus(spikesOn(r, 'bow'))).dealt;
     const bow = r.parts.find((p) => p.def.role === 'bow') ?? null;
-    const selfDmg = bow ? applyDamage(bow, speed * Math.max(0, t.ramDamage) * Math.max(0, t.ramSelfDamage)).dealt : 0;
+    const selfDmg = bow ? applyDamage(bow, speed * Math.max(0, t.ramDamage) * Math.max(0, t.ramSelfDamage) * bonus(spikesOn(target, side))).dealt : 0;
     // Back the rammer out until its tip just touches the hull, and stop the closing motion.
     const n = unit({ x: tip.x - q.x, y: tip.y - q.y });
     const pen = hullCapsule(target).r - dist(tip, q);

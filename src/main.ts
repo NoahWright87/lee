@@ -42,8 +42,16 @@ function applyLayout(): void {
 applyLayout();
 window.addEventListener('resize', applyLayout);
 window.addEventListener('orientationchange', () => setTimeout(applyLayout, 100));
-// Block page scroll/zoom gestures on mobile.
-document.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+// Block page scroll/zoom gestures on mobile, except inside panels that scroll.
+const SCROLLERS = '.screen, .tune-body, .result-card, .lee-card, .setup-below, .refit-top';
+document.addEventListener(
+  'touchmove',
+  (e) => {
+    const t = e.target as Element | null;
+    if (!t?.closest?.(SCROLLERS)) e.preventDefault();
+  },
+  { passive: false },
+);
 
 // Handy for poking at state from the console while tuning.
 (window as unknown as { lee: unknown }).lee = { controller, game };

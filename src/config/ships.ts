@@ -1,95 +1,203 @@
-// Enemy ship types are content, not code. A type names its layout, its crew
-// (Lee type and home tiles in priority order) and which tuning block it reads
-// (tuning.ships.<id>: movement, parts, cannons, crew size and AI preferences).
-// A new type is a new entry here plus a tuning block; no code changes.
+// Ships are content, not code. A ship is a hull layout (src/config/boats.ts),
+// typed slots at defined positions, a default loadout, a style blurb and tags.
+// Its numbers (speed, turning, hull HP, leaks, crew limits, treasure slots)
+// live in tuning.ships.<id> so they're live-tunable. Ships define no gun arcs
+// and no AI: arcs come from guns, AI from the encounter, because the player and
+// enemies can sail any ship.
 
-import { FRIEND_SHIP, HARD_SHIP, SLOOP, type BoatLayout } from './boats';
-import type { CrewDef } from './crews';
+import { FRIEND_SHIP, HARD_SHIP, SKIFF, SLOOP, type BoatLayout } from './boats';
+import type { Facing, ShipSlot } from './slots';
+import type { Tag } from './tags';
 
-export interface ShipTypeDef {
+export interface ShipDef {
   id: string;
-  /** Shown above the boat and in debug. Placeholder puns. */
+  /** Placeholder puns. */
   name: string;
+  /** One-line style blurb. */
+  style: string;
+  blurb: string;
   layout: BoatLayout;
-  crew: CrewDef;
+  /** Every slot except floors and gun attachments (those are implicit: one per tile / per gun). */
+  slots: ShipSlot[];
+  /** Slot id → item id. */
+  defaults: Record<string, string>;
+  tags: Tag[];
 }
 
-export const SHIP_TYPES: Record<string, ShipTypeDef> = {
-  standard: {
-    id: 'standard',
+const edge = (col: number, row: number, facing: Facing): ShipSlot => ({ id: `fix:${col},${row}`, type: 'edge', tile: [col, row], facing });
+const inner = (col: number, row: number, facing: Facing = 'bow'): ShipSlot => ({ id: `fix:${col},${row}`, type: 'interior', tile: [col, row], facing });
+const rail = (col: number, row: number, facing: Facing): ShipSlot => ({ id: `rail:${col},${row}:${facing}`, type: 'rail', tile: [col, row], facing });
+const hull = (part: string): ShipSlot => ({ id: `hull:${part}`, type: 'hull', part });
+const fix = (col: number, row: number) => `fix:${col},${row}`;
+
+export const SHIPS: Record<string, ShipDef> = {
+  sloop: {
+    id: 'sloop',
     name: 'Sloop',
+    style: 'All-rounder',
+    blurb: 'A bit of everything: the ship from the earlier phases, and the on-ramp.',
     layout: SLOOP,
-    crew: {
-      lee: 'basic',
-      homes: [
-        [3, 0], // port cannon 2
-        [3, 2], // starboard cannon 2
-        [0, 0], // port oars
-        [1, 1], // damage control
-        [2, 1], // sails
-        [1, 0], // port cannon 1
-        [1, 2],
-        [0, 2],
-      ],
+    slots: [
+      edge(0, 0, 'port'),
+      edge(1, 0, 'port'),
+      edge(3, 0, 'port'),
+      edge(0, 2, 'starboard'),
+      edge(1, 2, 'starboard'),
+      edge(3, 2, 'starboard'),
+      edge(4, 1, 'bow'),
+      edge(0, 1, 'stern'),
+      inner(1, 1),
+      inner(2, 1),
+      inner(3, 1),
+      rail(4, 1, 'bow'),
+      rail(2, 0, 'port'),
+      rail(2, 2, 'starboard'),
+      hull('bow'),
+      hull('midship'),
+    ],
+    defaults: {
+      [fix(0, 0)]: 'oars',
+      [fix(0, 2)]: 'oars',
+      [fix(1, 0)]: 'cannon',
+      [fix(3, 0)]: 'cannon',
+      [fix(1, 2)]: 'cannon',
+      [fix(3, 2)]: 'cannon',
+      [fix(2, 1)]: 'sail',
+      [fix(3, 1)]: 'lookout',
     },
+    tags: [],
   },
-  boarder: {
-    id: 'boarder',
+  skiff: {
+    id: 'skiff',
+    name: 'Skiff',
+    style: 'Skirmisher',
+    blurb: 'Small and fast, built to outrange. Shoot backward while you run. Weak if caught.',
+    layout: SKIFF,
+    slots: [
+      edge(1, 0, 'port'),
+      edge(2, 0, 'port'),
+      edge(1, 2, 'starboard'),
+      edge(2, 2, 'starboard'),
+      edge(3, 1, 'bow'),
+      edge(0, 0, 'stern'),
+      edge(0, 2, 'stern'),
+      inner(1, 1),
+      inner(2, 1),
+      rail(3, 0, 'port'),
+      rail(3, 2, 'starboard'),
+      hull('midship'),
+      hull('stern'),
+    ],
+    defaults: {
+      [fix(1, 0)]: 'oars',
+      [fix(1, 2)]: 'oars',
+      [fix(2, 0)]: 'longGun',
+      [fix(2, 2)]: 'longGun',
+      [fix(1, 1)]: 'sail',
+    },
+    tags: ['skirmish'],
+  },
+  friendship: {
+    id: 'friendship',
     name: 'Friend Ship',
+    style: 'Boarder',
+    blurb: 'Long, narrow and fast with a big open deck and few guns: close in, soften them up, then flood their deck with Lees. Weak at range.',
     layout: FRIEND_SHIP,
-    crew: {
-      lee: 'basic',
-      homes: [
-        [1, 0], // port gun
-        [1, 2], // starboard gun
-        [0, 0], // port oars
-        [0, 2], // starboard oars
-        [2, 1], // sails
-        [1, 1], // damage control
-        [2, 0],
-        [2, 2],
-        [3, 1],
-        [3, 0],
-        [3, 2],
-        [0, 1],
-      ],
+    slots: [
+      edge(0, 0, 'stern'),
+      edge(1, 0, 'port'),
+      edge(2, 0, 'port'),
+      edge(3, 0, 'port'),
+      edge(4, 0, 'port'),
+      edge(5, 0, 'port'),
+      edge(6, 0, 'port'),
+      edge(0, 1, 'starboard'),
+      edge(1, 1, 'starboard'),
+      edge(2, 1, 'starboard'),
+      edge(3, 1, 'starboard'),
+      edge(4, 1, 'starboard'),
+      edge(5, 1, 'starboard'),
+      edge(6, 1, 'bow'),
+      rail(6, 0, 'bow'),
+      rail(6, 1, 'bow'),
+      rail(3, 0, 'port'),
+      rail(3, 1, 'starboard'),
+      hull('bow'),
+      hull('stern'),
+    ],
+    defaults: {
+      [fix(6, 1)]: 'gatling',
+      [fix(2, 0)]: 'oars',
+      [fix(2, 1)]: 'oars',
+      [fix(4, 0)]: 'hooks',
+      'rail:6,0:bow': 'spikes',
     },
+    tags: ['board'],
   },
-  heavy: {
-    id: 'heavy',
+  hardship: {
+    id: 'hardship',
     name: 'Hard Ship',
+    style: 'Gunnery',
+    blurb: 'Slow, tough and covered in guns: hard to catch, hard to sink, slow to react.',
     layout: HARD_SHIP,
-    crew: {
-      lee: 'basic',
-      homes: [
-        [3, 0], // port cannon 2
-        [3, 3], // starboard cannon 2
-        [1, 0], // port cannon 1
-        [1, 3], // starboard cannon 1
-        [5, 0], // port cannon 3
-        [5, 3], // starboard cannon 3
-        [0, 0], // port oars
-        [3, 1], // sails
-        [2, 1], // damage control
-        [6, 1], // lookout
-        [0, 3],
-        [2, 2],
-        [4, 1],
-        [4, 2],
-      ],
+    slots: [
+      edge(1, 0, 'port'),
+      edge(2, 0, 'port'),
+      edge(3, 0, 'port'),
+      edge(4, 0, 'port'),
+      edge(1, 3, 'starboard'),
+      edge(2, 3, 'starboard'),
+      edge(3, 3, 'starboard'),
+      edge(4, 3, 'starboard'),
+      edge(5, 1, 'bow'),
+      edge(5, 2, 'bow'),
+      edge(0, 1, 'stern'),
+      edge(0, 2, 'stern'),
+      inner(1, 1),
+      inner(3, 1),
+      inner(2, 2),
+      inner(4, 2),
+      rail(5, 1, 'bow'),
+      rail(2, 0, 'port'),
+      rail(2, 3, 'starboard'),
+      hull('bow'),
+      hull('midship'),
+      hull('stern'),
+    ],
+    defaults: {
+      [fix(1, 0)]: 'cannon',
+      [fix(3, 0)]: 'cannon',
+      [fix(1, 3)]: 'cannon',
+      [fix(3, 3)]: 'cannon',
+      [fix(2, 0)]: 'carronade',
+      [fix(2, 3)]: 'carronade',
+      [fix(4, 0)]: 'oars',
+      [fix(4, 3)]: 'oars',
+      [fix(3, 1)]: 'sail',
+      [fix(2, 2)]: 'powder',
     },
+    tags: ['barrage'],
   },
 };
 
-export type ShipTypeId = keyof typeof SHIP_TYPES;
+export type ShipId = keyof typeof SHIPS;
 
-/**
- * Fights that introduce a type: fight 1 is a lone Sloop, fight 2 a lone Friend
- * Ship, fight 3 a lone Hard Ship (when campaign.introFights is on). Later
- * fights draw a mix by campaign.mix weights.
- */
-export const INTRO_FIGHTS: string[] = ['standard', 'boarder', 'heavy'];
+export const SHIP_ORDER = ['sloop', 'skiff', 'friendship', 'hardship'];
 
-export function shipName(type: string): string {
-  return SHIP_TYPES[type]?.name ?? type;
+export function shipName(id: string): string {
+  return SHIPS[id]?.name ?? id;
 }
+
+/** Per-ship numbers (tuning.ships). Multipliers on the tuning.boat baseline. */
+export function defaultShipStats() {
+  const s = (o: { speed: number; turn: number; hullHp: number; leak: number; capacity: number; accel: number; crewMin: number; crewMax: number; treasures: number }) => o;
+  return {
+    sloop: s({ speed: 1, turn: 1, hullHp: 1, leak: 1, capacity: 1, accel: 1, crewMin: 4, crewMax: 8, treasures: 2 }),
+    skiff: s({ speed: 1.35, turn: 1.3, hullHp: 0.7, leak: 1.2, capacity: 0.7, accel: 1.2, crewMin: 3, crewMax: 5, treasures: 1 }),
+    // No interior slots means no sail: its turning comes from the hull (×1.5 of the no-sail baseline ≈ 0.9 of a crewed Sloop).
+    friendship: s({ speed: 1.2, turn: 1.5, hullHp: 0.8, leak: 1, capacity: 0.75, accel: 1.15, crewMin: 6, crewMax: 12, treasures: 2 }),
+    hardship: s({ speed: 0.65, turn: 0.6, hullHp: 1.6, leak: 1, capacity: 1.5, accel: 0.6, crewMin: 5, crewMax: 10, treasures: 3 }),
+  };
+}
+
+export type ShipStats = ReturnType<typeof defaultShipStats>['sloop'];

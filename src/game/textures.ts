@@ -56,18 +56,18 @@ export function preloadArt(scene: Phaser.Scene): void {
 }
 
 const ICONS: IconKind[] = [
-  'gun', 'row', 'sail', 'lookout', 'repair', 'bail', 'walk', 'idle', 'cannon', 'oars', 'sails', 'spyglass',
+  'gun', 'row', 'sail', 'lookout', 'pump', 'hooks', 'powder', 'repair', 'bail', 'walk', 'idle', 'cannon', 'oars', 'sails', 'spyglass',
   'board', 'repel', 'melee', 'swing', 'recall', 'pistol', 'gatling',
 ];
 
-/** Enemy Lees wear a different shirt so the two crews read apart on a shared deck. */
-export const ENEMY_SHIRT = '#2a7fa8';
+/** Enemy Lees wear a dark bandana so the two crews read apart on a shared deck (shirts tell types apart). */
+export const ENEMY_BAND = '#1a1a1a';
 
-/** Texture key for a Lee type's figure (supplied art or the stick figure). Enemies get their own shirt. */
+/** Texture key for a Lee type's figure (supplied art, or the stick figure in its type's shirt; enemies with a bandana). */
 export function leeTextureKey(scene: Phaser.Scene, defId: string, side: Side = 'player'): string {
   const art = `art:lee:${defId}`;
   if (scene.textures.exists(art)) return art;
-  return side === 'player' ? 'lee:figure' : 'lee:figure:enemy';
+  return `lee:figure:${defId}:${side}`;
 }
 
 /** Lee figure, ghost outline, and every task/station icon. */
@@ -78,8 +78,10 @@ export function buildCrewTextures(scene: Phaser.Scene): void {
     draw(tex.getContext());
     tex.refresh();
   };
-  make('lee:figure', 96, 160, (ctx) => drawLeeFigure(ctx, 96, 160));
-  make('lee:figure:enemy', 96, 160, (ctx) => drawLeeFigure(ctx, 96, 160, { shirt: ENEMY_SHIRT }));
+  for (const def of Object.values(LEE_DEFS)) {
+    make(`lee:figure:${def.id}:player`, 96, 160, (ctx) => drawLeeFigure(ctx, 96, 160, { shirt: def.color }));
+    make(`lee:figure:${def.id}:enemy`, 96, 160, (ctx) => drawLeeFigure(ctx, 96, 160, { shirt: def.color, band: ENEMY_BAND }));
+  }
   make('lee:ghost', 96, 160, (ctx) => drawLeeFigure(ctx, 96, 160, { ghost: true }));
   for (const k of ICONS) make(`icon:${k}`, 96, 96, (ctx) => drawIcon(ctx, k, 96));
 }
