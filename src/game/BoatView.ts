@@ -144,9 +144,24 @@ export class BoatView {
       g.fillPoints(part.def.polygon.map(W), true);
     });
 
-    // Cannon barrels with recoil.
+    // Cannon barrels with recoil; gatlings as a short barrel cluster that shivers while firing.
     boat.cannons.forEach((c, i) => {
       const online = cannonOnline(boat, c, world.tuning);
+      if (c.kind === 'gatling') {
+        this.barrels[i]?.setVisible(false);
+        const s = c.broadside;
+        const firing = world.time - c.lastFired < 0.25 ? Math.sin(world.time * 90) * 0.12 : 0;
+        for (const dx of [-0.3, 0, 0.3]) {
+          const a = W({ x: c.local.x + dx + firing, y: c.local.y - s * 0.3 });
+          const b = W({ x: c.local.x + dx * 0.6 + firing, y: c.local.y + s * 1.6 });
+          g.lineStyle(0.22, online ? 0x2a2d31 : 0x6d6862, alpha);
+          g.lineBetween(a.x, a.y, b.x, b.y);
+        }
+        const hub = W({ x: c.local.x, y: c.local.y - s * 0.2 });
+        g.fillStyle(online ? 0x3a3f45 : 0x6d6862, alpha);
+        g.fillCircle(hub.x, hub.y, 0.45);
+        return;
+      }
       const since = world.time - c.lastFired;
       const recoil = since < 0.45 ? 1 - since / 0.45 : 0;
       const s = c.broadside;

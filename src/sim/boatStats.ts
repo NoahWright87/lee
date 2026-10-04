@@ -30,7 +30,7 @@ export interface BoatStats {
 /** Stats for `placement` (home tile per Lee, null = ashore) on `boat`'s grid. */
 export function placementStats(boat: Boat, t: Tuning, placement: (number | null)[], def: LeeDef): BoatStats {
   const tiles = boat.grid.tiles;
-  const ct = boatTuning(boat.side, t).cannons;
+  const ct = boatTuning(boat, t).cannons;
   const stat = (k: Parameters<typeof baseStat>[1]) => baseStat(def, k, boat.side, t);
   const reload = Math.max(0.1, ct.reloadTime / advantageOf(boat.side, t));
   const perGun = (60 / reload) * ct.damage;

@@ -55,12 +55,19 @@ export function preloadArt(scene: Phaser.Scene): void {
   for (const def of Object.values(LEE_DEFS)) if (def.art) scene.load.image(`art:lee:${def.id}`, def.art);
 }
 
-const ICONS: IconKind[] = ['gun', 'row', 'sail', 'lookout', 'repair', 'bail', 'walk', 'idle', 'cannon', 'oars', 'sails', 'spyglass'];
+const ICONS: IconKind[] = [
+  'gun', 'row', 'sail', 'lookout', 'repair', 'bail', 'walk', 'idle', 'cannon', 'oars', 'sails', 'spyglass',
+  'board', 'repel', 'melee', 'swing', 'recall', 'pistol', 'gatling',
+];
 
-/** Texture key for a Lee type's figure (supplied art or the stick figure). */
-export function leeTextureKey(scene: Phaser.Scene, defId: string): string {
+/** Enemy Lees wear a different shirt so the two crews read apart on a shared deck. */
+export const ENEMY_SHIRT = '#2a7fa8';
+
+/** Texture key for a Lee type's figure (supplied art or the stick figure). Enemies get their own shirt. */
+export function leeTextureKey(scene: Phaser.Scene, defId: string, side: Side = 'player'): string {
   const art = `art:lee:${defId}`;
-  return scene.textures.exists(art) ? art : 'lee:figure';
+  if (scene.textures.exists(art)) return art;
+  return side === 'player' ? 'lee:figure' : 'lee:figure:enemy';
 }
 
 /** Lee figure, ghost outline, and every task/station icon. */
@@ -72,6 +79,7 @@ export function buildCrewTextures(scene: Phaser.Scene): void {
     tex.refresh();
   };
   make('lee:figure', 96, 160, (ctx) => drawLeeFigure(ctx, 96, 160));
+  make('lee:figure:enemy', 96, 160, (ctx) => drawLeeFigure(ctx, 96, 160, { shirt: ENEMY_SHIRT }));
   make('lee:ghost', 96, 160, (ctx) => drawLeeFigure(ctx, 96, 160, { ghost: true }));
   for (const k of ICONS) make(`icon:${k}`, 96, 96, (ctx) => drawIcon(ctx, k, 96));
 }

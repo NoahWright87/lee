@@ -128,3 +128,55 @@ export function predictPath(
   }
   return out;
 }
+
+/** Where to come alongside another boat: its motion, the two half-beams, the gap, and which of its sides (+1 starboard, -1 port). */
+export interface AlongsideSpec {
+  other: MotionState;
+  /** Half-beam of the other boat plus half-beam of this one plus the gap, m. */
+  offset: number;
+  side: number;
+}
+
+/**
+ * Steering to come alongside: seek a point a little ahead of the slot beside the
+ * other boat (so we arrive parallel), and throttle to match its speed as we close.
+ * Same stepMotion as everything else; only the target and throttle differ.
+ */
+export function alongsideCommand(self: MotionState, spec: AlongsideSpec, p: MotionParams): { target: Vec; throttle: number } {
+  const o = spec.other;
+  const fx = Math.cos(o.heading);
+  const fy = Math.sin(o.heading);
+  // Local +y (starboard) in world terms.
+  const lx = -fy;
+  const ly = fx;
+  const slot = { x: o.x + lx * spec.offset * spec.side, y: o.y + ly * spec.offset * spec.side };
+  const tx = slot.x - self.x;
+  const ty = slot.y - self.y;
+  const d = Math.hypot(tx, ty);
+  const along = tx * fx + ty * fy;
+  const lead = clamp(d * 0.6, 8, 40);
+  const target = { x: slot.x + fx * lead, y: slot.y + fy * lead };
+  const otherSpeed = o.vx * fx + o.vy * fy;
+  const cruise = Math.max(0.1, p.cruiseSpeed);
+  const want = d > 60 ? cruise : otherSpeed + 0.5 * along;
+  return { target, throttle: clamp(want / cruise, 0.1, 1) };
+}
+
+/** Path preview for coming alongside, assuming the other boat holds its course and speed. */
+export function predictAlongside(start: MotionState, spec: AlongsideSpec, p: MotionParams, horizon: number, sampleEvery = 3): Vec[] {
+  const m = cloneMotion(start);
+  const o = cloneMotion(spec.other);
+  const s = { ...spec, other: o };
+  const q = { ...p };
+  const steps = Math.round(horizon / FIXED_DT);
+  const out: Vec[] = [{ x: m.x, y: m.y }];
+  for (let i = 1; i <= steps; i++) {
+    const cmd = alongsideCommand(m, s, q);
+    q.throttle = p.throttle * cmd.throttle;
+    stepMotion(m, cmd.target, q, FIXED_DT);
+    o.x += o.vx * FIXED_DT;
+    o.y += o.vy * FIXED_DT;
+    if (i % sampleEvery === 0 || i === steps) out.push({ x: m.x, y: m.y });
+  }
+  return out;
+}

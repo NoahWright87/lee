@@ -10,12 +10,31 @@ import { autoArrange, World, type CrewPlacement } from '../sim/world';
 const STORAGE_KEY = 'lee.tuning.current';
 const PRESETS_KEY = 'lee.tuning.presets';
 const CREW_KEY = 'lee.crew.arrangement';
+const SPEED_KEY = 'lee.speeds';
+
+export type SpeedMode = 'ranged' | 'melee';
+
+function loadSpeeds(): Record<SpeedMode, 1 | 2> {
+  const out: Record<SpeedMode, 1 | 2> = { ranged: 1, melee: 1 };
+  try {
+    const saved = JSON.parse(safeGet(SPEED_KEY) ?? '{}');
+    for (const k of ['ranged', 'melee'] as const) if (saved[k] === 2) out[k] = 2;
+  } catch {
+    /* defaults */
+  }
+  return out;
+}
 
 /** How the strip camera maps the boat's local frame to CSS pixels (set by the scene each frame). */
 export interface StripProjection {
+  /** Your boat's local frame → CSS px (setup mode). */
   toCss: (local: Vec) => Vec;
+  /** World point → CSS px through the strip camera. */
+  worldToCss: (world: Vec) => Vec;
   /** Top of the strip panel, CSS px. */
   top: number;
+  /** CSS px per meter in the strip. */
+  zoom: number;
 }
 
 function safeGet(key: string): string | null {
@@ -39,7 +58,11 @@ type Listener = () => void;
 export class Controller {
   tuning: Tuning;
   world: World;
-  speed: 1 | 2 = 1;
+  /**
+   * Game speed, remembered separately for sailing (ranged) and for close combat
+   * (while your boat is attached): 2x for the sailing doesn't carry into a boarding fight.
+   */
+  speeds: Record<SpeedMode, 1 | 2> = loadSpeeds();
   debug = false;
   /** True while the rotate-your-phone overlay is up. */
   blocked = false;
@@ -49,6 +72,8 @@ export class Controller {
   fight = 1;
   /** Enemy ships sunk in earlier fights of this run. */
   private sunkBefore = 0;
+  /** Enemy ship types forced by the encounter picker (every fight), or null for the campaign's. */
+  encounter: string[] | null = null;
   /** Your crew: home tile per Lee slot (null = in the tray). Persists between fights and sessions. */
   arrangement: CrewPlacement;
   /** Ocean share of the screen right now (animates between setup and fight). Written by the scene. */
@@ -62,7 +87,7 @@ export class Controller {
     const saved = safeGet(STORAGE_KEY);
     if (saved) {
       try {
-        this.tuning = mergeTuning(defaultTuning(), JSON.parse(saved));
+        this.tuning = mergeTuning(defaultTuning(), migrate(JSON.parse(saved)));
       } catch {
         /* corrupt save: use defaults */
       }
@@ -73,7 +98,7 @@ export class Controller {
 
   private buildWorld(fight: number, carry?: ReturnType<World['playerCarry']>): World {
     this.arrangement = this.normalized(this.arrangement);
-    return new World(this.tuning, undefined, { fight, carry, crew: this.arrangement });
+    return new World(this.tuning, undefined, { fight, carry, crew: this.arrangement, encounter: this.encounter ?? undefined });
   }
 
   // ------------------------------------------------------------ crew arrangement
@@ -199,13 +224,30 @@ export class Controller {
     else this.restart(false);
   }
 
-  /** Enemy ships sunk this run, including the current fight. */
+  /** Enemy ships beaten (sunk or crew killed) this run, including the current fight. */
   shipsSunk(): number {
-    return this.sunkBefore + this.world.enemies.filter((e) => e.sinkingSince !== null).length;
+    return this.sunkBefore + this.world.enemies.filter((e) => this.world.isOut(e)).length;
+  }
+
+  /** Encounter picker: restart (in setup) with this mix of enemy types, or null to go back to the campaign. */
+  setEncounter(types: string[] | null): void {
+    this.encounter = types && types.length ? [...types] : null;
+    this.restart(false);
+  }
+
+  /** Which speed setting applies right now. */
+  speedMode(): SpeedMode {
+    return this.world.phase === 'running' && this.world.isAttached(this.world.player) ? 'melee' : 'ranged';
+  }
+
+  /** Current game speed. */
+  get speed(): 1 | 2 {
+    return this.speeds[this.speedMode()];
   }
 
   setSpeed(s: 1 | 2): void {
-    this.speed = s;
+    this.speeds[this.speedMode()] = s;
+    safeSet(SPEED_KEY, JSON.stringify(this.speeds));
     this.notify();
   }
 
@@ -228,7 +270,7 @@ export class Controller {
 
   /** Replace all values in place (the World holds a reference to this object). */
   replaceTuning(next: Tuning): void {
-    const merged = mergeTuning(defaultTuning(), next);
+    const merged = mergeTuning(defaultTuning(), migrate(next));
     assignDeep(this.tuning, merged);
     this.saveTuning();
     this.tuningChanged();
@@ -265,6 +307,16 @@ export class Controller {
     this.replaceTuning(p);
     return true;
   }
+}
+
+/** Phase 2 saves had one `enemy` block: it becomes the Sloop's (standard) tuning. */
+function migrate(saved: any): any {
+  if (saved && typeof saved === 'object' && saved.enemy && !saved.ships) {
+    const { enemy, ...rest } = saved;
+    const ai = { preferredRange: saved.enemyAI?.preferredRange };
+    return { ...rest, ships: { standard: { ...enemy, ai: ai.preferredRange === undefined ? undefined : ai } } };
+  }
+  return saved;
 }
 
 function assignDeep(target: Record<string, any>, source: Record<string, any>): void {

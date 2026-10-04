@@ -8,7 +8,7 @@ import { enemiesForFight, World } from '../src/sim/world';
 
 function quiet(t: Tuning): Tuning {
   // No leaks or bilge noise unless a test wants them.
-  for (const b of [t.player, t.enemy]) b.flooding.bilgeRate = 0;
+  for (const b of [t.player, ...Object.values(t.ships)]) b.flooding.bilgeRate = 0;
   return t;
 }
 
@@ -30,7 +30,7 @@ describe('world', () => {
 
   test('lead targeting hits a boat holding course and misses one that turns', () => {
     const t = quiet(defaultTuning());
-    t.enemy.cannons.spread = 0;
+    t.ships.standard.cannons.spread = 0;
     // Steering as in Phase 1 regardless of who mans the oars and sails.
     t.crew.oarBaseline = 1;
     t.crew.sailBaseline = 1;
@@ -110,12 +110,12 @@ describe('world', () => {
     // Guns and engine wrecked: still afloat.
     for (const p of w.enemies[0].parts) if (p.def.id !== 'midship') p.layers[0].hp = 0;
     for (const p of w.enemies[0].parts) p.water = 0;
-    t.enemy.flooding.leakRate = 0;
+    t.ships.standard.flooding.leakRate = 0;
     run(w, 1);
     expect(w.enemies[0].sinkingSince).toBeNull();
     // Flood it.
     const mid = w.enemies[0].parts.find((p) => p.def.id === 'midship')!;
-    mid.water = Math.min(mid.capacity, t.enemy.flooding.sinkThreshold * totalCapacity(w.enemies[0]));
+    mid.water = Math.min(mid.capacity, t.ships.standard.flooding.sinkThreshold * totalCapacity(w.enemies[0]));
     for (const p of w.enemies[0].parts) if (p !== mid) p.water = p.capacity;
     run(w, FIXED_DT * 2);
     expect(w.enemies[0].sinkingSince).not.toBeNull();
@@ -163,7 +163,8 @@ describe('world', () => {
     }
     expect(w.phase).toBe('over');
     expect(w.stats.player.shellsFired).toBeGreaterThan(5);
-    expect(w.stats.enemy.shellsFired).toBeGreaterThan(5);
+    // This weave keeps closing inside the Sloop's minimum range, so it gets fewer shots off.
+    expect(w.stats.enemy.shellsFired).toBeGreaterThan(2);
   });
 });
 
@@ -176,6 +177,8 @@ describe('several attackers and fight progression', () => {
     expect([1, 2, 3, 4, 5].map((f) => enemiesForFight(t, f))).toEqual([1, 2, 3, 3, 3]);
     t.campaign.enemiesAddedPerFight = 0.5;
     expect([1, 2, 3, 4].map((f) => enemiesForFight(t, f))).toEqual([1, 1, 2, 2]);
+    // Fights 1-3 introduce one ship type each; fight 5 is the third "pack" fight.
+    t.campaign.enemiesAddedPerFight = 1;
     const w = new World(t, 1, { fight: 5 });
     expect(w.enemies).toHaveLength(3);
     expect(new Set(w.enemies.map((e) => e.id)).size).toBe(3);
@@ -286,7 +289,7 @@ describe('hits, holes and aim', () => {
       return part;
     };
     const total = () => w.enemies[0].parts.reduce((a, p) => a + p.water, 0);
-    t.enemy.flooding.leakRate = 0;
+    t.ships.standard.flooding.leakRate = 0;
     let before = total();
     shoot('midship');
     expect(total() - before).toBeCloseTo(ct.hitWater, 3);
@@ -326,7 +329,7 @@ describe('hits, holes and aim', () => {
       target.motion.vx = speed;
       target.motion.vy = 0;
       const from = { x: target.motion.x, y: target.motion.y + range };
-      const plan = { boatId: target.id, part: 0, offset: { x: 0, y: 0 }, lead: 1.1 };
+      const plan = { boatId: target.id, part: 0, offset: { x: 0, y: 0 }, lead: 1.1, turn: 0 };
       const good = w.leadAim(w.player, from, target, part).aim;
       const off = w.leadAim(w.player, from, target, part, plan).aim;
       return dist(good, off);
@@ -352,5 +355,25 @@ describe('hits, holes and aim', () => {
     near.motion.x = 60; // now off the starboard beam: port guns take the far one
     expect(w.pickTarget(w.player, port, w.muzzle(w.player, port))).toBe(far);
     expect(w.pickTarget(w.player, star, w.muzzle(w.player, star))).toBe(near);
+  });
+});
+
+describe('turn-aware aim', () => {
+  test('a gunner that follows your turn aims along the curve, so turning steadily stops dodging', () => {
+    const w = new World(defaultTuning(), 3);
+    const target = w.player;
+    Object.assign(target.motion, { x: 0, y: 0, heading: 0, vx: 12, vy: 0, omega: 0.35 });
+    const part = target.parts.find((x) => x.def.id === 'midship')!;
+    const from = { x: 0, y: 90 };
+    const base = { boatId: target.id, part: part.index, offset: { x: 0, y: 0 }, lead: 1 };
+    const straight = w.leadAim(w.enemies[0], from, target, part, { ...base, turn: 0 });
+    const follow = w.leadAim(w.enemies[0], from, target, part, { ...base, turn: 1 });
+    // Simulate the target actually holding that turn for the shell's flight.
+    const t = follow.time;
+    const a = 0.35 * t;
+    const c = part.center; // the part sits off the boat's center and turns with it
+    const truth = { x: (Math.sin(a) / 0.35) * 12 + c.x * Math.cos(a) - c.y * Math.sin(a), y: ((1 - Math.cos(a)) / 0.35) * 12 + c.x * Math.sin(a) + c.y * Math.cos(a) };
+    expect(dist(follow.aim, truth)).toBeLessThan(1);
+    expect(dist(straight.aim, truth)).toBeGreaterThan(3);
   });
 });

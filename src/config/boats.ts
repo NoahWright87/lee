@@ -25,13 +25,13 @@ export interface PartDef {
 }
 
 /** What standing on (and working) a tile does. Plain tiles have none. */
-export type StationKind = 'cannon' | 'oars' | 'sails' | 'lookout';
+export type StationKind = 'cannon' | 'gatling' | 'oars' | 'sails' | 'lookout';
 
 /**
  * The deck grid Lees stand on. Rows run port (top) to starboard (bottom),
  * columns stern (left) to bow (right), matching the close-up strip.
  * `parts` names the part each tile belongs to ('-' = no tile there).
- * `stations` marks stations: C cannon, O oars, S sails, L lookout, . plain deck.
+ * `stations` marks stations: C cannon, G gatling, O oars, S sails, L lookout, . plain deck.
  */
 export interface GridDef {
   cols: number;
@@ -137,7 +137,7 @@ export const SLOOP: BoatLayout = {
     ['port', 'stern'],
     ['starboard', 'stern'],
   ],
-  // Cannons sit on the cannon stations: two per broadside.
+  // Cannons sit on the cannon stations: two per broadside, a gatling between them.
   grid: {
     cols: 5,
     rows: 3,
@@ -150,9 +150,170 @@ export const SLOOP: BoatLayout = {
       'stern starboard starboard starboard bow',
     ],
     stations: [
-      'O C . C .',
+      'O C G C .',
       '. . S . L',
-      'O C . C .',
+      'O C G C .',
     ],
   },
 };
+
+const FS_THIRD = 8 / 3;
+
+/** Friend Ship (boarder): small, quick and lightly built, one gun a side and a lot of deck for a big crew. */
+export const FRIEND_SHIP: BoatLayout = {
+  id: 'friendship',
+  length: 22,
+  beam: 8,
+  parts: [
+    {
+      id: 'bow',
+      label: 'Bow',
+      role: 'bow',
+      stats: 'bow',
+      art: 'bow',
+      polygon: [
+        { x: 4, y: -4 },
+        { x: 7.5, y: -3.4 },
+        { x: 11, y: 0 },
+        { x: 7.5, y: 3.4 },
+        { x: 4, y: 4 },
+      ],
+    },
+    { id: 'port', label: 'Port gun', role: 'cannon', stats: 'cannon', art: 'cannon', polygon: rect(-4, -4, 4, -FS_THIRD / 2), broadside: -1 },
+    { id: 'midship', label: 'Midship', role: 'hull', stats: 'midship', art: 'midship', polygon: rect(-4, -FS_THIRD / 2, 4, FS_THIRD / 2) },
+    {
+      id: 'starboard',
+      label: 'Starboard gun',
+      role: 'cannon',
+      stats: 'cannon',
+      art: 'cannon',
+      flipArt: true,
+      polygon: rect(-4, FS_THIRD / 2, 4, 4),
+      broadside: 1,
+    },
+    {
+      id: 'stern',
+      label: 'Engine',
+      role: 'engine',
+      stats: 'stern',
+      art: 'stern',
+      polygon: [
+        { x: -4, y: -4 },
+        { x: -4, y: 4 },
+        { x: -9.8, y: 3.7 },
+        { x: -11, y: 2.7 },
+        { x: -11, y: -2.7 },
+        { x: -9.8, y: -3.7 },
+      ],
+    },
+  ],
+  adjacency: [
+    ['bow', 'midship'],
+    ['bow', 'port'],
+    ['bow', 'starboard'],
+    ['midship', 'port'],
+    ['midship', 'starboard'],
+    ['midship', 'stern'],
+    ['port', 'stern'],
+    ['starboard', 'stern'],
+  ],
+  grid: {
+    cols: 4,
+    rows: 3,
+    tileW: 4,
+    tileH: FS_THIRD,
+    origin: { x: -8, y: -4 },
+    parts: [
+      'stern port      port      bow',
+      'stern midship   midship   bow',
+      'stern starboard starboard bow',
+    ],
+    stations: [
+      'O C G .',
+      '. . S .',
+      'O C G .',
+    ],
+  },
+};
+
+/** Hard Ship (heavy): long, slow and heavily built, three guns and a gatling a side, two lookouts. */
+export const HARD_SHIP: BoatLayout = {
+  id: 'hardship',
+  length: 40,
+  beam: 14,
+  parts: [
+    {
+      id: 'bow',
+      label: 'Bow',
+      role: 'bow',
+      stats: 'bow',
+      art: 'bow',
+      polygon: [
+        { x: 12.5, y: -7 },
+        { x: 16.5, y: -6 },
+        { x: 20, y: 0 },
+        { x: 16.5, y: 6 },
+        { x: 12.5, y: 7 },
+      ],
+    },
+    { id: 'port', label: 'Port guns', role: 'cannon', stats: 'cannon', art: 'cannon', polygon: rect(-12.5, -7, 12.5, -3.5), broadside: -1 },
+    { id: 'midship', label: 'Midship', role: 'hull', stats: 'midship', art: 'midship', polygon: rect(-12.5, -3.5, 12.5, 3.5) },
+    {
+      id: 'starboard',
+      label: 'Starboard guns',
+      role: 'cannon',
+      stats: 'cannon',
+      art: 'cannon',
+      flipArt: true,
+      polygon: rect(-12.5, 3.5, 12.5, 7),
+      broadside: 1,
+    },
+    {
+      id: 'stern',
+      label: 'Engine',
+      role: 'engine',
+      stats: 'stern',
+      art: 'stern',
+      polygon: [
+        { x: -12.5, y: -7 },
+        { x: -12.5, y: 7 },
+        { x: -18, y: 6.4 },
+        { x: -20, y: 4.8 },
+        { x: -20, y: -4.8 },
+        { x: -18, y: -6.4 },
+      ],
+    },
+  ],
+  adjacency: [
+    ['bow', 'midship'],
+    ['bow', 'port'],
+    ['bow', 'starboard'],
+    ['midship', 'port'],
+    ['midship', 'starboard'],
+    ['midship', 'stern'],
+    ['port', 'stern'],
+    ['starboard', 'stern'],
+  ],
+  grid: {
+    cols: 7,
+    rows: 4,
+    tileW: 5,
+    tileH: 3.5,
+    origin: { x: -17.5, y: -7 },
+    parts: [
+      'stern port      port      port      port      port      bow',
+      'stern midship   midship   midship   midship   midship   bow',
+      'stern midship   midship   midship   midship   midship   bow',
+      'stern starboard starboard starboard starboard starboard bow',
+    ],
+    stations: [
+      'O C G C . C .',
+      '. . . S . . L',
+      '. . . S . . L',
+      'O C G C . C .',
+    ],
+  },
+};
+
+/** Every layout the game can build (textures are generated for each). */
+export const LAYOUTS: BoatLayout[] = [SLOOP, FRIEND_SHIP, HARD_SHIP];

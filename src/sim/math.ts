@@ -62,6 +62,52 @@ function distToSegment(p: Vec, a: Vec, b: Vec): number {
   return dist(p, { x: a.x + ab.x * t, y: a.y + ab.y * t });
 }
 
+/** Closest point on segment ab to p. */
+export function closestOnSegment(p: Vec, a: Vec, b: Vec): Vec {
+  const ab = sub(b, a);
+  const l2 = dot(ab, ab);
+  const t = l2 === 0 ? 0 : clamp(dot(sub(p, a), ab) / l2, 0, 1);
+  return { x: a.x + ab.x * t, y: a.y + ab.y * t };
+}
+
+/** Closest points between segments p1q1 and p2q2 (deterministic; handles parallel and degenerate segments). */
+export function closestSegments(p1: Vec, q1: Vec, p2: Vec, q2: Vec): { a: Vec; b: Vec; d: number } {
+  const d1 = sub(q1, p1);
+  const d2 = sub(q2, p2);
+  const r = sub(p1, p2);
+  const a = dot(d1, d1);
+  const e = dot(d2, d2);
+  const f = dot(d2, r);
+  let s = 0;
+  let t = 0;
+  if (a <= 1e-12 && e <= 1e-12) {
+    s = 0;
+    t = 0;
+  } else if (a <= 1e-12) {
+    t = clamp(f / e, 0, 1);
+  } else {
+    const c = dot(d1, r);
+    if (e <= 1e-12) {
+      s = clamp(-c / a, 0, 1);
+    } else {
+      const b = dot(d1, d2);
+      const denom = a * e - b * b;
+      s = denom > 1e-12 ? clamp((b * f - c * e) / denom, 0, 1) : 0;
+      t = (b * s + f) / e;
+      if (t < 0) {
+        t = 0;
+        s = clamp(-c / a, 0, 1);
+      } else if (t > 1) {
+        t = 1;
+        s = clamp((b - c) / a, 0, 1);
+      }
+    }
+  }
+  const pa = { x: p1.x + d1.x * s, y: p1.y + d1.y * s };
+  const pb = { x: p2.x + d2.x * t, y: p2.y + d2.y * t };
+  return { a: pa, b: pb, d: dist(pa, pb) };
+}
+
 /** Distance from a point to a polygon (0 if inside). */
 export function distToPolygon(p: Vec, poly: readonly Vec[]): number {
   if (pointInPolygon(p, poly)) return 0;

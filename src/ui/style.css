@@ -896,6 +896,10 @@ body {
 .act-lookout { background: #d59bff; }
 .act-repair { background: #ff9b5a; }
 .act-bail { background: #3a9cf0; }
+.act-board { background: #ff5a5a; }
+.act-repel { background: #ffa0d0; }
+.act-melee { background: #c81e1e; }
+.act-swing { background: #e8d6a8; }
 .act-walk { background: #f6f6f6; }
 .act-idle { background: #666; }
 
@@ -1022,4 +1026,38 @@ body {
 
 .tile-label.quiet {
   opacity: 0.45;
+}
+
+/* Disengage: one per attached boat, beside its deck in the strip. Big enough
+   for a thumb mid-fight, never in the bottom quarter where a thumb rests. */
+.disengage-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.disengage-btn {
+  position: absolute;
+  width: 150px;
+  min-height: 52px;
+  padding: 6px 12px;
+  border-radius: 12px;
+  border: 2px solid #1a120a;
+  background: #f2c14e;
+  color: #1a120a;
+  font: 800 13px/1.15 system-ui, sans-serif;
+  letter-spacing: 0.02em;
+  white-space: pre-line;
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.45);
+  pointer-events: auto;
+}
+
+.disengage-btn:active {
+  transform: translateY(2px);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.45);
+}
+
+.disengage-btn.breaking {
+  background: #8a8580;
+  color: #f6e7c1;
 }

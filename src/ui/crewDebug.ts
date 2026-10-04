@@ -4,7 +4,7 @@
 // (yours, then each enemy). Answers "why did that Lee go there?".
 
 import type { Controller } from '../game/Controller';
-import { activity } from '../sim/crew';
+import { activity, boatLabel } from '../sim/crew';
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
@@ -43,16 +43,31 @@ export class CrewDebug {
     const w = this.ctl.world;
     if (this.boatIndex >= w.boats.length) this.boatIndex = 0;
     const boat = w.boats[this.boatIndex];
-    const name = boat.side === 'player' ? 'Your crew' : `Enemy ${w.enemies.indexOf(boat) + 1} crew`;
+    const name = boat.side === 'player' ? 'Your crew' : `${boatLabel(boat)} crew`;
     const alive = boat.crew.lees.filter((l) => l.alive).length;
-    this.head.textContent = `${name} (${alive}/${boat.crew.lees.length}) ▸`;
+    const mode = boat.side === 'player' ? (w.alongside ? 'alongside' : '') : w.brains.get(boat.id)?.mode ?? '';
+    this.head.textContent = `${name} (${alive}/${boat.crew.lees.length})${mode ? ` · ${mode}` : ''} ▸`;
 
     const rows: HTMLElement[] = [];
+    // Links, and grapple timers in progress.
+    const links = w.links.linksOf(boat).map((l) => {
+      const o = w.links.other(l, boat);
+      const breaking = l.breakAt !== null ? ` · breaking in ${(l.breakAt - w.time).toFixed(1)}s (${l.breakReason})` : '';
+      return `${l.kind} ${w.links.sideOf(l, boat)} ↔ ${boatLabel(o)}${breaking}`;
+    });
+    for (const x of w.links.warnings) {
+      if (x.actorId !== boat.id && x.targetId !== boat.id) continue;
+      links.push(`${x.kind === 'dock' ? 'grapple' : 'ram X'} ${Math.round(x.progress * 100)}% (shown ${x.shownFor.toFixed(1)}s)`);
+    }
+    if (links.length) rows.push(el('div', 'cd-need', `Links: ${links.join(' · ')}`));
     for (const lee of boat.crew.lees) {
       const r = el('div', `cd-lee${lee.alive ? '' : ' lost'}`);
       const home = boat.grid.tiles[lee.home].label;
-      r.append(el('div', 'cd-line', `#${lee.number} ${lee.alive ? activity(lee, boat) : 'LOST'} · ${Math.round(lee.score)} · hp ${Math.round(lee.hp)} · home ${home}`));
+      const where = lee.swing ? ` · swinging to ${boatLabel(lee.swing.to)}` : lee.deck !== boat ? ` · on ${boatLabel(lee.deck)}` : '';
+      const fight = lee.engaged && lee.meleeTarget !== null ? ` · vs ${w.findLee(lee.meleeTarget)?.lee.side === 'player' ? '' : 'enemy '}#${w.findLee(lee.meleeTarget)?.lee.number ?? '?'}` : '';
+      r.append(el('div', 'cd-line', `#${lee.number} ${lee.alive ? activity(lee, boat) : `LOST (${lee.lostCause})`} · ${Math.round(lee.score)} · hp ${Math.round(lee.hp)} · home ${home}${where}${fight}`));
       r.append(el('div', 'cd-why', lee.reason));
+      if (lee.alive && (lee.deck !== boat || lee.swing) && lee.whyBoarded) r.append(el('div', 'cd-opts', `went over because: ${lee.whyBoarded}`));
       if (lee.alive && lee.options.length) r.append(el('div', 'cd-opts', lee.options.map((o) => `${o.label} ${o.score}`).join(' · ')));
       rows.push(r);
     }

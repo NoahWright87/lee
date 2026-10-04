@@ -2,6 +2,7 @@
 // so any new number added to src/config/tuning.ts shows up automatically.
 
 import GUI, { type Controller as GuiController } from 'lil-gui';
+import { SHIP_TYPES } from '../config/ships';
 import type { Controller } from '../game/Controller';
 
 type Range = [min: number, max: number, step: number];
@@ -65,6 +66,8 @@ const RANGES: Record<string, Range> = {
   minWarningTime: [0, 4, 0.05],
   ringStartRadius: [3, 60, 1],
   markerSize: [1, 15, 0.5],
+  markerStartScale: [1, 5, 0.1],
+  turnLead: [0, 1.5, 0.05],
   fadeInTime: [0, 1, 0.01],
   lingerTime: [0, 2, 0.05],
   enemyBias: [0, 1, 0.05],
@@ -113,20 +116,77 @@ const RANGES: Record<string, Range> = {
   idleCannon: [0, 150, 1],
   severitySpan: [0, 50, 1],
   setupOceanFraction: [0.3, 0.75, 0.01],
+  expandedOceanFraction: [0.25, 0.75, 0.01],
+  minRange: [0, 120, 1],
+  seekAttach: [0, 1, 1],
+  ramLine: [0, 60, 1],
+  ramRange: [0, 200, 5],
+  introFights: [0, 1, 1],
+  dockDistance: [0, 20, 0.5],
+  grappleTime: [0, 5, 0.1],
+  dockRelSpeed: [0, 15, 0.25],
+  dockEaseTime: [0, 3, 0.05],
+  dockGap: [0, 5, 0.1],
+  ramSpeed: [0, 20, 0.5],
+  ramDamage: [0, 10, 0.1],
+  ramSelfDamage: [0, 2, 0.05],
+  ramMaxAngle: [0, 89, 1],
+  ramWarnTime: [0, 4, 0.1],
+  ramMinWarning: [0, 3, 0.05],
+  bounce: [0, 1, 0.05],
+  cap: [0, 4, 1],
+  perSide: [1, 2, 1],
+  driftSpeed: [0, 8, 0.1],
+  driftDecay: [0, 5, 0.1],
+  recallWindow: [0, 6, 0.1],
+  pushSpeed: [0, 15, 0.25],
+  redockDelay: [0, 10, 0.5],
+  alongsideGrab: [0, 30, 1],
+  swingTime: [0.1, 4, 0.05],
+  swingHittable: [0, 1, 1],
+  evacuateAt: [0, 1, 0.05],
+  minHomeCrew: [0, 10, 1],
+  repelHelpPenalty: [0, 100, 1],
+  tileCap: [1, 6, 1],
+  retreatAt: [0, 1, 0.05],
+  swingInterval: [0, 4, 0.05],
+  castOffMin: [0, 6, 0.1],
+  castOffTimeout: [1, 20, 0.5],
+  boatDamage: [0, 5, 0.05],
+  spreadPerMeter: [0, 0.5, 0.005],
+  hitRadius: [0, 3, 0.05],
+  repelBoarders: [0, 150, 1],
+  board: [0, 150, 1],
   minTilePx: [30, 90, 1],
   panelSlideTime: [0, 2, 0.05],
 };
 
 /** Ranges by path prefix, checked before RANGES (Lee stats are multipliers around 1). */
-const PATH_RANGES: [RegExp, Range][] = [[/^lees\./, [0, 3, 0.05]]];
+const PATH_RANGES: [RegExp, Range][] = [
+  [/^lees\./, [0, 3, 0.05]],
+  [/^pistol\.range$/, [0, 40, 0.5]],
+  [/^(pistol|melee)\.rate$/, [0, 3, 0.05]],
+  [/^pistol\.spread$/, [0, 5, 0.05]],
+  [/^campaign\.mix\./, [0, 5, 0.25]],
+];
 
 /** Keys read only when a fight is built. */
-const NEXT_RUN = /(^|\.)(parts\..*|crew\.size|crew\.hp|lees\.\w+\.hp|global\.enemyStart\w+|campaign\.(packHullScaling|firstFightEnemies|enemiesAddedPerFight|maxEnemies|spawnSpread|repairBetweenFights)|enemyAI\.rangeJitter)$/;
+const NEXT_RUN = /(^|\.)(parts\..*|crew\.size|crew\.hp|lees\.\w+\.hp|global\.enemyStart\w+|campaign\.(packHullScaling|firstFightEnemies|enemiesAddedPerFight|maxEnemies|spawnSpread|repairBetweenFights|introFights|mix\.\w+)|enemyAI\.rangeJitter|ai\.preferredRange)$/;
 
 const FOLDER_NAMES: Record<string, string> = {
   global: 'Global',
   player: 'Player boat',
-  enemy: 'Enemy boat',
+  ships: 'Enemy ship types',
+  'ships.standard': 'Sloop (standard)',
+  'ships.boarder': 'Friend Ship (boarder)',
+  'ships.heavy': 'Hard Ship (heavy)',
+  ai: 'AI',
+  attach: 'Docking & ramming',
+  boarding: 'Boarding',
+  pistol: 'Pistols',
+  gatling: 'Gatling guns',
+  melee: 'Swords (melee)',
+  'campaign.mix': 'Ship mix (after the intro fights)',
   enemyAI: 'Enemy AI',
   campaign: 'Fights & progression',
   telegraph: 'Telegraph (red X)',
@@ -139,7 +199,6 @@ const FOLDER_NAMES: Record<string, string> = {
   function: 'Part function loss',
   flooding: 'Flooding & sinking',
   'player.crew': 'Crew',
-  'enemy.crew': 'Crew',
   crew: 'Crew (rates, damage, flooding)',
   crewAI: 'Crew AI',
   ladder: 'Urgency ladder (crew)',
@@ -187,6 +246,7 @@ export class TuningPanel {
     this.gui = new GUI({ container: body, title: 'Values (saved automatically)', width: 0 });
     this.gui.domElement.style.width = '100%';
     this.buildFolder(this.gui, ctl.tuning as unknown as Record<string, unknown>, '');
+    this.buildEncounter();
     this.buildPresets();
     this.gui.folders.forEach((f, i) => {
       if (i > 0) f.close();
@@ -197,7 +257,7 @@ export class TuningPanel {
     for (const [key, value] of Object.entries(obj)) {
       const p = path ? `${path}.${key}` : key;
       if (value && typeof value === 'object') {
-        const folder = gui.addFolder(FOLDER_NAMES[p] ?? FOLDER_NAMES[key] ?? key);
+        const folder = gui.addFolder(FOLDER_NAMES[p] ?? (/^ships\.\w+\.crew$/.test(p) ? 'Crew' : undefined) ?? FOLDER_NAMES[key] ?? key);
         this.buildFolder(folder, value as Record<string, unknown>, p);
         if (path) folder.close();
         continue;
@@ -213,6 +273,28 @@ export class TuningPanel {
           this.ctl.tuningChanged();
         });
     }
+  }
+
+  /** Spawn any mix of enemy ship types (fight 1 with that mix) to playtest them. */
+  private buildEncounter(): void {
+    const f = this.gui.addFolder('Encounter picker');
+    const counts: Record<string, number> = Object.fromEntries(Object.keys(SHIP_TYPES).map((k) => [k, 0]));
+    counts.standard = 1;
+    for (const [id, def] of Object.entries(SHIP_TYPES)) f.add(counts, id, 0, 5, 1).name(def.name);
+    const actions = {
+      spawn: () => {
+        const mix = Object.entries(counts).flatMap(([id, n]) => Array(Math.max(0, Math.round(n))).fill(id) as string[]);
+        if (!mix.length) return;
+        this.ctl.setEncounter(mix);
+        this.close();
+      },
+      campaign: () => {
+        this.ctl.setEncounter(null);
+        this.close();
+      },
+    };
+    f.add(actions, 'spawn').name('Spawn this mix (restarts)');
+    f.add(actions, 'campaign').name('Back to the campaign');
   }
 
   private buildPresets(): void {

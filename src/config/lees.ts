@@ -13,6 +13,11 @@ export const LEE_STAT_KEYS = [
   'spotting',
   'walkSpeed',
   'hp',
+  'meleeDamage',
+  'meleeRate',
+  'pistolAccuracy',
+  'pistolRate',
+  'swingSpeed',
 ] as const;
 
 export type LeeStatKey = (typeof LEE_STAT_KEYS)[number];
@@ -20,11 +25,15 @@ export type LeeStatKey = (typeof LEE_STAT_KEYS)[number];
 export type LeeStats = Record<LeeStatKey, number>;
 
 /** Kinds of work a Lee can do. Each maps to one stat (see WORK_STAT). */
-export type WorkKind = 'gun' | 'row' | 'sail' | 'lookout' | 'repair' | 'bail';
-/** What a Lee is spending its time on, for icons and the result screen. */
-export type ActivityKind = WorkKind | 'walk' | 'idle';
+export type WorkKind = 'gun' | 'row' | 'sail' | 'lookout' | 'repair' | 'bail' | 'board' | 'repel';
+/**
+ * What a Lee is spending its time on, for icons and the result screen.
+ * 'board' = on an enemy deck hunting for a fight, 'melee' = sword fighting on a
+ * shared tile, 'swing' = in the air between decks.
+ */
+export type ActivityKind = WorkKind | 'melee' | 'swing' | 'walk' | 'idle';
 
-export const ACTIVITY_KINDS: ActivityKind[] = ['gun', 'row', 'sail', 'lookout', 'repair', 'bail', 'walk', 'idle'];
+export const ACTIVITY_KINDS: ActivityKind[] = ['gun', 'row', 'sail', 'lookout', 'repair', 'bail', 'board', 'repel', 'melee', 'swing', 'walk', 'idle'];
 
 /** The stat that drives each kind of work. The AI weighs it when choosing tasks. */
 export const WORK_STAT: Record<WorkKind, LeeStatKey> = {
@@ -34,6 +43,9 @@ export const WORK_STAT: Record<WorkKind, LeeStatKey> = {
   lookout: 'spotting',
   repair: 'repairRate',
   bail: 'bailRate',
+  // A Lee that's good with a sword is drawn toward fighting (statAffinity).
+  board: 'meleeDamage',
+  repel: 'meleeDamage',
 };
 
 /**
@@ -75,6 +87,11 @@ export const BASIC_LEE: LeeDef = {
     spotting: 1,
     walkSpeed: 1,
     hp: 1,
+    meleeDamage: 1,
+    meleeRate: 1,
+    pistolAccuracy: 1,
+    pistolRate: 1,
+    swingSpeed: 1,
   },
   affinities: {},
   abilities: [],
@@ -94,4 +111,9 @@ export const STAT_LABELS: Record<LeeStatKey, string> = {
   spotting: 'Spotting',
   walkSpeed: 'Walk speed',
   hp: 'Toughness',
+  meleeDamage: 'Sword damage',
+  meleeRate: 'Sword speed',
+  pistolAccuracy: 'Pistol aim',
+  pistolRate: 'Pistol speed',
+  swingSpeed: 'Swing speed',
 };
