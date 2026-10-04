@@ -67,7 +67,8 @@ export type WorldEvent =
   | { type: 'docked'; a: number; b: number }
   | { type: 'bump'; pos: Vec; speed: number }
   | { type: 'linkBroken'; a: number; b: number; reason: string }
-  | { type: 'swing'; leeId: number; back: boolean };
+  | { type: 'swing'; leeId: number; back: boolean }
+  | { type: 'crewLost'; boatId: number };
 
 export interface SideStats {
   shellsFired: number;
@@ -130,8 +131,10 @@ const emptyStats = (): SideStats => ({
 export interface Result {
   winner: Side;
   loser: Side;
-  /** Fight time when the fight was decided (last enemy or the player crossed its sink line). */
+  /** Fight time when the fight was decided (the last enemy, or you, went down or lost its crew). */
   time: number;
+  /** How the loser went out: its boat sank, or its whole crew was killed. */
+  how: 'sunk' | 'crew';
 }
 
 export interface EnemyBrain {
@@ -246,6 +249,8 @@ export class World {
   readonly enemies: Boat[];
   readonly shells: Shell[] = [];
   readonly telegraphs = new TelegraphSystem();
+  /** Boats already marked as having lost their whole crew. */
+  private crewless = new Set<Boat>();
   /** Docks and rams: links between boats, contact warnings, collisions. */
   readonly links = new AttachSystem();
   /** You're steering alongside this enemy (finger held on its hull), or null. */
@@ -398,7 +403,7 @@ export class World {
     return this.boats.filter(
       (b) =>
         b.side !== shooter.side &&
-        !this.isSinking(b) &&
+        !this.isOut(b) &&
         !this.links.attachedTo(b).some((o) => o.side === shooter.side),
     );
   }
@@ -434,9 +439,14 @@ export class World {
     };
   }
 
-  /** Enemy ships still afloat (not sinking). */
+  /** Enemy ships still in the fight: afloat and with crew. */
   liveEnemies(): Boat[] {
-    return this.enemies.filter((e) => !this.isSinking(e));
+    return this.enemies.filter((e) => !this.isOut(e));
+  }
+
+  /** Out of the fight for all intents and purposes: sinking, or its whole crew is dead. */
+  isOut(b: Boat): boolean {
+    return this.isSinking(b) || isDerelict(b);
   }
 
   start(): void {
@@ -941,6 +951,7 @@ export class World {
       .filter((b) => !this.isSinking(b) && sinkProgress(b, this.tuning) >= 1)
       // Same-step tie: whoever is further past the line went first.
       .sort((a, b) => sinkProgress(b, this.tuning) - sinkProgress(a, this.tuning));
+    let decided: { winner: Side; how: Result['how'] } | null = null;
     for (const b of crossing) {
       b.sinkingSince = this.time;
       b.target = null;
@@ -955,20 +966,54 @@ export class World {
       }
       if (this.alongside?.boatId === b.id) this.alongside = null;
       for (const o of this.links.attachedTo(b)) o.crew.thinkIn = 0;
-      if (this.result) continue;
-      // You lose when you sink; you win when the last enemy does. First decisive sinking wins.
-      const decided = b.side === 'player' ? 'enemy' : this.liveEnemies().length === 0 ? 'player' : null;
-      if (decided) {
-        this.result = { winner: decided, loser: decided === 'player' ? 'enemy' : 'player', time: this.time };
-        const g = this.tuning.global;
-        this.resultAt = this.time + g.sinkDuration + g.resultDelay;
-        if (decided === 'player') {
-          // You won: shells still in the air at you fall harmlessly short.
-          for (let i = this.shells.length - 1; i >= 0; i--) if (this.shells[i].ownerSide !== 'player') this.shells.splice(i, 1);
-          this.telegraphs.list.length = 0;
-        }
-      }
+      if (this.result || decided) continue;
+      // You lose when you sink; you win when the last enemy is out. First decisive sinking wins.
+      if (b.side === 'player') decided = { winner: 'enemy', how: 'sunk' };
+      else if (this.liveEnemies().length === 0) decided = { winner: 'player', how: 'sunk' };
     }
+    this.checkCrews();
+    if (!this.result && !decided) {
+      // A boat whose whole crew is dead is out too: lose yours and you lose; clear theirs and you win.
+      if (isDerelict(this.player)) decided = { winner: 'enemy', how: 'crew' };
+      else if (this.liveEnemies().length === 0) decided = { winner: 'player', how: 'crew' };
+    }
+    if (decided && !this.result) this.decide(decided.winner, decided.how);
     if (this.result && this.resultAt !== null && this.time >= this.resultAt) this.phase = 'over';
+  }
+
+  /** Boats that just lost their last Lee cast off: nothing aboard to fight, nobody to hold the lines. */
+  private checkCrews(): void {
+    for (const b of this.boats) {
+      if (this.crewless.has(b) || !isDerelict(b)) continue;
+      this.crewless.add(b);
+      b.target = null;
+      this.events.push({ type: 'crewLost', boatId: b.id });
+      for (const l of this.links.linksOf(b)) this.links.breakLink(l, `${b.side === 'player' ? 'your' : 'enemy'} crew lost`, this.time, this.tuning.attach.recallWindow);
+      if (this.alongside?.boatId === b.id) this.alongside = null;
+      for (const o of this.links.attachedTo(b)) o.crew.thinkIn = 0;
+    }
+  }
+
+  private decide(winner: Side, how: Result['how']): void {
+    this.result = { winner, loser: winner === 'player' ? 'enemy' : 'player', time: this.time, how };
+    const g = this.tuning.global;
+    this.resultAt = this.time + (how === 'sunk' ? g.sinkDuration : 1) + g.resultDelay;
+    if (winner === 'player') {
+      // You won: shells still in the air at you fall harmlessly short.
+      for (let i = this.shells.length - 1; i >= 0; i--) if (this.shells[i].ownerSide !== 'player') this.shells.splice(i, 1);
+      this.telegraphs.list.length = 0;
+    }
+    // The crews stand down; the winners' boarders climb back aboard their own boat.
+    for (const l of this.allLees()) {
+      if (!l.alive || l.side !== winner || (l.deck === l.boat && !l.swing)) continue;
+      l.swing = null;
+      l.engaged = false;
+      l.deck = l.boat;
+      l.tile = l.home;
+      l.dest = l.home;
+      l.path = [];
+      l.pos = { ...l.boat.grid.tiles[l.home].center };
+      l.reason = 'climbed home after the win';
+    }
   }
 }

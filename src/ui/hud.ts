@@ -309,12 +309,12 @@ export class Hud {
     const r = w.result!;
     const won = r.winner === 'player';
     const ctl = this.ctl;
-    this.resultTitle.textContent = won ? 'Victory' : 'Sunk';
+    this.resultTitle.textContent = won ? 'Victory' : r.how === 'crew' ? 'Crew lost' : 'Sunk';
     this.resultTitle.className = `result-title ${won ? 'win' : 'lose'}`;
     const sunk = ctl.shipsSunk();
     this.resultSub.textContent = won
-      ? `Fight ${w.fight} cleared · ${sunk} ${sunk === 1 ? 'ship' : 'ships'} sunk this run`
-      : `Reached fight ${w.fight} · ${sunk} ${sunk === 1 ? 'ship' : 'ships'} sunk this run`;
+      ? `Fight ${w.fight} cleared · ${sunk} ${sunk === 1 ? 'ship' : 'ships'} beaten this run`
+      : `Reached fight ${w.fight} · ${sunk} ${sunk === 1 ? 'ship' : 'ships'} beaten this run`;
     const delay = w.tuning.campaign.nextFightDelay;
     this.autoNextAt = won && delay > 0 ? performance.now() + delay * 1000 : null;
     this.updatePrimaryLabel();
@@ -322,7 +322,10 @@ export class Hud {
     const pct = s.shellsFired ? Math.round((100 * s.shellsHit) / s.shellsFired) : 0;
     const rows: [string, string, boolean?][] = [
       ['Time', fmtTime(r.time)],
-      ['Ships sunk', `${w.enemies.filter((e) => e.sinkingSince !== null).length} of ${w.enemies.length}`],
+      [
+        'Ships sunk / crew killed',
+        `${w.enemies.filter((e) => e.sinkingSince !== null).length} / ${w.enemies.filter((e) => e.sinkingSince === null && w.isOut(e)).length} of ${w.enemies.length}`,
+      ],
       ['Shells fired / hit', `${s.shellsFired} / ${s.shellsHit} (${pct}%)`],
       ['Damage dealt / taken', `${Math.round(s.damageDealt)} / ${Math.round(s.damageTaken)}`],
       ['Shells dodged', `${s.shellsDodged} of ${w.stats.enemy.shellsFired}`, true],

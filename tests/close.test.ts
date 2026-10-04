@@ -289,7 +289,8 @@ describe('boarding: who goes and why', () => {
   test('boarders swing home once the enemy deck is clear', () => {
     const t = quiet(defaultTuning());
     t.ships.standard.crew.size = 1;
-    const { w, e, hold } = docked(t, [T.portCannon2, T.portOars, T.sails, T.midDeck], ['standard']);
+    // Their boarders all on your deck, a second (crewed, far) enemy keeps the fight going.
+    const { w, e, hold } = docked(t, [T.portCannon2, T.portOars, T.sails, T.midDeck], ['standard', 'heavy'], [{ x: 0, y: -400 }]);
     let boarded = false;
     run(w, 25, () => {
       hold();
@@ -424,20 +425,57 @@ describe('melee and pistols', () => {
     expect(far.stats.player.pistolShots + far.stats.enemy.pistolShots).toBe(0);
   });
 
-  test('a boat with no living crew is derelict: it floats but does not fire or steer', () => {
+  test('a boat with no living crew is out: nobody shells it, it drifts, and the fight goes on without it', () => {
     const t = quiet(defaultTuning());
-    const w = new World(t, 2, { encounter: ['standard'], crew: [] });
+    const w = new World(t, 2, { encounter: ['standard', 'standard'], crew: [T.portCannon2] });
     w.start();
-    const e = w.enemies[0];
-    for (const l of e.crew.lees) {
+    const [dead, alive] = w.enemies;
+    for (const l of dead.crew.lees) {
       l.alive = false;
       l.hp = 0;
     }
-    run(w, 5);
-    expect(isDerelict(e)).toBe(true);
-    expect(e.target).toBeNull();
-    expect(e.sinkingSince).toBeNull();
-    expect(w.stats.enemy.shellsFired).toBe(0);
+    run(w, 6, () => {
+      pin(w, w.player, { x: 0, y: 0 });
+      pin(w, dead, { x: -80, y: 0 }); // right in your port broadside
+      pin(w, alive, { x: 0, y: -400 });
+    });
+    expect(isDerelict(dead)).toBe(true);
+    expect(w.isOut(dead)).toBe(true);
+    expect(dead.target).toBeNull();
+    expect(dead.sinkingSince).toBeNull();
+    expect(w.gunTargets(w.player)).not.toContain(dead);
+    expect(w.stats.player.shellsFired).toBe(0);
+    expect(w.liveEnemies()).toEqual([alive]);
+    expect(w.result).toBeNull();
+  });
+
+  test('kill every enemy crew and you win; lose your whole crew and you lose', () => {
+    const t = quiet(defaultTuning());
+    const win = new World(t, 2, { encounter: ['standard', 'boarder'] });
+    win.start();
+    for (const e of win.enemies) for (const l of e.crew.lees) l.alive = false;
+    run(win, 0.1);
+    expect(win.result).toMatchObject({ winner: 'player', how: 'crew' });
+    expect(win.enemies.every((e) => e.sinkingSince === null)).toBe(true);
+    run(win, 3);
+    expect(win.phase).toBe('over');
+
+    const lose = new World(t, 2, { encounter: ['standard'] });
+    lose.start();
+    for (const l of lose.player.crew.lees) l.alive = false;
+    run(lose, 0.1);
+    expect(lose.result).toMatchObject({ winner: 'enemy', how: 'crew' });
+  });
+
+  test('an attached boat that loses its crew casts off', () => {
+    const t = quiet(defaultTuning());
+    const { w, e, hold } = docked(t, [T.portCannon2], ['standard', 'standard'], [{ x: 0, y: -400 }]);
+    run(w, 0.5, hold);
+    expect(w.isAttached(w.player)).toBe(true);
+    for (const l of e.crew.lees) l.alive = false;
+    run(w, t.attach.recallWindow + 0.3, hold);
+    expect(w.isAttached(w.player)).toBe(false);
+    expect(w.result).toBeNull(); // the other enemy still has its crew
   });
 
   test('the same seed gives the same boarding fight', () => {

@@ -206,9 +206,9 @@ export class Controller {
     else this.restart(false);
   }
 
-  /** Enemy ships sunk this run, including the current fight. */
+  /** Enemy ships beaten (sunk or crew killed) this run, including the current fight. */
   shipsSunk(): number {
-    return this.sunkBefore + this.world.enemies.filter((e) => e.sinkingSince !== null).length;
+    return this.sunkBefore + this.world.enemies.filter((e) => this.world.isOut(e)).length;
   }
 
   /** Encounter picker: restart (in setup) with this mix of enemy types, or null to go back to the campaign. */
