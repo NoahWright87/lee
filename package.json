@@ -9,7 +9,8 @@
     "preview": "vite preview --host",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "sweep": "SWEEP=1 vitest run tools --silent=false"
   },
   "dependencies": {
     "lil-gui": "^0.21.0",

@@ -1954,3 +1954,90 @@ body {
   bottom: 6px;
   max-height: 58%;
 }
+
+/* Fit the top bar on a narrow phone during a fight. */
+.hud-top {
+  gap: 6px;
+}
+
+.hud-top .hud-btn,
+.hud-top .gear-btn {
+  padding: 5px 8px;
+  font-size: 12.5px;
+}
+
+.hud-top .fight-pill {
+  font-size: 11px;
+  padding: 5px 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.result {
+  padding-top: calc(max(8px, env(safe-area-inset-top)) + 46px);
+  align-items: flex-start;
+}
+
+.result-card {
+  max-height: 100%;
+  overflow-y: auto;
+  touch-action: pan-y;
+}
+
+.setup-bar .start-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1.05;
+  padding: 8px 26px;
+}
+
+.setup-bar .start-btn small {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+
+.setup-below.tab-crew,
+.setup-below.tab-sandbox {
+  padding: 8px;
+  border-radius: 12px;
+  background: rgba(6, 18, 32, 0.96);
+  border: 1px solid var(--line);
+}
+
+/* Refit cards stay compact so the boat and its arcs show above them. */
+.setup-mode .lee-card {
+  max-height: 40%;
+  font-size: 12.5px;
+  padding: 8px 10px;
+}
+
+.setup-mode .lee-card .card {
+  gap: 5px;
+  font-size: 12.5px;
+}
+
+.setup-mode .lee-card .item-icon.big {
+  font-size: 26px;
+  width: 34px;
+}
+
+.setup-mode .lee-card .card-title,
+.setup-mode .lee-card .card-name {
+  font-size: 15px;
+}
+
+.setup-mode .lee-card .card-flavor {
+  display: none;
+}
+
+.setup-mode .lee-card .full-stats {
+  font-size: 10.5px;
+}
+
+.lee-card > .card-buttons:first-child {
+  margin-top: 0;
+  margin-bottom: 4px;
+}

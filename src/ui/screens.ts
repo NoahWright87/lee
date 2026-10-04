@@ -6,7 +6,7 @@
 import { ITEMS } from '../config/items';
 import { LEE_DEFS, STAT_LABELS } from '../config/lees';
 import { SHIP_ORDER, SHIPS } from '../config/ships';
-import { countTags } from '../config/tags';
+import { countTags, tagName } from '../config/tags';
 import type { Controller } from '../game/Controller';
 import { bonusLabel } from '../sim/levels';
 import { buildFor, crewMax, crewMin, draftOffer, itemOf, SAVE_VERSION, type RunState } from '../sim/run';
@@ -297,9 +297,9 @@ export class Screens {
       return;
     }
     const left = post.levelUps.length;
-    body.append(el('h2', '', `${m.label} reached level ${up.level}`), el('div', 'subtitle', `Pick one bonus.${left > 1 ? ` ${left - 1} more level-up${left > 2 ? 's' : ''} after this.` : ''}`));
+    body.append(el('h2', '', `${m.label}: level ${up.level}`), el('div', 'subtitle', `Pick one bonus.${left > 1 ? ` ${left - 1} more level-up${left > 2 ? 's' : ''} after this.` : ''}`));
     const head = el('div', 'card lee-mini');
-    head.append(memberFigure(m.type), el('div', 'card-title', m.label), levelBadge(m, t));
+    head.append(memberFigure(m.type), el('div', 'card-title', `${LEE_DEFS[m.type]?.role ?? ''}`), el('span', 'level-badge', `Lv ${up.level}`));
     if (m.bonuses.length) head.append(el('div', 'card-sub', `So far: ${m.bonuses.map((b) => bonusLabel(b, t, STAT_LABELS)).join(', ')}`));
     body.append(head);
     const list = el('div', 'bonus-list');
@@ -377,7 +377,7 @@ export class Screens {
     const all = [...Object.values(build.loadout), ...(build.treasures ?? [])];
     body.append(loadoutIcons(all));
     const tags = countTags([SHIPS[run.ship].tags, ...all.map((i) => ITEMS[i]?.tags ?? []), ...run.crew.map((m) => LEE_DEFS[m.type]?.tags ?? [])]);
-    if (Object.keys(tags).length) body.append(el('div', 'card-sub', `Tags: ${Object.entries(tags).map(([k, v]) => `${k} ${v}`).join(' · ')}`));
+    if (Object.keys(tags).length) body.append(el('div', 'card-sub', `Tags: ${Object.entries(tags).map(([k, v]) => `${tagName(k)} ${v}`).join(' · ')}`));
     const crew = el('div', 'xp-list');
     crew.append(el('h3', '', run.crew.length ? 'Survivors' : 'No survivors'));
     for (const m of run.crew) {

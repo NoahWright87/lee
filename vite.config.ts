@@ -23,6 +23,7 @@ export default defineConfig({
     chunkSizeWarningLimit: 2000,
   },
   test: {
-    include: ['tests/**/*.test.ts'],
+    // `npm run sweep` adds the tuning sweep in tools/ (slow; not part of `npm test`).
+    include: process.env.SWEEP ? ['tools/**/*.test.ts'] : ['tests/**/*.test.ts'],
   },
 } as any);

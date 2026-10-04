@@ -3,8 +3,12 @@
 // boat's current needs with their scores. Tap the header to cycle boats
 // (yours, then each enemy). Answers "why did that Lee go there?".
 
+import { ITEMS } from '../config/items';
+import { LEE_DEFS, LEE_STAT_KEYS, STAT_LABELS } from '../config/lees';
+import { countTags, tagName } from '../config/tags';
 import type { Controller } from '../game/Controller';
-import { activity, boatLabel } from '../sim/crew';
+import { activity, boatLabel, leeStat } from '../sim/crew';
+import { buildTags } from '../sim/loadout';
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
@@ -49,6 +53,11 @@ export class CrewDebug {
     this.head.textContent = `${name} (${alive}/${boat.crew.lees.length})${mode ? ` · ${mode}` : ''} ▸`;
 
     const rows: HTMLElement[] = [];
+    // Tags across the boat and its crew, and its loadout (enemies too: everything is explainable).
+    const tags = countTags([...buildTags(boat.build), ...boat.crew.lees.map((l) => LEE_DEFS[l.def.id]?.tags ?? [])]);
+    rows.push(el('div', 'cd-need', `Tags: ${Object.entries(tags).map(([k, v]) => `${tagName(k)} ${v}`).join(' · ') || 'none'}`));
+    const items = [...Object.values(boat.build.loadout), ...(boat.build.treasures ?? [])].map((i) => ITEMS[i]?.name ?? i);
+    rows.push(el('div', 'cd-need', `${boat.ship.name}: ${items.join(', ') || 'nothing equipped'}`));
     // Links, and grapple timers in progress.
     const links = w.links.linksOf(boat).map((l) => {
       const o = w.links.other(l, boat);
@@ -67,6 +76,11 @@ export class CrewDebug {
       const fight = lee.engaged && lee.meleeTarget !== null ? ` · vs ${w.findLee(lee.meleeTarget)?.lee.side === 'player' ? '' : 'enemy '}#${w.findLee(lee.meleeTarget)?.lee.number ?? '?'}` : '';
       r.append(el('div', 'cd-line', `#${lee.number} ${lee.alive ? activity(lee, boat) : `LOST (${lee.lostCause})`} · ${Math.round(lee.score)} · hp ${Math.round(lee.hp)} · home ${home}${where}${fight}`));
       r.append(el('div', 'cd-why', lee.reason));
+      if (lee.alive) {
+        // Stats after every modifier (type, levels, trinkets, treasures, traits, the tile), where they differ from 1.
+        const mods = LEE_STAT_KEYS.map((k) => [k, leeStat(lee, k, boat, w.tuning)] as const).filter(([, v]) => Math.abs(v - 1) > 0.005);
+        if (mods.length) r.append(el('div', 'cd-opts', `${lee.label} lv ${lee.level}: ${mods.map(([k, v]) => `${STAT_LABELS[k]} ×${v.toFixed(2)}`).join(' · ')}`));
+      }
       if (lee.alive && (lee.deck !== boat || lee.swing) && lee.whyBoarded) r.append(el('div', 'cd-opts', `went over because: ${lee.whyBoarded}`));
       if (lee.alive && lee.options.length) r.append(el('div', 'cd-opts', lee.options.map((o) => `${o.label} ${o.score}`).join(' · ')));
       rows.push(r);

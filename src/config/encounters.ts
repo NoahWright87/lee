@@ -59,23 +59,24 @@ export const ARCHETYPES: Record<string, EnemySpec> = {
 export const ARCHETYPE_NAMES: Record<string, string> = { standard: 'Standard (Sloop)', boarder: 'Boarder (Friend Ship)', heavy: 'Heavy (Hard Ship)' };
 
 export const ENCOUNTERS: EncounterDef[] = [
-  { id: 'lone-sloop', name: 'A lone Sloop', enemies: [ARCHETYPES.standard] },
-  { id: 'friend-ship', name: 'A Friend Ship', enemies: [ARCHETYPES.boarder] },
-  { id: 'hard-ship', name: 'A Hard Ship', enemies: [{ ...ARCHETYPES.heavy, loadout: { 'hull:midship': 'rangefinder' } }] },
+  // Escalates gently: short-handed Basic crews first, specialists and levels later.
+  { id: 'lone-sloop', name: 'A lone Sloop', enemies: [{ ship: 'sloop', ai: 'standard', crew: [{ type: 'basic', count: 3 }] }] },
+  { id: 'friend-ship', name: 'A Friend Ship', enemies: [{ ship: 'friendship', ai: 'boarder', crew: [{ type: 'basic', count: 4 }] }] },
+  { id: 'hard-ship', name: 'A Hard Ship', enemies: [{ ship: 'hardship', ai: 'heavy', crew: [{ type: 'quick' }, { type: 'basic', count: 3 }] }] },
   {
     id: 'sloop-pair',
     name: 'A pair of Sloops',
     enemies: [
-      { ship: 'sloop', ai: 'standard', crew: [{ type: 'quick', level: 2 }, { type: 'deft' }, { type: 'basic' }] },
-      { ship: 'sloop', ai: 'standard', loadout: { 'fix:1,0': 'longGun', 'fix:1,2': 'longGun' }, crew: [{ type: 'quick' }, { type: 'loud', level: 2 }, { type: 'basic' }] },
+      { ship: 'sloop', ai: 'standard', crew: [{ type: 'basic', count: 3 }] },
+      { ship: 'sloop', ai: 'skirmisher', loadout: { 'fix:1,0': 'longGun', 'fix:1,2': 'longGun' }, crew: [{ type: 'deft' }, { type: 'basic', count: 2 }] },
     ],
   },
   {
     id: 'boarding-party',
     name: 'A boarding party',
     enemies: [
-      { ship: 'friendship', ai: 'boarder', crew: [{ type: 'hard', count: 3, level: 2 }, { type: 'deft', level: 2 }, { type: 'basic', count: 3, level: 2 }] },
-      { ship: 'sloop', ai: 'standard', crew: [{ type: 'quick', level: 2 }, { type: 'loud', level: 2 }, { type: 'handy', level: 2 }, { type: 'basic', level: 2 }] },
+      { ship: 'friendship', ai: 'boarder', crew: [{ type: 'hard', count: 2, level: 2 }, { type: 'deft', level: 2 }, { type: 'basic', count: 3, level: 2 }] },
+      { ship: 'sloop', ai: 'standard', crew: [{ type: 'quick', level: 2 }, { type: 'handy', level: 2 }, { type: 'basic', level: 2 }] },
     ],
   },
 ];

@@ -523,10 +523,12 @@ export class BattleScene extends Phaser.Scene {
     const t = this.ctl.tuning.camera;
     const p = world.player.motion;
     // Frame you plus every enemy still on the water (sinking ones until they're under).
-    const others = world.enemies.filter((e) => world.sinkAnim(e) < 1).map((e) => e.motion);
-    const focus = others.length ? others : world.enemies.length ? world.enemies.map((e) => e.motion) : [p];
+    // Refit: frame your boat alone (its gun arcs are what matter there). Fight: you and every enemy still afloat.
+    const setup = world.phase === 'ready';
+    const others = setup ? [] : world.enemies.filter((e) => world.sinkAnim(e) < 1).map((e) => e.motion);
+    const focus = others.length ? others : world.enemies.length && !setup ? world.enemies.map((e) => e.motion) : [p];
     const mean = focus.reduce((a, m) => ({ x: a.x + m.x / focus.length, y: a.y + m.y / focus.length }), { x: 0, y: 0 });
-    const bias = clamp(t.enemyBias, 0, 1);
+    const bias = setup ? 0 : clamp(t.enemyBias, 0, 1);
     const cx = lerp(p.x, mean.x, bias);
     const cy = lerp(p.y, mean.y, bias);
     const W = this.W;
@@ -551,7 +553,8 @@ export class BattleScene extends Phaser.Scene {
       this.cam.y += (cy - this.cam.y) * k;
       this.cam.zoom = Math.exp(lerp(Math.log(this.cam.zoom), Math.log(zoom), k));
     }
-    const shiftY = inset / 2 / this.cam.zoom;
+    // In refit the stat card covers the top of the ocean: sit the boat a little low.
+    const shiftY = inset / 2 / this.cam.zoom - (setup ? (0.04 * H) / this.cam.zoom : 0);
     this.oceanCam.setZoom(this.cam.zoom);
     this.oceanCam.centerOn(this.cam.x, this.cam.y - shiftY);
     this.coverWithWater(this.waterOcean, this.cam.x, this.cam.y - shiftY, W / this.cam.zoom, this.oceanH / this.cam.zoom);

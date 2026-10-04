@@ -239,9 +239,13 @@ export class RefitPanel {
     }
     const now = boatCard(ctl.world.player, ctl.tuning);
     const next = this.preview;
-    const stats = el('div', 'stat-card');
+    // With an info card open, only the rows that would change (room for the boat and its arcs).
+    const compact = this.cardOpen();
+    const stats = el('div', `stat-card${compact ? ' compact' : ''}`);
     for (const [name, get, fmt] of CARD_ROWS) {
       const a = get(now);
+      const changes = !!next && Math.abs(get(next) - a) > 1e-6;
+      if (compact && !changes) continue;
       const row = el('div', 'sc-row');
       row.append(el('span', 'sc-k', name));
       if (next && Math.abs(get(next) - a) > 1e-6) {
@@ -252,8 +256,9 @@ export class RefitPanel {
       } else row.append(el('span', 'sc-v', fmt(a, now)));
       stats.append(row);
     }
+    if (compact && !stats.childElementCount) stats.classList.add('hidden');
     const warn = el('div', 'warnings');
-    for (const w of this.warnings()) warn.append(el('div', 'warning', w));
+    if (!compact) for (const w of this.warnings()) warn.append(el('div', 'warning', w));
     const nextFight = el('div', 'next-fight', ctl.mode === 'sandbox' ? `Sandbox · ${this.sandboxSummary()}` : `Fight ${run.fight} · ${encounterSummary(run, ctl.tuning)}`);
     this.top.replaceChildren(tabs, nextFight, stats, warn);
   }
@@ -923,7 +928,7 @@ export class RefitPanel {
         }),
       );
     }
-    const launch = button(ctl.mode === 'sandbox' ? 'LAUNCH' : `LAUNCH · fight ${run.fight}`, 'start-btn', () => {
+    const launch = button('LAUNCH', 'start-btn', () => {
       this.selLee = null;
       this.selSlot = null;
       this.pick = null;
@@ -934,10 +939,16 @@ export class RefitPanel {
       }
       ctl.launch();
     });
+    launch.append(el('small', '', ctl.mode === 'sandbox' ? 'sandbox' : `fight ${run.fight}`));
     bar.append(launch);
   }
 
   // ------------------------------------------------------------ info card
+
+  /** Is an info card showing? */
+  private cardOpen(): boolean {
+    return (this.tab === 'deck' && this.selLee !== null) || (this.tab === 'parts' && (!!this.selSlot || !!this.pick)) || (this.tab === 'crew' && this.selMember !== null);
+  }
 
   private renderCard(): void {
     const c = this.card;
@@ -1009,8 +1020,7 @@ export class RefitPanel {
         this.lastSig = '';
         this.render();
       }));
-      extra.push(buttons);
-      out.push(itemCard(pickDef, extra));
+      out.push(buttons, itemCard(pickDef, extra));
       return out;
     }
     if (!slotId) return null;
@@ -1040,8 +1050,7 @@ export class RefitPanel {
         this.lastSig = '';
         this.render();
       }));
-      extra.push(buttons);
-      out.push(itemCard(def, extra));
+      out.push(buttons, itemCard(def, extra));
       return out;
     }
     const empty = el('div', 'card item-card');

@@ -898,7 +898,8 @@ function evaluate(lee: Lee, need: Need | null, othersOnIt: number, boat: Boat, c
     if (homeRole(lee, boat).includes(kind) && !surplus) score += ai.roleBonus;
     score += lee.def.affinities[kind] ?? 0;
     const sv = leeStat(lee, WORK_STAT[kind], boat, t);
-    const pts = ai.statAffinity * (sv - 1);
+    const cap = Math.max(0, ai.statAffinityCap);
+    const pts = ai.statAffinity * Math.max(-cap, Math.min(cap, sv - 1));
     score += pts;
     // Say so when a Lee's stats tipped the choice (debug reason strings).
     if (Math.abs(pts) >= 3) statNote = ` [${pts > 0 ? '+' : '−'}${Math.round(Math.abs(pts))} for ${STAT_LABELS[WORK_STAT[kind]]} ×${sv.toFixed(2)}]`;

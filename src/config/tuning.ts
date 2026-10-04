@@ -332,8 +332,10 @@ export function defaultTuning() {
       walkPenalty: 3,
       /** Points lost per Lee already on a repair/bail job (so extra hands help only when nothing else needs them). */
       helpPenalty: 45,
-      /** Points per +1.0 of the stat a task uses: the best-qualified Lee takes a job (a weight, not an override of placement). */
-      statAffinity: 15,
+      /** Points per +1.0 of the stat a task uses: the best-qualified Lee takes a job (a tiebreaker, not an override of placement). */
+      statAffinity: 8,
+      /** The stat term counts at most this far from 1 (so a ×2.0 specialist doesn't abandon its post for its specialty). */
+      statAffinityCap: 0.6,
       /** A part this full (fraction) is a flooding emergency. */
       floodPartAt: 0.55,
       /** The whole boat this close to its sink line (0..1) is a flooding emergency. */
@@ -429,7 +431,7 @@ export function defaultTuning() {
     },
     layout: {
       /** Ocean share of the screen in setup mode (the deck grid gets the rest). */
-      setupOceanFraction: 0.5,
+      setupOceanFraction: 0.54,
       /** Smallest tile on screen in setup mode, CSS px (touch target). */
       minTilePx: 46,
       /** Seconds for the panels to slide between setup and fight sizes. */

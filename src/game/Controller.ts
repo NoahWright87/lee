@@ -178,7 +178,7 @@ export class Controller {
       this.world = this.idleWorld();
     } else {
       fixHomes(run);
-      const enemies = this.mode === 'sandbox' ? (this.sandbox!.enemies.length ? this.sandbox!.enemies : []).map((s, i) => enemySetup(s, this.tuning, { salt: i + 1 })) : enemySetups(run, this.tuning);
+      const enemies = this.mode === 'sandbox' ? this.sandbox!.enemies.map((s, i) => enemySetup(s, this.tuning, { salt: i + 1 })) : enemySetups(run, this.tuning);
       this.world = new World(this.tuning, (run.seed + run.fight * 7919) >>> 0, {
         fight: run.fight,
         player: setupFor(run, this.tuning),

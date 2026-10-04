@@ -69,24 +69,22 @@ export function autoArrange(build: BoatBuild, crew: { type: string; mods?: StatM
     ...of('pump').map((x) => x.index),
     ...plain.slice(1).map((x) => x.index),
   ];
+  // The posts this crew can fill, then the best fits first: each (post, Lee) pair by how good the Lee is at
+  // that post's work, ties by post priority and crew order. A Handy Lee ends up repairing, a Quick Lee on a gun.
   const homes: (number | null)[] = crew.map(() => null);
-  const left = crew.map((_, i) => i);
-  for (const post of posts) {
-    if (!left.length) break;
+  const open = posts.slice(0, crew.length);
+  const pairs: { post: number; rank: number; lee: number; v: number }[] = [];
+  open.forEach((post, rank) => {
     const st = tiles[post].station;
     const stat = st ? WORK_STAT[STATION_WORK[st]] : 'repairRate';
-    let best = 0;
-    let bestV = -Infinity;
-    left.forEach((ci, k) => {
-      const def = LEE_DEFS[crew[ci].type] ?? LEE_DEFS.basic;
-      const v = baseStat(def, stat, t, crew[ci].mods);
-      if (v > bestV + 1e-9) {
-        bestV = v;
-        best = k;
-      }
-    });
-    homes[left[best]] = post;
-    left.splice(best, 1);
+    crew.forEach((c, lee) => pairs.push({ post, rank, lee, v: baseStat(LEE_DEFS[c.type] ?? LEE_DEFS.basic, stat, t, c.mods) }));
+  });
+  pairs.sort((a, b) => b.v - a.v || a.rank - b.rank || a.lee - b.lee);
+  const taken = new Set<number>();
+  for (const p of pairs) {
+    if (homes[p.lee] !== null || taken.has(p.post)) continue;
+    homes[p.lee] = p.post;
+    taken.add(p.post);
   }
   return homes;
 }
