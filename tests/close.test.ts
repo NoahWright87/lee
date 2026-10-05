@@ -1,20 +1,42 @@
 // Phase 3: minimum range, docking, ramming, firing rules while attached,
 // boarding (who goes, when they come back), melee, pistols, enemy types.
 
-import { describe, expect, test } from 'vitest';
+import { beforeEach, describe, expect, test } from 'vitest';
 import { LAYOUTS, SLOOP } from '../src/config/boats';
-import { SHIP_TYPES } from '../src/config/ships';
+import { ARCHETYPES } from '../src/config/encounters';
+import { SHIPS } from '../src/config/ships';
 import { defaultTuning, type Tuning } from '../src/config/tuning';
 import { hullGap } from '../src/sim/attach';
-import { isDerelict, type Boat } from '../src/sim/boat';
+import { createBoat, gunSpec, isDerelict, type Boat } from '../src/sim/boat';
 import { updateEngagement, stepMelee } from '../src/sim/combat';
 import { activity, taskKey, type Lee } from '../src/sim/crew';
 import { buildGrid, tileAtCell } from '../src/sim/grid';
+import { defaultBuild, type BoatBuild } from '../src/sim/loadout';
 import { dist, pointInPolygon, Rng, type Vec } from '../src/sim/math';
+import { archetypeSetup, autoArrange, type BoatSetup } from '../src/sim/setup';
 import { FIXED_DT } from '../src/sim/steering';
-import { encounterFor, World, type CrewPlacement } from '../src/sim/world';
+import { World, type CrewPlacement } from '../src/sim/world';
 
-const grid = buildGrid(SLOOP);
+const grid = createBoat(0, 'player', defaultBuild('sloop'), defaultTuning(), { x: 0, y: 0 }, 0).grid;
+
+/** Enemy crew size override per archetype for the current test (undefined = the archetype's own crew). */
+let size: Record<string, number | undefined> = {};
+beforeEach(() => {
+  size = {};
+});
+
+/** Enemy boats by archetype ('standard' Sloop, 'boarder' Friend Ship, 'heavy' Hard Ship), Basic Lees if a size is set. */
+function enemies(t: Tuning, types: string[], build?: (type: string) => BoatBuild): BoatSetup[] {
+  return types.map((type, i) => {
+    const n = size[type];
+    if (n === undefined && !build) return archetypeSetup(type, t, i + 1);
+    const arch = ARCHETYPES[type];
+    const b = build?.(type) ?? defaultBuild(arch.ship);
+    const crew = Array.from({ length: n ?? 0 }, () => ({ type: 'basic', home: null as number | null }));
+    autoArrange(b, crew, t).forEach((h, k) => (crew[k].home = h));
+    return { build: b, crew, ai: { ...t.ai[arch.ai] } };
+  });
+}
 const tile = (col: number, row: number) => tileAtCell(grid, col, row)!.index;
 const T = {
   portCannon2: tile(3, 0),
@@ -25,10 +47,8 @@ const T = {
 };
 
 function quiet(t: Tuning): Tuning {
-  for (const b of [t.player, ...Object.values(t.ships)]) {
-    b.flooding.bilgeRate = 0;
-    b.flooding.leakRate = 0;
-  }
+  t.boat.flooding.bilgeRate = 0;
+  t.boat.flooding.leakRate = 0;
   return t;
 }
 
@@ -52,7 +72,7 @@ const run = (w: World, seconds: number, each?: () => void) => {
 
 /** A world with the player at the origin (bow north) and enemy 0 docked on its port side. */
 function docked(t: Tuning, crew: CrewPlacement, types: string[], others: Vec[] = []) {
-  const w = new World(t, 5, { encounter: types, crew });
+  const w = new World(t, 5, { enemies: enemies(t, types), crew });
   w.start();
   pin(w, w.player, { x: 0, y: 0 });
   const e = w.enemies[0];
@@ -76,9 +96,9 @@ const mine = (w: World, n: number): Lee => w.player.crew.lees.find((l) => l.numb
 describe('minimum cannon range', () => {
   test('a gun with the target in arc fires beyond the minimum range but not inside it', () => {
     const t = quiet(defaultTuning());
-    t.ships.standard.crew.size = 0;
+    size.standard = 0;
     for (const [x, fires] of [[-80, true], [-20, false]] as const) {
-      const w = new World(t, 1, { enemies: 1, crew: [T.portCannon2] });
+      const w = new World(t, 1, { enemies: enemies(t, ['standard']), crew: [T.portCannon2] });
       w.start();
       run(w, 8, () => {
         pin(w, w.player, { x: 0, y: 0 });
@@ -88,18 +108,21 @@ describe('minimum cannon range', () => {
     }
   });
 
-  test('the Hard Ship has the biggest minimum range', () => {
+  test('minimum range comes from the gun: long guns and mortars can\'t hit close, carronades can', () => {
     const t = defaultTuning();
-    expect(t.ships.heavy.cannons.minRange).toBeGreaterThan(t.ships.standard.cannons.minRange);
-    expect(t.ships.heavy.cannons.minRange).toBeGreaterThan(t.player.cannons.minRange);
+    const b = createBoat(1, 'enemy', { ship: 'hardship', loadout: { 'fix:1,0': 'cannon', 'fix:2,0': 'carronade', 'fix:3,0': 'longGun', 'fix:1,1': 'mortar' } }, t, { x: 0, y: 0 }, 0);
+    const min = (item: string) => gunSpec(b, b.guns.find((g) => g.item === item)!, t).minRange;
+    expect(min('longGun')).toBeGreaterThan(min('cannon'));
+    expect(min('mortar')).toBeGreaterThan(min('longGun'));
+    expect(min('carronade')).toBeLessThan(min('cannon'));
   });
 });
 
 describe('docking', () => {
   test('two opposing boats close and slow stick after the grapple time, side by side and not overlapping', () => {
     const t = quiet(defaultTuning());
-    t.ships.standard.crew.size = 0;
-    const w = new World(t, 1, { enemies: 1, crew: [] });
+    size.standard = 0;
+    const w = new World(t, 1, { enemies: enemies(t, ['standard']), crew: [] });
     w.start();
     const e = w.enemies[0];
     const near = { x: -(SLOOP.beam + 3), y: 0 };
@@ -120,8 +143,8 @@ describe('docking', () => {
 
   test('brushing past fast does not dock', () => {
     const t = quiet(defaultTuning());
-    t.ships.standard.crew.size = 0;
-    const w = new World(t, 1, { enemies: 1, crew: [] });
+    size.standard = 0;
+    const w = new World(t, 1, { enemies: enemies(t, ['standard']), crew: [] });
     w.start();
     const e = w.enemies[0];
     Object.assign(w.player.motion, { x: 0, y: 0, heading: -Math.PI / 2, vx: 0, vy: -12 });
@@ -135,7 +158,7 @@ describe('docking', () => {
 
   test('same-side boats never attach', () => {
     const t = quiet(defaultTuning());
-    const w = new World(t, 1, { enemies: 2, crew: [] });
+    const w = new World(t, 1, { enemies: enemies(t, ['standard', 'standard']), crew: [] });
     w.start();
     run(w, 4, () => {
       pin(w, w.enemies[0], { x: 0, y: -300 });
@@ -147,7 +170,7 @@ describe('docking', () => {
 
   test('attached boats ignore steering and drift together', () => {
     const t = quiet(defaultTuning());
-    t.ships.standard.crew.size = 0;
+    size.standard = 0;
     const { w, e } = docked(t, [], ['standard']);
     w.player.motion.vy = -10;
     const before = dist(w.player.motion, e.motion);
@@ -161,8 +184,8 @@ describe('docking', () => {
 describe('ramming', () => {
   /** Enemy coming at your starboard side, square on, at `speed`. */
   function ramWorld(t: Tuning, speed: number, heading = Math.PI) {
-    t.ships.standard.crew.size = 0;
-    const w = new World(t, 1, { enemies: 1, crew: [] });
+    size.standard = 0;
+    const w = new World(t, 1, { enemies: enemies(t, ['standard']), crew: [] });
     w.start();
     const e = w.enemies[0];
     Object.assign(w.player.motion, { x: 0, y: 0, heading: -Math.PI / 2, vx: 0, vy: 0, omega: 0 });
@@ -217,8 +240,8 @@ describe('ramming', () => {
 
   test('a glancing side-swipe does not attach', () => {
     const t = quiet(defaultTuning());
-    t.ships.standard.crew.size = 0;
-    const w = new World(t, 1, { enemies: 1, crew: [] });
+    size.standard = 0;
+    const w = new World(t, 1, { enemies: enemies(t, ['standard']), crew: [] });
     w.start();
     const e = w.enemies[0];
     run(w, 6, () => {
@@ -254,7 +277,7 @@ describe('firing rules while attached', () => {
 describe('boarding: who goes and why', () => {
   test('docked on one side: gunners and rowers there go to fight, the gunner with a target keeps shooting', () => {
     const t = quiet(defaultTuning());
-    t.ships.heavy.crew.size = 0;
+    size.heavy = 0;
     const crew = [T.starCannon2, T.portCannon2, T.portOars, T.sails];
     const { w, e, hold } = docked(t, crew, ['standard', 'heavy'], [{ x: 90, y: 0 }]);
     run(w, 4, hold);
@@ -288,7 +311,7 @@ describe('boarding: who goes and why', () => {
 
   test('boarders swing home once the enemy deck is clear', () => {
     const t = quiet(defaultTuning());
-    t.ships.standard.crew.size = 1;
+    size.standard = 1;
     // Their boarders all on your deck, a second (crewed, far) enemy keeps the fight going.
     const { w, e, hold } = docked(t, [T.portCannon2, T.portOars, T.sails, T.midDeck], ['standard', 'heavy'], [{ x: 0, y: -400 }]);
     let boarded = false;
@@ -304,13 +327,13 @@ describe('boarding: who goes and why', () => {
 
   test('boarders leave a deck that is about to sink', () => {
     const t = quiet(defaultTuning());
-    t.ships.standard.crew.size = 4;
+    size.standard = 4;
     const { w, e, hold } = docked(t, [T.portCannon2, T.portOars, T.sails], ['standard']);
     run(w, 4, hold);
     expect(w.player.crew.lees.some((l) => l.deck === e || l.swing)).toBe(true);
     // Flood the enemy to just past the evacuation threshold (but not the sink line).
     const fill = (f: number) => {
-      const line = t.ships.standard.flooding.sinkThreshold;
+      const line = t.boat.flooding.sinkThreshold;
       for (const p of e.parts) p.water = p.capacity * line * f;
     };
     w.drainEvents();
@@ -326,7 +349,7 @@ describe('boarding: who goes and why', () => {
   test('minimum home crew keeps that many aboard', () => {
     const t = quiet(defaultTuning());
     t.boarding.minHomeCrew = 2;
-    t.ships.standard.crew.size = 4;
+    size.standard = 4;
     const { w, hold } = docked(t, [T.portCannon2, T.portOars, T.sails, T.midDeck], ['standard']);
     let leastHome = 99;
     run(w, 6, () => {
@@ -339,7 +362,7 @@ describe('boarding: who goes and why', () => {
 
   test('disengage: your boarders fight their way home, then you cast off; theirs stay aboard and fight', () => {
     const t = quiet(defaultTuning());
-    t.ships.standard.crew.size = 4;
+    size.standard = 4;
     const { w, e, hold } = docked(t, [T.portCannon2, T.portOars, T.sails], ['standard']);
     run(w, 6, hold);
     const theirsOnUs = () => e.crew.lees.filter((l) => l.alive && (l.deck === w.player || l.swing?.to === w.player)).length;
@@ -362,7 +385,7 @@ describe('boarding: who goes and why', () => {
 
   test('cast-off pushes the boats apart', () => {
     const t = quiet(defaultTuning());
-    t.ships.standard.crew.size = 0;
+    size.standard = 0;
     const { w, e } = docked(t, [T.portCannon2], ['standard']);
     run(w, 0.2);
     w.disengage(e);
@@ -374,7 +397,7 @@ describe('boarding: who goes and why', () => {
 
   test('no more than tileCap Lees ever stand on one tile', () => {
     const t = quiet(defaultTuning());
-    t.ships.standard.crew.size = 6;
+    size.standard = 6;
     const { w, hold } = docked(t, [T.portCannon2, T.portOars, T.sails, T.midDeck, T.starCannon2, tile(2, 0)], ['standard']);
     let worst = 0;
     run(w, 25, () => {
@@ -392,9 +415,9 @@ describe('boarding: who goes and why', () => {
 
   test('a wounded Lee falls back and shoots instead of sword-fighting', () => {
     const t = quiet(defaultTuning());
-    t.ships.standard.crew.size = 1;
+    size.standard = 1;
     const { w, e, hold } = docked(t, [T.midDeck], ['standard', 'heavy'], [{ x: 0, y: -400 }]);
-    t.ships.heavy.crew.size = 0;
+    size.heavy = 0;
     const me = mine(w, 1);
     const foe = e.crew.lees[0];
     Object.assign(foe, { deck: w.player, tile: me.tile, pos: { ...me.pos }, path: [], dest: me.tile });
@@ -408,7 +431,7 @@ describe('boarding: who goes and why', () => {
 
   test('boarders cross one at a time', () => {
     const t = quiet(defaultTuning());
-    t.ships.standard.crew.size = 4;
+    size.standard = 4;
     t.boarding.swingInterval = 1;
     const { w, hold } = docked(t, [T.portCannon2, T.portOars, T.sails, T.midDeck], ['standard']);
     const starts: number[] = [];
@@ -433,7 +456,7 @@ describe('boarding: who goes and why', () => {
 describe('melee and pistols', () => {
   test('swords never miss and go for the weakest opponent on the tile first (ties by id)', () => {
     const t = quiet(defaultTuning());
-    t.ships.standard.crew.size = 2;
+    size.standard = 2;
     const { w, e } = docked(t, [T.midDeck], ['standard']);
     const me = mine(w, 1);
     const [a, b] = e.crew.lees;
@@ -457,24 +480,24 @@ describe('melee and pistols', () => {
 
   test('an engaged gunner stops loading', () => {
     const t = quiet(defaultTuning());
-    t.ships.standard.crew.size = 1;
+    size.standard = 1;
     const { w, e, hold } = docked(t, [T.starCannon2], ['standard', 'heavy'], [{ x: 90, y: 0 }]);
     const gunner = mine(w, 1);
     run(w, 1.6, hold);
     const foe = e.crew.lees[0];
-    const load0 = w.player.cannons.find((c) => c.station === T.starCannon2)!.load;
+    const load0 = w.player.guns.find((c) => c.station === T.starCannon2)!.load;
     run(w, 1, () => {
       hold();
       Object.assign(foe, { deck: w.player, tile: gunner.tile, pos: { ...gunner.pos }, swing: null, path: [] });
     });
     expect(gunner.engaged).toBe(true);
     expect(activity(gunner)).toBe('melee');
-    expect(w.player.cannons.find((c) => c.station === T.starCannon2)!.load).toBeLessThanOrEqual(Math.max(load0, 0.0001) + 1e-9);
+    expect(w.player.guns.find((c) => c.station === T.starCannon2)!.load).toBeLessThanOrEqual(Math.max(load0, 0.0001) + 1e-9);
   });
 
   test('pistols only hurt opposing Lees, and only within range', () => {
     const t = quiet(defaultTuning());
-    t.ships.standard.crew.size = 4;
+    size.standard = 4;
     t.pistol.spread = 0;
     t.pistol.spreadPerMeter = 0;
     const { w, hold } = docked(t, [T.starCannon2, T.midDeck], ['standard']);
@@ -482,7 +505,7 @@ describe('melee and pistols', () => {
     expect(w.stats.player.pistolShots + w.stats.enemy.pistolShots).toBeGreaterThan(0);
     expect(w.stats.player.pistolHits).toBe(w.stats.player.pistolShots); // no scatter: every shot hits
     // Out of range: nobody shoots.
-    const far = new World(t, 5, { encounter: ['standard'], crew: [T.midDeck] });
+    const far = new World(t, 5, { enemies: enemies(t, ['standard']), crew: [T.midDeck] });
     far.start();
     run(far, 3, () => {
       pin(far, far.player, { x: 0, y: 0 });
@@ -560,35 +583,40 @@ describe('melee and pistols', () => {
 });
 
 describe('enemy ship types', () => {
-  test('every layout is valid: tiles inside their parts, stations and crews in place', () => {
+  test('every layout is valid: tiles inside their parts, every slot on a tile or part of its ship', () => {
     for (const layout of LAYOUTS) {
       const g = buildGrid(layout);
       for (const t of g.tiles) expect(pointInPolygon(t.center, layout.parts[t.part].polygon)).toBe(true);
     }
-    for (const def of Object.values(SHIP_TYPES)) {
-      const g = buildGrid(def.layout);
-      for (const [c, r] of def.crew.homes) expect(tileAtCell(g, c, r)).not.toBeNull();
+    for (const ship of Object.values(SHIPS)) {
+      const g = buildGrid(ship.layout);
+      for (const slot of ship.slots) {
+        if (slot.tile) {
+          const tile = tileAtCell(g, slot.tile[0], slot.tile[1]);
+          expect(tile).not.toBeNull();
+          // Edge and rail slots sit on that edge; interior slots aren't on any.
+          if (slot.type === 'edge' || slot.type === 'rail') expect(tile!.edges).toContain(slot.facing);
+          if (slot.type === 'interior') expect(tile!.edges).toHaveLength(0);
+        }
+        if (slot.part) expect(ship.layout.parts.some((p) => p.id === slot.part)).toBe(true);
+      }
+      // At most one fixture slot per tile.
+      const fixtures = ship.slots.filter((s) => s.type === 'edge' || s.type === 'interior').map((s) => s.tile!.join(','));
+      expect(new Set(fixtures).size).toBe(fixtures.length);
     }
   });
 
-  test('each type sails with its own layout, crew and tuning', () => {
+  test('each archetype sails its own ship, crew and AI, all from shared content', () => {
     const t = defaultTuning();
     const w = new World(t, 3, { encounter: ['standard', 'boarder', 'heavy'] });
     expect(w.enemies.map((e) => e.layout.id)).toEqual(['sloop', 'friendship', 'hardship']);
-    expect(w.enemies.map((e) => e.crew.lees.length)).toEqual([t.ships.standard.crew.size, t.ships.boarder.crew.size, t.ships.heavy.crew.size]);
-    const guns = (b: Boat) => b.cannons.filter((c) => c.kind === 'cannon').length;
+    expect(w.enemies.map((e) => e.crew.lees.length)).toEqual([4, 6, 5]);
+    const guns = (b: Boat) => b.guns.filter((c) => c.targets === 'hull').length;
     expect(guns(w.enemies[2])).toBeGreaterThan(guns(w.enemies[0]));
     expect(guns(w.enemies[1])).toBeLessThan(guns(w.enemies[0]));
-  });
-
-  test('intro fights bring one new type each, alone; later fights mix by weight (seeded)', () => {
-    const t = defaultTuning();
-    expect([1, 2, 3].map((f) => encounterFor(t, f, 7))).toEqual([['standard'], ['boarder'], ['heavy']]);
-    expect(encounterFor(t, 6, 7)).toEqual(encounterFor(t, 6, 7));
-    t.campaign.mix = { standard: 0, boarder: 1, heavy: 0 };
-    expect(new Set(encounterFor(t, 8, 7))).toEqual(new Set(['boarder']));
-    t.campaign.introFights = 0;
-    expect(encounterFor(t, 1, 7)).toEqual(['boarder']);
+    expect(w.enemies.map((e) => e.ai!.seekAttach)).toEqual([0, 1, 0]);
+    // Hard Lees on the boarder.
+    expect(w.enemies[1].crew.lees.filter((l) => l.def.id === 'hard')).toHaveLength(2);
   });
 
   test('a Friend Ship closes in and attaches to a boat sailing straight', () => {
@@ -613,8 +641,8 @@ describe('enemy ship types', () => {
 
   test('steering alongside an enemy docks with it', () => {
     const t = defaultTuning();
-    t.ships.standard.crew.size = 0;
-    const w = new World(t, 4, { encounter: ['standard'], crew: [] });
+    size.standard = 0;
+    const w = new World(t, 4, { enemies: enemies(t, ['standard']), crew: [] });
     w.start();
     let attached = false;
     run(w, 90, () => {
@@ -628,7 +656,7 @@ describe('enemy ship types', () => {
 describe('end of fight while boarded', () => {
   test('your boarders on the last enemy as it sinks make it home after the win', () => {
     const t = quiet(defaultTuning());
-    t.ships.standard.crew.size = 4;
+    size.standard = 4;
     const { w, e, hold } = docked(t, [T.portCannon2, T.portOars, T.sails], ['standard']);
     run(w, 4, hold);
     expect(w.player.crew.lees.some((l) => l.deck === e)).toBe(true);
@@ -643,12 +671,12 @@ describe('end of fight while boarded', () => {
 describe('gatling guns', () => {
   test('a manned gatling shreds crew on an enemy deck in its arc but barely scratches the hull', () => {
     const t = quiet(defaultTuning());
-    t.player.cannons.reloadTime = 1e9; // gatling only
-    t.ships.standard.crew.size = 4;
-    t.ships.standard.cannons.reloadTime = 1e9;
-    t.ships.standard.gatling.rate = 0;
-    const gat = grid.tiles.find((x) => x.label === 'Port gatling')!.index;
-    const w = new World(t, 3, { encounter: ['standard'], crew: [gat] });
+    size.standard = 4;
+    const gat = tile(1, 0);
+    const w = new World(t, 3, {
+      enemies: enemies(t, ['standard'], () => ({ ship: 'sloop', loadout: {} })),
+      player: { build: { ship: 'sloop', loadout: { 'fix:1,0': 'gatling' } }, crew: [{ type: 'basic', home: gat }] },
+    });
     w.start();
     const e = w.enemies[0];
     const hp0 = e.parts.reduce((a, p) => a + p.layers[0].hp, 0);
@@ -666,9 +694,9 @@ describe('gatling guns', () => {
 
   test('a gatling never fires at its own deck', () => {
     const t = quiet(defaultTuning());
-    t.ships.standard.crew.size = 0;
-    const gat = grid.tiles.find((x) => x.label === 'Port gatling')!.index;
-    const w = new World(t, 3, { encounter: ['standard'], crew: [gat] });
+    size.standard = 0;
+    const gat = tile(1, 0);
+    const w = new World(t, 3, { enemies: enemies(t, ['standard']), player: { build: { ship: 'sloop', loadout: { 'fix:1,0': 'gatling' } }, crew: [{ type: 'basic', home: gat }] } });
     w.start();
     run(w, 5, () => {
       pin(w, w.player, { x: 0, y: 0 });

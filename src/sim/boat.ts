@@ -1,17 +1,23 @@
 // Boat state: parts with layered damage, flooding, the deck grid and its crew,
-// cannons, and the derived movement stats that damage, water and crew feed into.
+// guns, and the derived movement stats that damage, water, equipment and crew
+// feed into. A boat is a ship (layout, slots, numbers) plus a loadout: the
+// same for the player and every enemy.
 
 import type { BoatLayout, PartDef } from '../config/boats';
-import type { BoatTuning, ShipTuning, Side, Tuning } from '../config/tuning';
+import type { AiProfile } from '../config/encounters';
+import { ITEMS, type GunMode } from '../config/items';
+import { SHIPS, type ShipDef, type ShipStats } from '../config/ships';
+import type { Side, Tuning } from '../config/tuning';
 import type { CrewState } from './crew';
 import { buildGrid, type Grid } from './grid';
+import { attachmentMods, cleanBuild, computeMods, furnishGrid, gunFacing, muzzleLocal, slotById, type BoatBuild, type BoatMods } from './loadout';
 import { clamp, DEG, distToPolygon, polygonCentroid, toLocal, type Vec } from './math';
 import type { MotionParams, MotionState } from './steering';
 
 /**
  * One layer of a part's damage stack. Damage hits layers top-first; overflow
- * carries down. The last layer is the part's own structure. Armor/plating
- * later = extra layers in front of it.
+ * carries down. The last layer is the part's own structure. Armor (Iron
+ * Plating) is an extra layer in front of it.
  */
 export interface DamageLayer {
   kind: string;
@@ -31,16 +37,26 @@ export interface PartState {
   center: Vec;
 }
 
-export interface CannonState {
-  /** A cannon (shells, hurts boats) or a gatling (bullets, hurts Lees). */
-  kind: 'cannon' | 'gatling';
+/** A gun on a boat: from its item and the slot it's mounted in. */
+export interface GunState {
+  /** Gun item id (key into ITEMS / tuning.items). */
+  item: string;
+  /** Slot it's mounted in. */
+  slot: string;
+  mode: GunMode;
+  /** 'crew' guns (the gatling) aim at enemy Lees; 'hull' guns at boat parts. */
+  targets: 'hull' | 'crew';
   partIndex: number;
-  /** The cannon station (tile index) a gunner works it from. */
+  /** The tile a gunner works it from. */
   station: number;
-  /** Mount point on the hull edge, local frame. */
+  /** Muzzle, local frame. */
   local: Vec;
-  broadside: -1 | 1;
-  /** Load progress 0..1; fires at 1 (a gatling: the next bullet). */
+  /** Direction it points, local frame (radians; 0 = bow, +π/2 = starboard). */
+  face: number;
+  /** From its attachment (gun shield, wide mount). */
+  mods: { arc: number; reload: number; spread: number; gunnerImpact: number };
+  attachment: string | null;
+  /** Load progress 0..1; fires at 1 (a stream gun: the next bullet). */
   load: number;
   /** World time it last fired (for recoil/smoke). */
   lastFired: number;
@@ -60,16 +76,34 @@ export interface AimPlan {
   turn: number;
 }
 
+/** What manned stations do right now (updated by the crew each step). */
+export interface CrewEffects {
+  /** Gun spread divisor from manned lookouts (1 = none). */
+  accuracy: number;
+  /** Reload time multiplier from manned powder stores (1 = none). */
+  reload: number;
+  /** Swing time and grapple time multipliers from manned boarding hooks (1 = none). */
+  swing: number;
+  grapple: number;
+}
+
 export interface Boat {
   id: number;
   side: Side;
-  /** Ship type (key into SHIP_TYPES / tuning.ships), or 'player'. */
+  /** Ship id (key into SHIPS / tuning.ships). */
   type: string;
+  ship: ShipDef;
+  build: BoatBuild;
   layout: BoatLayout;
   motion: MotionState;
   throttle: number;
   parts: PartState[];
-  cannons: CannonState[];
+  guns: GunState[];
+  mods: BoatMods;
+  /** Sandbox assist (playerAdvantage); 1 for enemies and in a run. */
+  advantage: number;
+  /** Enemy AI profile (null = steered by the player). */
+  ai: AiProfile | null;
   /** Point the helm is seeking, or null to hold course. */
   target: Vec | null;
   /** World time the boat crossed its sink line, or null. */
@@ -80,85 +114,82 @@ export interface Boat {
   crew: CrewState;
   /** Speed and turn multipliers from oars and sails, updated by the crew each step. */
   mobility: { speed: number; turn: number };
-  /** Cannon range multiplier from manned lookouts (the lookout spots targets farther out). */
-  rangeBonus: number;
+  fx: CrewEffects;
 }
 
-export function advantageOf(side: Side, t: Tuning): number {
-  return side === 'player' ? Math.max(0.1, t.global.playerAdvantage) : 1;
+/** A ship's numbers (tuning.ships.<id>). */
+export function shipStats(b: { type: string }, t: Tuning): ShipStats {
+  return t.ships[b.type] ?? t.ships.sloop ?? Object.values(t.ships)[0];
 }
 
-/** Something with a side and a ship type: a Boat, or a bare { side, type } (setup preview). */
-export interface Typed {
-  side: Side;
-  type: string;
+export interface BoatOptions {
+  /** Sandbox assist: playerAdvantage (1 = none). */
+  advantage?: number;
+  ai?: AiProfile | null;
 }
 
-/** The tuning block a boat reads: yours, or its enemy ship type's. */
-export function boatTuning(b: Typed, t: Tuning): BoatTuning {
-  if (b.side === 'player') return t.player;
-  return t.ships[b.type] ?? t.ships.standard ?? Object.values(t.ships)[0];
-}
-
-/** An enemy ship type's tuning (with its AI block). */
-export function shipTuning(b: Typed, t: Tuning): ShipTuning {
-  return t.ships[b.type] ?? t.ships.standard ?? Object.values(t.ships)[0];
-}
-
-export function createBoat(
-  id: number,
-  side: Side,
-  layout: BoatLayout,
-  t: Tuning,
-  pos: Vec,
-  heading: number,
-  type = side === 'player' ? 'player' : 'standard',
-): Boat {
-  const bt = boatTuning({ side, type }, t);
-  const adv = advantageOf(side, t);
+export function createBoat(id: number, side: Side, build: BoatBuild, t: Tuning, pos: Vec, heading: number, opts: BoatOptions = {}): Boat {
+  const clean = cleanBuild(build, t);
+  const ship = SHIPS[clean.ship];
+  const layout = ship.layout;
+  const ss = shipStats({ type: ship.id }, t);
+  const adv = Math.max(0.1, opts.advantage ?? 1);
+  const grid = buildGrid(layout);
+  const mods = computeMods(clean, grid, layout.parts.map((p) => p.id), layout.parts.map((p) => p.role), t);
   const parts: PartState[] = layout.parts.map((def, index) => {
-    const s = bt.parts[def.stats];
-    const hp = Math.max(1, s.hp * adv);
+    const s = t.boat.parts[def.stats];
+    const hp = Math.max(1, (s.hp * ss.hullHp * mods.partHp[index] + mods.hpFlat) * adv);
+    const layers: DamageLayer[] = [];
+    if (mods.partArmor[index] > 0) layers.push({ kind: 'armor', hp: mods.partArmor[index] * adv, maxHp: mods.partArmor[index] * adv });
+    layers.push({ kind: 'structure', hp, maxHp: hp });
     return {
       def,
       index,
-      layers: [{ kind: 'structure', hp, maxHp: hp }],
+      layers,
       water: 0,
-      capacity: Math.max(0.1, s.waterCapacity),
-      leakMultiplier: s.leakMultiplier / adv,
+      capacity: Math.max(0.1, s.waterCapacity * ss.capacity),
+      leakMultiplier: (s.leakMultiplier * ss.leak * mods.leak) / adv,
       center: polygonCentroid(def.polygon),
     };
   });
 
-  // One cannon per cannon station, mounted on its part's outboard edge.
-  const grid = buildGrid(layout);
-  const cannons: CannonState[] = [];
-  const perSide = { [-1]: 0, [1]: 0 } as Record<number, number>;
+  furnishGrid(clean, grid, layout, mods, t);
+
+  // One gun per gun fixture, its muzzle at the hull edge it faces (or on its tile, inside).
+  const polys = layout.parts.map((p) => p.polygon);
+  const guns: GunState[] = [];
   for (const tile of grid.tiles) {
-    const part = parts[tile.part];
-    const side = part.def.broadside;
-    if ((tile.station !== 'cannon' && tile.station !== 'gatling') || !side) continue;
-    let edgeY = 0;
-    for (const p of part.def.polygon) edgeY = side > 0 ? Math.max(edgeY, p.y) : Math.min(edgeY, p.y);
-    const i = perSide[side]++;
-    // Stagger initial loads so a broadside ripples instead of firing in lockstep.
-    cannons.push({
-      kind: tile.station,
-      partIndex: part.index,
+    const fx = tile.fixture;
+    const def = fx ? ITEMS[fx.item] : undefined;
+    if (!fx || !def?.gun) continue;
+    const slot = slotById(ship, fx.slot)!;
+    const face = gunFacing(clean, slot);
+    const attachment = clean.loadout[`att:${fx.slot}`] ?? null;
+    guns.push({
+      item: fx.item,
+      slot: fx.slot,
+      mode: def.gun.mode,
+      targets: def.gun.targets,
+      partIndex: tile.part,
       station: tile.index,
-      local: { x: tile.center.x, y: edgeY },
-      broadside: side,
-      load: 0.15 + 0.25 * i,
+      local: muzzleLocal(polys, tile.center, face, slot.type === 'edge'),
+      face,
+      mods: attachmentMods(clean, fx.slot, t),
+      attachment,
+      // Stagger initial loads so a broadside ripples instead of firing in lockstep.
+      load: 0.15 + 0.25 * (guns.length % 4),
       lastFired: -99,
       aim: null,
     });
   }
 
-  const idle = bt.movement.idleSpeed;
+  const idle = t.boat.movement.idleSpeed;
   return {
     id,
     side,
-    type,
+    type: ship.id,
+    ship,
+    build: clean,
     layout,
     motion: {
       x: pos.x,
@@ -171,14 +202,17 @@ export function createBoat(
     },
     throttle: 1,
     parts,
-    cannons,
+    guns,
+    mods,
+    advantage: adv,
+    ai: opts.ai ?? null,
     target: null,
     sinkingSince: null,
     waterTaken: 0,
     grid,
     crew: { lees: [], needs: [], thinkIn: 0 },
     mobility: { speed: 1, turn: 1 },
-    rangeBonus: 1,
+    fx: { accuracy: 1, reload: 1, swing: 1, grapple: 1 },
   };
 }
 
@@ -220,15 +254,63 @@ export function applyDamage(part: PartState, amount: number): DamageResult {
   return { dealt, structureDamage };
 }
 
-/** How far this boat's guns reach right now, m (base range × lookout). */
-export function cannonRange(boat: Boat, t: Tuning): number {
-  return boatTuning(boat, t).cannons.range * boat.rangeBonus;
+// ---------------------------------------------------------------- guns
+
+/** A gun's live numbers: its item's multipliers on the standard cannon, the boat's mods, its attachment. */
+export interface GunSpec {
+  /** Half-width of the arc, radians (π = all the way around). */
+  arcHalf: number;
+  range: number;
+  minRange: number;
+  /** Seconds to load one shot (one bullet for a stream gun) at load speed 1. */
+  reload: number;
+  damage: number;
+  crewDamage: number;
+  spread: number;
+  spreadPerMeter: number;
+  shellSpeed: number;
+  pellets: number;
+  splash: number;
 }
 
-export function cannonOnline(boat: Boat, cannon: CannonState, t: Tuning): boolean {
+export function gunSpec(b: Boat, g: GunState, t: Tuning): GunSpec {
+  const G = t.guns;
+  const p = t.items[g.item] ?? ITEMS[g.item]?.params ?? {};
+  const n = (k: string, d: number) => (typeof p[k] === 'number' ? p[k] : d);
+  const arc = Math.min(360, Math.max(1, n('arc', 70) * g.mods.arc));
+  return {
+    arcHalf: (arc / 2) * DEG,
+    range: G.range * n('range', 1) * b.mods.gunRange,
+    minRange: G.minRange * n('minRange', 1) * b.mods.gunMinRange,
+    reload: Math.max(0.05, (G.reloadTime * n('reload', 1) * g.mods.reload * b.fx.reload) / b.advantage),
+    damage: G.damage * n('damage', 1),
+    crewDamage: G.crewDamage * n('crewDamage', 1),
+    spread: (G.spread * n('spread', 1) * b.mods.gunSpread * g.mods.spread) / Math.max(0.1, b.fx.accuracy),
+    spreadPerMeter: (n('spreadPerMeter', 0) * b.mods.gunSpread * g.mods.spread) / Math.max(0.1, b.fx.accuracy),
+    shellSpeed: Math.max(0.05, n('shellSpeed', 1)),
+    pellets: Math.max(1, Math.round(n('pellets', 1))),
+    splash: Math.max(1, n('splash', 1)),
+  };
+}
+
+/** The longest reach of any of this boat's guns (setup ring, AI), m. */
+export function maxGunRange(b: Boat, t: Tuning): number {
+  let r = 0;
+  for (const g of b.guns) r = Math.max(r, gunSpec(b, g, t).range);
+  return r;
+}
+
+/** A gun works if its tile isn't blown out, its part is above the offline line, and the boat is afloat. */
+export function gunOnline(boat: Boat, g: GunState, t: Tuning): boolean {
   if (boat.sinkingSince !== null) return false;
-  const part = boat.parts[cannon.partIndex];
-  return structureFraction(part) > boatTuning(boat, t).function.cannonOfflineAt;
+  const tile = boat.grid.tiles[g.station];
+  if (tile?.fixture?.destroyed) return false;
+  return structureFraction(boat.parts[g.partIndex]) > t.boat.function.gunOfflineAt;
+}
+
+/** Does any working gun sit on this part (so its HP gates them)? */
+export function partHasGuns(boat: Boat, part: number): boolean {
+  return boat.guns.some((g) => g.partIndex === part);
 }
 
 // ---------------------------------------------------------------- water
@@ -247,13 +329,13 @@ export function totalCapacity(boat: Boat): number {
 
 /** Water as a fraction of the sink line: 0 = dry, 1 = sinking. */
 export function sinkProgress(boat: Boat, t: Tuning): number {
-  const line = boatTuning(boat, t).flooding.sinkThreshold * totalCapacity(boat);
+  const line = t.boat.flooding.sinkThreshold * totalCapacity(boat);
   return line > 0 ? totalWater(boat) / line : 1;
 }
 
 /** Leak, spread, and bail. Returns water that leaked in this step. */
 export function stepFlooding(boat: Boat, t: Tuning, dt: number): number {
-  const f = boatTuning(boat, t).flooding;
+  const f = t.boat.flooding;
   let leaked = 0;
 
   for (const part of boat.parts) {
@@ -319,7 +401,7 @@ export function floodPart(boat: Boat, part: PartState, amount: number): number {
 
 /** Engine output multiplier from the engine part's HP. */
 export function engineFactor(boat: Boat, t: Tuning): number {
-  const min = boatTuning(boat, t).function.engineMinFactor;
+  const min = t.boat.function.engineMinFactor;
   let factor = 1;
   for (const p of boat.parts) {
     if (p.def.role === 'engine') factor = Math.min(factor, min + (1 - min) * structureFraction(p));
@@ -329,23 +411,23 @@ export function engineFactor(boat: Boat, t: Tuning): number {
 
 /** Speed and turn multipliers from water aboard. */
 export function waterFactors(boat: Boat, t: Tuning): { speed: number; turn: number } {
-  const f = boatTuning(boat, t).flooding;
+  const f = t.boat.flooding;
   const x = Math.pow(clamp(sinkProgress(boat, t), 0, 1), Math.max(0.1, f.waterCurveExponent));
   return { speed: 1 - clamp(f.waterSpeedPenalty, 0, 1) * x, turn: 1 - clamp(f.waterTurnPenalty, 0, 1) * x };
 }
 
-/** Current movement stats after advantage, engine damage, flooding and crew (oars, sails). */
+/** Current movement stats: ship × equipment × engine damage × flooding × crew (oars, sails). */
 export function motionParams(boat: Boat, t: Tuning): MotionParams {
-  const m = boatTuning(boat, t).movement;
-  const adv = advantageOf(boat.side, t);
+  const m = t.boat.movement;
+  const ss = shipStats(boat, t);
   const engine = engineFactor(boat, t);
   const water = waterFactors(boat, t);
   const sinking = boat.sinkingSince !== null;
   return {
-    cruiseSpeed: m.cruiseSpeed * engine * water.speed * boat.mobility.speed,
-    acceleration: m.acceleration,
+    cruiseSpeed: m.cruiseSpeed * ss.speed * boat.mods.speed * engine * water.speed * boat.mobility.speed,
+    acceleration: m.acceleration * ss.accel,
     drag: sinking ? Math.max(m.drag, 1.5) : m.drag,
-    turnRate: m.turnRate * DEG * Math.sqrt(adv) * engine * water.turn * boat.mobility.turn,
+    turnRate: m.turnRate * ss.turn * boat.mods.turn * DEG * Math.sqrt(boat.advantage) * engine * water.turn * boat.mobility.turn,
     turnAcceleration: m.turnAcceleration * DEG,
     lateralDrag: m.lateralDrag,
     turnSpeedLoss: m.turnSpeedLoss,

@@ -6,12 +6,12 @@
 // the gap, and sword fights as a shared wiggle. Reads world state; never writes it.
 
 import Phaser from 'phaser';
-import { cannonOnline, isWrecked, type Boat } from '../sim/boat';
+import { gunOnline, isWrecked, type Boat } from '../sim/boat';
 import { leeWorldPos } from '../sim/combat';
 import { activity, isWet, type Lee } from '../sim/crew';
 import { clamp, toWorld, type Vec } from '../sim/math';
 import type { World } from '../sim/world';
-import { STATION_ICON } from '../ui/crewArt';
+import { gunIcon, STATION_ICON } from '../ui/crewArt';
 import { leeTextureKey } from './textures';
 
 const FIG_W = 1.25;
@@ -60,11 +60,11 @@ export class CrewView {
     return o;
   }
 
-  private stationIcon(boat: Boat, index: number, kind: string): Phaser.GameObjects.Image {
+  private stationIcon(boat: Boat, index: number, icon: string): Phaser.GameObjects.Image {
     const key = `${boat.id}:${index}`;
     let img = this.stationIcons.get(key);
     if (!img) {
-      img = this.add(this.scene.add.image(0, 0, `icon:${STATION_ICON[kind]}`).setDepth(14).setDisplaySize(1.25, 1.25));
+      img = this.add(this.scene.add.image(0, 0, `icon:${icon}`).setDepth(14).setDisplaySize(1.25, 1.25));
       this.stationIcons.set(key, img);
     }
     return img;
@@ -131,13 +131,13 @@ export class CrewView {
       // Stations: icon in the corner; an empty station is dim with an empty ring where its Lee would stand.
       for (const tile of tiles) {
         if (!tile.station) continue;
-        const img = this.stationIcon(boat, tile.index, tile.station);
+        const img = this.stationIcon(boat, tile.index, tile.station === 'gun' ? gunIcon(tile.fixture?.item) : STATION_ICON[tile.station]);
         const c = W(boat, tile.center);
         const at = S(c, -1.25, 0.95);
         const worker = boat.crew.lees.find((l) => l.alive && l.working && !l.engaged && l.deck === boat && l.task.type === 'station' && l.task.target === tile.index);
-        const cannon = boat.cannons.find((x) => x.station === tile.index);
+        const cannon = boat.guns.find((x) => x.station === tile.index);
         const part = boat.parts[tile.part];
-        const offline = cannon ? !cannonOnline(boat, cannon, t) : isWrecked(part);
+        const offline = cannon ? !gunOnline(boat, cannon, t) : isWrecked(part) || !!tile.fixture?.destroyed;
         img.setVisible(true).setPosition(at.x, at.y).setRotation(facing).setAlpha((worker ? 1 : 0.45) * alpha);
         img.setTint(offline ? COLOR.offline : 0xffffff);
         if (worker) continue;
@@ -269,7 +269,7 @@ export class CrewView {
       let bar: { frac: number; color: number } | null = null;
       if (lee.working && !lee.engaged && deck === lee.boat) {
         if (act === 'gun') {
-          const c = deck.cannons.find((x) => x.station === lee.task.target);
+          const c = deck.guns.find((x) => x.station === lee.task.target);
           if (c) bar = { frac: c.load, color: COLOR.barGun };
         } else if (act === 'repair') {
           const part = deck.parts[lee.task.target];
@@ -294,6 +294,19 @@ export class CrewView {
         if (f > 0) {
           g.fillStyle(bar.color, alpha);
           g.fillPoints(sq(base, x0, y0, x0 + (x1 - x0) * f, y1), true);
+        }
+      }
+      // Level: small pips under the feet (a bigger one per five levels).
+      if (lee.level > 1) {
+        const five = Math.floor((lee.level - 1) / 5);
+        const ones = (lee.level - 1) % 5;
+        const n = five + ones;
+        for (let k = 0; k < n; k++) {
+          const p = S(base, (k - (n - 1) / 2) * 0.32, FIG_H * 0.5 + 0.18 - lift);
+          g.fillStyle(0x000000, 0.7 * alpha);
+          g.fillCircle(p.x, p.y, k < five ? 0.17 : 0.12);
+          g.fillStyle(friend ? 0xffe08a : 0xffa060, alpha);
+          g.fillCircle(p.x, p.y, k < five ? 0.12 : 0.08);
         }
       }
       // HP pip under the bar once hurt.

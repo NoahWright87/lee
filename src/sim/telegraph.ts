@@ -4,7 +4,8 @@
 
 import type { Vec } from './math';
 
-export type TelegraphKind = 'shell';
+/** 'shell' = a red X (scaled by `size` for big splashes); 'area' = a shaded disk of `size` meters (a burst of pellets). */
+export type TelegraphKind = 'shell' | 'area';
 
 export interface Telegraph {
   id: number;
@@ -16,14 +17,16 @@ export interface Telegraph {
   /** Seconds left to linger after impact (render fade-out). */
   linger: number;
   impacted: boolean;
+  /** X size multiplier ('shell') or disk radius in meters ('area'). */
+  size: number;
 }
 
 export class TelegraphSystem {
   readonly list: Telegraph[] = [];
   private nextId = 1;
 
-  add(kind: TelegraphKind, pos: Vec, warnTime: number, linger: number): Telegraph {
-    const t: Telegraph = { id: this.nextId++, kind, pos: { ...pos }, warnTime, elapsed: 0, linger, impacted: false };
+  add(kind: TelegraphKind, pos: Vec, warnTime: number, linger: number, size = 1): Telegraph {
+    const t: Telegraph = { id: this.nextId++, kind, pos: { ...pos }, warnTime, elapsed: 0, linger, impacted: false, size };
     this.list.push(t);
     return t;
   }

@@ -1,56 +1,83 @@
-// Simplified boat stats for a crew placement, as if every Lee were at its home
-// post. The setup screen shows these and previews how a move would change
-// them, so each station's effect is visible before the fight. Uses the same
-// formulas the fight does (reload, mobility, lookout range, repair rates).
+// The boat's stat card (refit screen): computed from a real Boat with its crew
+// aboard, through the same functions the fight uses (motionParams, gunSpec,
+// the crew's station effects), so it can't drift from how the boat behaves.
 
-import type { LeeDef } from '../config/lees';
 import type { Tuning } from '../config/tuning';
-import { advantageOf, boatTuning, type Boat } from './boat';
-import { baseStat, mobilityFactor } from './crew';
+import { gunOnline, gunSpec, motionParams, type Boat } from './boat';
+import { leeStat, workerAt } from './crew';
+import { DEG } from './math';
 
-export interface BoatStats {
-  /** Damage per minute from the manned guns, if they all had a target. */
-  firepower: number;
-  /** Firepower with every gun manned (bar scale). */
-  firepowerMax: number;
-  guns: number;
-  gunsTotal: number;
-  /** Fraction of full speed / turn rate (1 = fully crewed). */
+export interface BoatCard {
+  /** Top speed (m/s) and turn rate (deg/s) with this crew at their posts. */
   speed: number;
-  turning: number;
-  /** Gun range, m, and the most it could be with every lookout manned. */
+  turn: number;
+  /** Total hull HP, armor included. */
+  hullHp: number;
+  /** Seconds from fully wrecked to the sink line (higher = more forgiving). */
+  floodResist: number;
+  /** Longest gun reach, m. */
   range: number;
-  rangeMax: number;
-  /** Damage-control Lees and the HP/s they repair together. */
-  repairers: number;
-  repairRate: number;
-  aboard: number;
+  /** Degrees of the circle at least one gun can fire into. */
+  arcCoverage: number;
+  /** Damage per minute against hulls and against crew from manned guns (if every one had a target). */
+  hullDpm: number;
+  crewDpm: number;
+  guns: number;
+  gunsManned: number;
+  /** Lees aboard, and the ship's limit. */
+  crew: number;
+  crewMax: number;
+  /** HP/s from damage-control Lees at home. */
+  repair: number;
 }
 
-/** Stats for `placement` (home tile per Lee, null = ashore) on `boat`'s grid. */
-export function placementStats(boat: Boat, t: Tuning, placement: (number | null)[], def: LeeDef): BoatStats {
-  const tiles = boat.grid.tiles;
-  const ct = boatTuning(boat, t).cannons;
-  const stat = (k: Parameters<typeof baseStat>[1]) => baseStat(def, k, boat.side, t);
-  const reload = Math.max(0.1, ct.reloadTime / advantageOf(boat.side, t));
-  const perGun = (60 / reload) * ct.damage;
-  const count = (kind: string) => tiles.filter((x) => x.station === kind).length;
-  const placed = placement.filter((p): p is number => p !== null && p >= 0 && p < tiles.length);
-  const on = (kind: string | null) => placed.filter((p) => tiles[p].station === kind).length;
-
-  const guns = on('cannon');
-  const lookouts = count('lookout');
+export function boatCard(b: Boat, t: Tuning): BoatCard {
+  const mp = motionParams(b, t);
+  let hullHp = 0;
+  let cap = 0;
+  let leak = 0;
+  for (const p of b.parts) {
+    for (const l of p.layers) hullHp += l.maxHp;
+    cap += p.capacity;
+    leak += t.boat.flooding.leakRate * p.leakMultiplier;
+  }
+  let range = 0;
+  let hullDpm = 0;
+  let crewDpm = 0;
+  let manned = 0;
+  const bins = new Uint8Array(360);
+  for (const g of b.guns) {
+    if (!gunOnline(b, g, t)) continue;
+    const spec = gunSpec(b, g, t);
+    range = Math.max(range, spec.range);
+    const face = g.face / DEG;
+    const half = spec.arcHalf / DEG;
+    for (let a = Math.floor(face - half); a <= Math.ceil(face + half); a++) {
+      if (Math.abs(a - face) <= half + 1e-6) bins[((a % 360) + 360) % 360] = 1;
+    }
+    const gunner = workerAt(b, g.station);
+    if (!gunner) continue;
+    manned++;
+    const perMin = (60 / spec.reload) * leeStat(gunner, 'loadSpeed', b, t);
+    const shots = g.mode === 'burst' ? spec.pellets : 1;
+    if (g.targets === 'hull') hullDpm += perMin * spec.damage * shots;
+    crewDpm += perMin * spec.crewDamage * shots;
+  }
+  let repair = 0;
+  for (const l of b.crew.lees) if (l.alive && !b.grid.tiles[l.home].station) repair += t.crew.repairRate * leeStat(l, 'repairRate', b, t);
   return {
-    firepower: guns * perGun * stat('loadSpeed'),
-    firepowerMax: count('cannon') * perGun * stat('loadSpeed'),
-    guns,
-    gunsTotal: count('cannon'),
-    speed: mobilityFactor(t.crew.oarBaseline, on('oars') * stat('rowStrength'), count('oars'), t),
-    turning: mobilityFactor(t.crew.sailBaseline, on('sails') * stat('sailHandling'), count('sails'), t),
-    range: ct.range * (1 + Math.max(0, t.crew.lookoutRange) * on('lookout') * stat('spotting')),
-    rangeMax: ct.range * (1 + Math.max(0, t.crew.lookoutRange) * lookouts * stat('spotting')),
-    repairers: on(null),
-    repairRate: on(null) * t.crew.repairRate * stat('repairRate'),
-    aboard: placed.length,
+    speed: mp.cruiseSpeed,
+    turn: mp.turnRate / DEG,
+    hullHp,
+    floodResist: leak > 0 ? (cap * t.boat.flooding.sinkThreshold) / leak : Infinity,
+    range,
+    arcCoverage: bins.reduce((a, x) => a + x, 0),
+    hullDpm,
+    crewDpm,
+    guns: b.guns.length,
+    gunsManned: manned,
+    crew: b.crew.lees.length,
+    crewMax: Math.round(t.ships[b.type]?.crewMax ?? 0),
+    repair,
   };
 }
