@@ -8,6 +8,8 @@ Phase 3 adds close combat: **is it fun to close the distance and fight up close,
 
 Phase 4 turns the test bench into the start of a run: **do ship, crew and equipment choices change how the game is played, and do they feel like choosing a style instead of picking the better number?** ([`docs/PRD_PHASE4.md`](docs/PRD_PHASE4.md))
 
+Phase 5 (next, not built yet) is about operating and reading the game: **can a player with zero naval knowledge understand a fight and steer it with a few taps, without it becoming less of an autobattler?** ([`docs/PRD_PHASE5.md`](docs/PRD_PHASE5.md))
+
 The earlier grid autobattler lives in [`legacy/`](legacy/). It is not part of the build.
 
 ## Run it
