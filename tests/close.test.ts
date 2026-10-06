@@ -269,17 +269,30 @@ describe('ramming', () => {
 });
 
 describe('firing rules', () => {
-  test('nobody shells a deck their own boarders are on; everyone else is fair game', () => {
+  test('nobody shells a boat in close combat with their side, either way; everyone else is fair game', () => {
     const t = quiet(defaultTuning());
     size.standard = 1;
     const { w, e, hold } = alongside(t, [T.starCannon2, [T.midDeck, 'board']], ['standard', 'standard'], [{ x: 80, y: 0 }]);
     run(w, 0.1, hold);
     const other = w.enemies[1];
-    expect(w.gunTargets(w.player)).toContain(e);
-    run(w, 4, hold);
-    expect(w.player.crew.lees.some((l) => l.deck === e || l.swing?.to === e)).toBe(true);
+    expect(w.inContact(e)).toBe(true);
     expect(w.gunTargets(w.player)).not.toContain(e);
     expect(w.gunTargets(w.player)).toContain(other);
+    // Neither the boat alongside you nor its friend further out shells you.
+    expect(w.gunTargets(e)).not.toContain(w.player);
+    expect(w.gunTargets(other)).not.toContain(w.player);
+  });
+
+  test('nobody shells a deck their own boarders are on, even after the boats drift apart', () => {
+    const t = quiet(defaultTuning());
+    size.standard = 1;
+    const { w, e, hold } = alongside(t, [[T.midDeck, 'board']], ['standard']);
+    run(w, 4, hold);
+    expect(w.player.crew.lees.some((l) => l.deck === e)).toBe(true);
+    pin(w, e, { x: 0, y: -200 });
+    run(w, 0.1, () => pin(w, e, { x: 0, y: -200 }));
+    expect(w.inContact(e)).toBe(false);
+    expect(w.gunTargets(w.player)).not.toContain(e);
   });
 });
 

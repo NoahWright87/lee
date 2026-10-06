@@ -154,6 +154,13 @@ export function defaultTuning() {
       spacing: 70,
       /** 0 = pick the side needing the smaller turn at the start, 1 = clockwise, -1 = counter-clockwise. */
       orbitDirection: 0,
+      /**
+       * While you chase it with BOARD or RAM: the most a gun ship bends away from
+       * you, degrees off the bearing (90 = holds its broadside circle, so a boat
+       * no faster than it can catch it, but every gun bears on you the whole way
+       * in; 120 = runs, as it does when you're just too close).
+       */
+      chasedMaxOffset: 120,
     },
     fights: {
       /** Sandbox assist (0 = off): each enemy's HP × (ships in the fight)^-this. Ignored in a run. */

@@ -129,8 +129,12 @@ export function steer(self: Boat, helm: Helm, w: HelmWorld): { cmd: HelmCommand;
     case 'board': {
       const b = w.live(helm.boatId);
       if (!b) return hold();
-      const c = alongsideCommand(m, alongsideSpec(self, b, helm.side, t), motionParams(self, t));
-      return { cmd: { target: c.target, throttle: c.throttle, orbit: false, stopped: false }, helm };
+      // A turning target swings its sides around: once we're clearly beside its
+      // other side, come alongside that one instead of sailing round to the first.
+      const y = toLocal(m, b.motion, b.motion.heading).y;
+      const next = Math.sign(y) !== helm.side && Math.abs(y) > b.layout.beam / 2 ? { ...helm, side: Math.sign(y) } : helm;
+      const c = alongsideCommand(m, alongsideSpec(self, b, next.side, t), motionParams(self, t));
+      return { cmd: { target: c.target, throttle: c.throttle, orbit: false, stopped: false }, helm: next };
     }
     case 'ram': {
       const b = w.live(helm.boatId);

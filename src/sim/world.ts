@@ -499,10 +499,21 @@ export class World {
     };
   }
 
-  /** Opposing boats this boat's guns may fire on: in the fight, and with none of the shooter's own boarders aboard. */
+  /**
+   * Opposing boats this boat's guns may shell: in the fight, not in close
+   * combat with the shooter or one of its allies (you'd hit your own), and
+   * with none of the shooter's own boarders aboard. Gatlings and pistols
+   * pick Lees, not boats, so they still fire across.
+   */
   gunTargets(shooter: Boat): Boat[] {
     const lees = this.allLees();
-    return this.boats.filter((b) => b.side !== shooter.side && !this.isOut(b) && !sideAboard(b, shooter.side, lees));
+    return this.boats.filter(
+      (b) =>
+        b.side !== shooter.side &&
+        !this.isOut(b) &&
+        !this.contacts.touching(b).some((o) => o.side === shooter.side) &&
+        !sideAboard(b, shooter.side, lees),
+    );
   }
 
   private crewContext(b: Boat): CrewContext {
@@ -772,6 +783,15 @@ export class World {
     }
     brain.mode = 'orbit';
     const ai = this.tuning.enemyAI;
+    const look = Math.max(20, ai.lookAhead);
+    // Caught alongside: hold course (circling a boat that's touching you just
+    // spins you both); it gets away only if it's the faster boat.
+    if (this.contacts.between(e, p)) {
+      const seek = { x: e.motion.x + Math.cos(e.motion.heading) * look, y: e.motion.y + Math.sin(e.motion.heading) * look };
+      brain.seek = seek;
+      e.target = seek;
+      return;
+    }
     const bearing = Math.atan2(p.motion.y - e.motion.y, p.motion.x - e.motion.x);
     const d = dist(e.motion, p.motion);
     if (ai.orbitDirection !== 0) brain.orbitDir = Math.sign(ai.orbitDirection);
@@ -782,9 +802,11 @@ export class World {
       brain.orbitDir = cw <= ccw ? 1 : -1;
     }
     // Offset from the bearing: 90° = pure broadside circle; less = close in; more = open out.
-    const offset = Math.min(120, Math.max(30, 90 - (d - brain.range) * ai.rangeCorrection)) * DEG;
+    // Chased by a BOARD/RAM approach, it holds its broadside instead of running.
+    const chased = (this.helm.kind === 'board' || this.helm.kind === 'ram') && this.boardTargetId === e.id;
+    const maxOut = chased ? Math.min(120, Math.max(30, ai.chasedMaxOffset)) : 120;
+    const offset = Math.min(maxOut, Math.max(30, 90 - (d - brain.range) * ai.rangeCorrection)) * DEG;
     const h = bearing - brain.orbitDir * offset;
-    const look = Math.max(20, ai.lookAhead);
     const seek = { x: e.motion.x + Math.cos(h) * look, y: e.motion.y + Math.sin(h) * look };
     // Keep spacing from the rest of the pack.
     for (const o of this.enemies) {
@@ -819,7 +841,8 @@ export class World {
     const p = this.player;
     const hw = this.helmWorld();
     const drive = (helm: Helm) => {
-      const { cmd } = steer(e, helm, hw);
+      const { cmd, helm: next } = steer(e, helm, hw);
+      if (next.kind === 'board') brain.side = next.side;
       brain.seek = cmd.target;
       e.target = cmd.target;
       e.throttle = cmd.throttle;
