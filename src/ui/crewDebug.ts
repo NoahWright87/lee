@@ -49,7 +49,7 @@ export class CrewDebug {
     const boat = w.boats[this.boatIndex];
     const name = boat.side === 'player' ? 'Your crew' : `${boatLabel(boat)} crew`;
     const alive = boat.crew.lees.filter((l) => l.alive).length;
-    const mode = boat.side === 'player' ? (w.alongside ? 'alongside' : '') : w.brains.get(boat.id)?.mode ?? '';
+    const mode = boat.side === 'player' ? w.helm.kind : w.brains.get(boat.id)?.mode ?? '';
     this.head.textContent = `${name} (${alive}/${boat.crew.lees.length})${mode ? ` · ${mode}` : ''} ▸`;
 
     const rows: HTMLElement[] = [];
@@ -58,23 +58,19 @@ export class CrewDebug {
     rows.push(el('div', 'cd-need', `Tags: ${Object.entries(tags).map(([k, v]) => `${tagName(k)} ${v}`).join(' · ') || 'none'}`));
     const items = [...Object.values(boat.build.loadout), ...(boat.build.treasures ?? [])].map((i) => ITEMS[i]?.name ?? i);
     rows.push(el('div', 'cd-need', `${boat.ship.name}: ${items.join(', ') || 'nothing equipped'}`));
-    // Links, and grapple timers in progress.
-    const links = w.links.linksOf(boat).map((l) => {
-      const o = w.links.other(l, boat);
-      const breaking = l.breakAt !== null ? ` · breaking in ${(l.breakAt - w.time).toFixed(1)}s (${l.breakReason})` : '';
-      return `${l.kind} ${w.links.sideOf(l, boat)} ↔ ${boatLabel(o)}${breaking}`;
-    });
-    for (const x of w.links.warnings) {
+    // Close combat, and ram X's in progress.
+    const links = w.contacts.contactsOf(boat).map((c) => `close combat ↔ ${boatLabel(w.contacts.other(c, boat))} (gap ${c.gap.toFixed(1)} m)`);
+    for (const x of w.contacts.warnings) {
       if (x.actorId !== boat.id && x.targetId !== boat.id) continue;
-      links.push(`${x.kind === 'dock' ? 'grapple' : 'ram X'} ${Math.round(x.progress * 100)}% (shown ${x.shownFor.toFixed(1)}s)`);
+      links.push(`ram X ${Math.round(x.progress * 100)}% (shown ${x.shownFor.toFixed(1)}s)`);
     }
-    if (links.length) rows.push(el('div', 'cd-need', `Links: ${links.join(' · ')}`));
+    if (links.length) rows.push(el('div', 'cd-need', `Contact: ${links.join(' · ')}`));
     for (const lee of boat.crew.lees) {
       const r = el('div', `cd-lee${lee.alive ? '' : ' lost'}`);
       const home = boat.grid.tiles[lee.home].label;
       const where = lee.swing ? ` · swinging to ${boatLabel(lee.swing.to)}` : lee.deck !== boat ? ` · on ${boatLabel(lee.deck)}` : '';
       const fight = lee.engaged && lee.meleeTarget !== null ? ` · vs ${w.findLee(lee.meleeTarget)?.lee.side === 'player' ? '' : 'enemy '}#${w.findLee(lee.meleeTarget)?.lee.number ?? '?'}` : '';
-      r.append(el('div', 'cd-line', `#${lee.number} ${lee.alive ? activity(lee, boat) : `LOST (${lee.lostCause})`} · ${Math.round(lee.score)} · hp ${Math.round(lee.hp)} · home ${home}${where}${fight}`));
+      r.append(el('div', 'cd-line', `#${lee.number} ${lee.alive ? activity(lee, boat) : `LOST (${lee.lostCause})`} · ${Math.round(lee.score)} · ${lee.job.toUpperCase()} · hp ${Math.round(lee.hp)} · started ${home}${where}${fight}`));
       r.append(el('div', 'cd-why', lee.reason));
       if (lee.alive) {
         // Stats after every modifier (type, levels, trinkets, treasures, traits, the tile), where they differ from 1.
@@ -88,7 +84,7 @@ export class CrewDebug {
     const needs = el('div', 'cd-needs');
     needs.append(el('div', 'cd-line', 'Needs (base score · tier)'));
     for (const n of [...boat.crew.needs].sort((a, b) => b.base - a.base)) {
-      needs.append(el('div', 'cd-need', `${Math.round(n.base)} ${n.label} · ${n.cannon ? 'per Lee' : n.tier} · ${n.why}`));
+      needs.append(el('div', 'cd-need', `${Math.round(n.base)} ${n.label} · ${n.job} · ${n.cannon ? 'per Lee' : n.tier} · ${n.why}`));
     }
     rows.push(needs);
     this.body.replaceChildren(...rows);

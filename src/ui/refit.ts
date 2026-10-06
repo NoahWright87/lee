@@ -1,92 +1,76 @@
-// The refit screen: the player's home between fights (replaces Phase 2/3's
-// setup mode). The canvas shows your boat from above (ocean) and its deck at
-// touch size (strip); this DOM layer sits on top.
+// The refit screen: one stacked view of your boat between fights.
 //
-//  - Deck: place and move Lees (tap or drag), as before. Each tile says what a
-//    selected Lee would do there and what it changes.
-//  - Parts: the boat's typed slots (edge slots with a facing arrow), shown a
-//    layer at a time (fixtures, rails, floors, hull & treasures), and the cargo
-//    hold. Pick an item to light up the slots it fits (others dim), pick a slot
-//    to see what's in it. The stat card shows before → after.
-//  - Crew: the roster with levels, XP, stats after every modifier, trinkets,
-//    and Release.
-//  - Sandbox (sandbox only): your ship and the encounter you fight.
+//  - The deck (over the close-up strip): every inner tile is a stack, top to
+//    bottom: Lee → station (a gun or station, with its gun attachment) →
+//    floor. Around it, the outer tiles just outside the hull: rail item →
+//    hull module. Treasures sit in their own small row.
+//  - One gesture: tap a tile and its top thing rises and every valid spot
+//    lights up green; tap the same tile again for the next layer down (and
+//    again to let go). Tap a green spot: a ✅ appears there, the stat bars
+//    preview the change (green added, red removed), the moved gun's arc shows
+//    red (now) and green (after), and anything displaced is labeled. Tap the
+//    ✅ (the same spot again) to commit. Moving a lower layer carries what's
+//    above it: a manned cannon brings its Lee.
+//  - Cargo (one hold for parts, Lees ashore, trinkets and treasures) with
+//    tabs; tap an item to light up where it fits, the same preview and ✅.
+//    Select something on the boat and tap the cargo to stow it. Auto-equip
+//    fills empty spots and places Lees ashore, never moving what's placed.
+//  - Five stat bars (Firepower, Toughness, Speed, Boarding, Repair), with the
+//    full numbers behind "Details".
 //
-// Always visible: the boat's stat card (computed from a real boat with this
-// crew), warnings, the next fight, and Launch.
+// The run's first reward must be equipped before Launch.
 
 import { ARCHETYPE_NAMES, ARCHETYPES, ENCOUNTERS, crewCount, type EnemySpec } from '../config/encounters';
-import { CATEGORY_NAMES, ITEMS, type ItemDef } from '../config/items';
-import { LEE_DEFS, STAT_LABELS } from '../config/lees';
+import { CATEGORY_NAMES, ITEMS, type ItemCategory, type ItemDef } from '../config/items';
+import { JOB_INFO, LEE_DEFS, STAT_LABELS } from '../config/lees';
 import { SHIP_ORDER, SHIPS } from '../config/ships';
-import { FACING_ARROW, FACING_NAME, FACINGS, SLOT_TYPES, type Facing, type SlotType } from '../config/slots';
-import { countTags, tagName } from '../config/tags';
+import { FACING_ARROW, type Facing } from '../config/slots';
 import type { Controller } from '../game/Controller';
-import { boatCard, type BoatCard } from '../sim/boatStats';
-import { roleName } from '../sim/crew';
-import type { Tile } from '../sim/grid';
+import { BAR_KEYS, BAR_NAMES, boatBars, boatCard, type BoatBars, type BoatCard } from '../sim/boatStats';
+import { startingJob } from '../sim/crew';
 import { bonusLabel } from '../sim/levels';
-import { buildTags, slotById } from '../sim/loadout';
-import type { Vec } from '../sim/math';
+import { slotById, slotFacing } from '../sim/loadout';
+import { addItem, ashore, buildFor, cargo, encounterSummary, itemOf, setupFor, type CrewMember, type RunState } from '../sim/run';
 import {
-  canEquip,
-  cargo,
-  crewMax,
-  crewMin,
-  crewSpecs,
-  encounterSummary,
-  equip as equipRun,
-  itemOf,
-  runSlots,
-  setupFor,
-  slotType,
-  type CrewMember,
-  type RunState,
-} from '../sim/run';
+  allSpots,
+  applyMove,
+  destinations,
+  itemAt,
+  leeAt,
+  pickedItem,
+  pickedLee,
+  sameDest,
+  sameSpot,
+  slotOf,
+  spotKey,
+  stackAt,
+  type Dest,
+  type Displaced,
+  type Layer,
+  type Pick,
+  type Spot,
+} from '../sim/stack';
 import { World } from '../sim/world';
-import { fullStats, itemCard, itemIcon, levelBadge, memberFigure, tagChips } from './cards';
-import { iconUrl, STATION_ICON, gunIcon } from './crewArt';
+import { fullStats, itemCard, itemIcon, levelBadge, memberFigure } from './cards';
 import { button, confirmAction, el } from './dom';
 
-type Tab = 'deck' | 'parts' | 'crew' | 'sandbox';
-type Layer = 'fixture' | 'rail' | 'floor' | 'hull';
+type Sel = Pick | { from: 'catalog'; item: string };
+type Tab = 'all' | 'lees' | 'guns' | 'stations' | 'deck' | 'hull' | 'trinkets' | 'treasures';
 
-/** What's picked up in the Parts tab: an owned item, or (sandbox) an item from the catalog. */
-type Pick = { uid: number } | { id: string };
+const TABS: [Tab, string][] = [
+  ['all', 'All'],
+  ['lees', 'Lees'],
+  ['guns', 'Guns'],
+  ['stations', 'Stations'],
+  ['deck', 'Deck'],
+  ['hull', 'Hull'],
+  ['trinkets', 'Trinkets'],
+  ['treasures', 'Treasures'],
+];
+const TAB_OF: Record<ItemCategory, Tab> = { gun: 'guns', attachment: 'guns', station: 'stations', floor: 'deck', rail: 'hull', hull: 'hull', trinket: 'trinkets', treasure: 'treasures' };
+const LAYER_NAMES: Record<Layer, string> = { lee: 'Lee', station: 'Station', floor: 'Floor', rail: 'Rail', hull: 'Hull module', treasure: 'Treasure' };
 
-/** Clip a polygon to an axis-aligned rectangle (Sutherland–Hodgman). */
-function clipToRect(poly: readonly Vec[], x0: number, y0: number, x1: number, y1: number): Vec[] {
-  let out = [...poly];
-  const edges: [(p: Vec) => boolean, (a: Vec, b: Vec) => Vec][] = [
-    [(p) => p.x >= x0, (a, b) => ({ x: x0, y: a.y + ((b.y - a.y) * (x0 - a.x)) / (b.x - a.x) })],
-    [(p) => p.x <= x1, (a, b) => ({ x: x1, y: a.y + ((b.y - a.y) * (x1 - a.x)) / (b.x - a.x) })],
-    [(p) => p.y >= y0, (a, b) => ({ x: a.x + ((b.x - a.x) * (y0 - a.y)) / (b.y - a.y), y: y0 })],
-    [(p) => p.y <= y1, (a, b) => ({ x: a.x + ((b.x - a.x) * (y1 - a.y)) / (b.y - a.y), y: y1 })],
-  ];
-  for (const [inside, cross] of edges) {
-    const input = out;
-    out = [];
-    for (let i = 0; i < input.length; i++) {
-      const a = input[(i + input.length - 1) % input.length];
-      const b = input[i];
-      if (inside(b)) {
-        if (!inside(a)) out.push(cross(a, b));
-        out.push(b);
-      } else if (inside(a)) out.push(cross(a, b));
-    }
-  }
-  return out;
-}
-
-const LAYER_TYPES: Record<Layer, SlotType[]> = { fixture: ['edge', 'interior', 'attachment'], rail: ['rail'], floor: ['floor'], hull: ['hull', 'treasure'] };
-const LAYER_NAMES: Record<Layer, string> = { fixture: 'Guns & stations', rail: 'Rails', floor: 'Floors', hull: 'Hull & treasures' };
-
-function layerOf(type: SlotType): Layer | null {
-  for (const [k, v] of Object.entries(LAYER_TYPES)) if (v.includes(type)) return k as Layer;
-  return null;
-}
-
-/** Card rows: [label, value, format, higher is better]. */
+/** Card rows behind "Details": [label, value, format]. */
 const CARD_ROWS: [string, (c: BoatCard) => number, (v: number, c: BoatCard) => string][] = [
   ['Speed', (c) => c.speed, (v) => `${v.toFixed(1)} m/s`],
   ['Turning', (c) => c.turn, (v) => `${v.toFixed(1)}°/s`],
@@ -100,56 +84,69 @@ const CARD_ROWS: [string, (c: BoatCard) => number, (v: number, c: BoatCard) => s
   ['Crew', (c) => c.crew, (v, c) => `${v}/${c.crewMax}`],
 ];
 
+interface Preview {
+  dest: Dest;
+  run: RunState;
+  displaced: Displaced[];
+  bars: BoatBars;
+  card: BoatCard;
+}
+
+function isTrinketSel(run: RunState, s: Sel | null): boolean {
+  if (!s) return false;
+  if (s.from === 'catalog') return ITEMS[s.item]?.category === 'trinket';
+  return pickedItem(run, s)?.category === 'trinket';
+}
+
 export class RefitPanel {
-  /** Deck grid + lower panel (over the strip). */
+  /** Deck cells, cargo and buttons (over the strip). */
   readonly root: HTMLDivElement;
-  /** Tabs, stat card, warnings (over the ocean). */
+  /** Next fight, stat bars, warnings (over the ocean). */
   readonly top: HTMLDivElement;
-  /** Info card (over the bottom of the ocean). */
+  /** What's selected (over the bottom of the ocean). */
   readonly card: HTMLDivElement;
   private ctl: Controller;
   private toast: (text: string) => void;
   private gridEl: HTMLDivElement;
-  private tileEls: HTMLDivElement[] = [];
-  private below: HTMLDivElement;
+  private cells = new Map<string, { el: HTMLDivElement; spot: Spot }>();
+  private treasureRow: HTMLDivElement;
+  private cargoEl: HTMLDivElement;
   private bar: HTMLDivElement;
-  private tab: Tab = 'deck';
-  private layer: Layer = 'fixture';
-  /** Deck tab: selected crew member (uid). */
-  private selLee: number | null = null;
-  /** Parts tab: selected slot and/or picked item. */
-  private selSlot: string | null = null;
-  private pick: Pick | null = null;
-  /** Crew tab: selected member, and which of its trinket slots (if any). */
-  private selMember: number | null = null;
-  private selTrinket: number | null = null;
-  /** Lees whose station a refit removed (flagged until the next launch). */
-  private displaced = new Set<number>();
-  private drag: { uid: number; x: number; y: number; id: number; ghost: HTMLDivElement | null; from: HTMLElement; over: number | null } | null = null;
-  private suppressClick = false;
+  private sandboxEl: HTMLDivElement;
+  private sel: Sel | null = null;
+  private preview: Preview | null = null;
+  private tab: Tab = 'all';
+  private details = false;
+  private sandboxOpen = false;
   private builtFor: unknown = null;
   private lastSig = '';
-  private preview: BoatCard | null = null;
+  private now: { bars: BoatBars; card: BoatCard } | null = null;
+  private nowFor = '';
+  private barsEl = el('div', 'rf-bars');
+  private barRows = new Map<keyof BoatBars, { fill: HTMLDivElement; delta: HTMLDivElement }>();
 
   constructor(ctl: Controller, toast: (text: string) => void) {
     this.ctl = ctl;
     this.toast = toast;
-    this.root = el('div', 'setup hidden');
-    this.gridEl = el('div', 'setup-grid');
-    this.below = el('div', 'setup-below');
-    this.bar = el('div', 'setup-bar');
-    this.root.append(this.gridEl, this.below, this.bar);
+    this.root = el('div', 'setup rf hidden');
+    this.gridEl = el('div', 'rf-grid');
+    this.treasureRow = el('div', 'rf-treasures');
+    this.cargoEl = el('div', 'rf-cargo');
+    this.bar = el('div', 'setup-bar rf-bar');
+    this.sandboxEl = el('div', 'rf-sandbox hidden');
+    this.root.append(this.gridEl, this.treasureRow, this.cargoEl, this.bar, this.sandboxEl);
     this.top = el('div', 'refit-top hidden');
-    this.card = el('div', 'lee-card hidden');
+    this.card = el('div', 'lee-card rf-card hidden');
+    // Tapping the cargo hold with something on the boat selected stows it.
+    this.cargoEl.onclick = (e) => {
+      if ((e.target as HTMLElement).closest('.chip, .tab, .hud-btn')) return;
+      this.stowSelected();
+    };
     ctl.onChange(() => this.render());
   }
 
   private get run(): RunState | null {
     return this.ctl.active;
-  }
-
-  private get tiles(): Tile[] {
-    return this.ctl.world.player.grid.tiles;
   }
 
   private get on(): boolean {
@@ -158,133 +155,426 @@ export class RefitPanel {
 
   // ------------------------------------------------------------ per frame
 
-  /** Per frame: show/hide and keep the grid glued to the boat. */
+  /** Per frame: show/hide, keep the cells glued to the boat, keep the cargo below it. */
   frame(): void {
     const on = this.on;
     this.root.classList.toggle('hidden', !on);
     this.top.classList.toggle('hidden', !on);
     if (!on) {
       this.card.classList.add('hidden');
+      if (this.sel || this.preview) this.clearSel();
       return;
     }
-    if (this.builtFor !== this.ctl.world.player.grid) this.buildTiles();
+    const run = this.run!;
+    if (this.builtFor !== run.ship + this.ctl.runId) this.buildCells();
     const proj = this.ctl.stripProjection;
     if (!proj) return;
+    const g = SHIPS[run.ship].layout.grid;
+    const tw = g.tileW;
+    const th = g.tileH;
     let bottom = 0;
-    this.tiles.forEach((t, i) => {
-      const a = proj.toCss({ x: t.x0, y: t.y0 });
-      const b = proj.toCss({ x: t.x1, y: t.y1 });
-      const x = Math.min(a.x, b.x);
-      const y = Math.min(a.y, b.y);
-      const s = this.tileEls[i].style;
-      s.left = `${x}px`;
-      s.top = `${y}px`;
+    for (const { el: d, spot } of this.cells.values()) {
+      if (spot.kind === 'treasure') continue;
+      let lx = g.origin.x + spot.col * tw;
+      let ly = g.origin.y + spot.row * th;
+      if (spot.kind === 'edge') {
+        if (spot.facing === 'port') ly -= th;
+        if (spot.facing === 'starboard') ly += th;
+        if (spot.facing === 'bow') lx += tw;
+        if (spot.facing === 'stern') lx -= tw;
+      }
+      const a = proj.toCss({ x: lx, y: ly });
+      const b = proj.toCss({ x: lx + tw, y: ly + th });
+      const s = d.style;
+      s.left = `${Math.min(a.x, b.x)}px`;
+      s.top = `${Math.min(a.y, b.y)}px`;
       s.width = `${Math.abs(b.x - a.x)}px`;
       s.height = `${Math.abs(b.y - a.y)}px`;
       bottom = Math.max(bottom, Math.max(a.y, b.y));
-    });
-    const hull = proj.toCss({ x: 0, y: this.ctl.world.player.layout.beam / 2 }).y;
-    const below = this.tab === 'crew' || this.tab === 'sandbox' ? proj.top + 6 : Math.max(bottom, hull) + 10;
-    this.below.style.top = `${below}px`;
-    this.gridEl.classList.toggle('hidden', this.tab === 'crew' || this.tab === 'sandbox');
-    if (!this.drag) this.render(true);
+    }
+    this.treasureRow.style.top = `${bottom + 4}px`;
+    this.cargoEl.style.top = `${bottom + 4 + (this.treasureRow.childElementCount ? 40 : 0)}px`;
+    this.render(true);
   }
 
-  private buildTiles(): void {
-    const boat = this.ctl.world.player;
-    this.builtFor = boat.grid;
+  private buildCells(): void {
+    const run = this.run!;
+    this.builtFor = run.ship + this.ctl.runId;
     this.gridEl.replaceChildren();
-    this.tileEls = this.tiles.map((t) => {
-      const d = el('div', 'tile');
-      const face = el('div', 'tile-face');
-      const part = boat.layout.parts[t.part];
-      const clip = clipToRect(part.polygon, t.x0, t.y0, t.x1, t.y1);
-      const w = t.x1 - t.x0;
-      const h = t.y1 - t.y0;
-      face.style.clipPath = `polygon(${clip.map((p) => `${(((p.x - t.x0) / w) * 100).toFixed(1)}% ${(((p.y - t.y0) / h) * 100).toFixed(1)}%`).join(', ')})`;
-      d.append(face);
-      d.onclick = () => this.tapTile(t.index);
+    this.cells.clear();
+    for (const spot of allSpots(run, this.ctl.tuning)) {
+      if (spot.kind === 'treasure') continue;
+      const d = el('div', 'rf-cell');
+      d.onclick = (e) => {
+        e.stopPropagation();
+        this.tapSpot(spot);
+      };
       this.gridEl.append(d);
-      return d;
-    });
+      this.cells.set(spotKey(spot), { el: d, spot });
+    }
     this.lastSig = '';
+  }
+
+  // ------------------------------------------------------------ selection
+
+  private clearSel(): void {
+    this.sel = null;
+    this.preview = null;
+    this.ctl.arcPreview = null;
+    this.lastSig = '';
+  }
+
+  private select(s: Sel | null): void {
+    this.sel = s;
+    this.preview = null;
+    this.lastSig = '';
+    this.updateArcs();
+    this.render();
+  }
+
+  /** Where a selection can go (a catalog item: as if it were in cargo). */
+  private destsFor(run: RunState, s: Sel): Dest[] {
+    if (s.from !== 'catalog') return destinations(run, s, this.ctl.tuning);
+    const copy = structuredClone(run);
+    const inst = addItem(copy, s.item);
+    return destinations(copy, { from: 'cargo', uid: inst.uid }, this.ctl.tuning);
+  }
+
+  private tapSpot(spot: Spot): void {
+    const run = this.run!;
+    // ✅: tapping the previewed spot again commits.
+    if (this.preview && 'spot' in this.preview.dest && sameSpot(this.preview.dest.spot, spot)) {
+      this.commit();
+      return;
+    }
+    if (this.sel) {
+      const lee = leeAt(run, spot);
+      const d: Dest = isTrinketSel(run, this.sel) && lee ? { member: lee.uid } : { spot };
+      if (this.preview && sameDest(this.preview.dest, d)) {
+        this.commit();
+        return;
+      }
+      if (this.destsFor(run, this.sel).some((x) => sameDest(x, d))) {
+        this.makePreview(d);
+        return;
+      }
+      // The same tile again: the next layer down, then let go.
+      if (this.sel.from === 'boat' && sameSpot(this.sel.spot, spot)) {
+        const stack = stackAt(run, spot);
+        const i = stack.indexOf(this.sel.layer);
+        this.select(i >= 0 && i + 1 < stack.length ? { from: 'boat', spot, layer: stack[i + 1] } : null);
+        return;
+      }
+    }
+    const stack = stackAt(run, spot);
+    this.select(stack.length ? { from: 'boat', spot, layer: stack[0] } : null);
+  }
+
+  /** Tap something in cargo: select it (or, with a trinket picked, preview it on that Lee ashore). */
+  private tapChip(s: Sel): void {
+    const run = this.run!;
+    if (s.from === 'ashore' && this.sel && isTrinketSel(run, this.sel)) {
+      const d: Dest = { member: s.member };
+      if (this.preview && sameDest(this.preview.dest, d)) {
+        this.commit();
+        return;
+      }
+      if (this.destsFor(run, this.sel).some((x) => sameDest(x, d))) {
+        this.makePreview(d);
+        return;
+      }
+    }
+    const same = !!this.sel && JSON.stringify(this.sel) === JSON.stringify(s);
+    this.select(same ? null : s);
+  }
+
+  /** With something on the boat (or a worn trinket) selected: put it in cargo. */
+  private stowSelected(): void {
+    const s = this.sel;
+    if (!s || (s.from !== 'boat' && s.from !== 'worn')) return;
+    this.clearSel();
+    this.ctl.stow(s);
+  }
+
+  /** Preview a move: the same code as the commit, on a copy of the run. */
+  private makePreview(dest: Dest): void {
+    const ctl = this.ctl;
+    const copy = structuredClone(this.run!);
+    const s = this.sel!;
+    const pick: Pick = s.from === 'catalog' ? { from: 'cargo', uid: addItem(copy, s.item).uid } : s;
+    const displaced = applyMove(copy, pick, dest, ctl.tuning);
+    const w = new World(ctl.tuning, 1, { player: setupFor(copy, ctl.tuning), enemies: [], assists: ctl.mode === 'sandbox' });
+    this.preview = { dest, run: copy, displaced, bars: boatBars(w.player, ctl.tuning), card: boatCard(w.player, ctl.tuning) };
+    this.updateArcs(w);
+    this.lastSig = '';
+    this.render();
+  }
+
+  private commit(): void {
+    const s = this.sel;
+    const p = this.preview;
+    if (!s || !p) return;
+    this.clearSel();
+    const out = this.ctl.move(s.from === 'catalog' ? { from: 'catalog', item: s.item } : s, p.dest);
+    const note = out.filter((d) => d.to !== 'swap').map((d) => `${d.name} → ${d.to}`);
+    if (note.length) this.toast(note.join(' · '));
+  }
+
+  /** Gun arcs on the ocean: the selected gun's (red while previewing a move), the previewed one in green. */
+  private updateArcs(previewWorld?: World): void {
+    const run = this.run;
+    const s = this.sel;
+    if (!run || !s) {
+      this.ctl.arcPreview = null;
+      return;
+    }
+    const gunSlot = (r: RunState, spot: Spot) => {
+      const slot = slotOf(spot, 'station');
+      return slot && itemOf(r, r.loadout[slot])?.category === 'gun' ? slot : null;
+    };
+    const oldSlot = s.from === 'boat' && s.spot.kind === 'tile' && s.layer !== 'lee' ? gunSlot(run, s.spot) : null;
+    const p = this.preview;
+    const moved = s.from === 'catalog' ? ITEMS[s.item] : pickedItem(run, s);
+    const carriesGun = moved?.category === 'gun' || moved?.category === 'attachment' || (s.from === 'boat' && s.layer === 'floor' && !!oldSlot);
+    const newSlot = p && previewWorld && carriesGun && 'spot' in p.dest && p.dest.spot.kind === 'tile' ? gunSlot(p.run, p.dest.spot) : null;
+    this.ctl.arcPreview = { oldSlot, newSlot, boat: newSlot && previewWorld ? previewWorld.player : null };
   }
 
   // ------------------------------------------------------------ render
 
   private render(cheap = false): void {
-    if (this.drag || !this.on) return;
+    if (!this.on) return;
     const run = this.run!;
-    const sig = JSON.stringify([run.loadout, run.facings, run.crew.map((m) => [m.uid, m.home, m.trinkets, m.level]), run.items.length, this.tab, this.layer, this.selLee, this.selSlot, this.pick, this.selMember, this.selTrinket, this.tileEls.length, this.ctl.runId, this.ctl.sandbox?.enemies]);
+    const sig = JSON.stringify([run.loadout, run.facings, run.crew.map((m) => [m.uid, m.home, m.trinkets, m.level]), run.items.length, run.mustPlace, this.sel, this.preview?.dest, this.tab, this.details, this.sandboxOpen, this.ctl.runId, this.ctl.sandbox?.enemies]);
     if (cheap && sig === this.lastSig) return;
     this.lastSig = sig;
-    this.preview = this.computePreview();
-    this.renderTop();
-    this.renderTiles();
-    this.renderBelow();
-    this.renderBar();
-    this.renderCard();
+    const nowKey = JSON.stringify([run.loadout, run.facings, run.crew.map((m) => [m.uid, m.home, m.trinkets, m.level, m.job]), this.ctl.runId]);
+    if (!this.now || this.nowFor !== nowKey) {
+      const w = this.ctl.world;
+      this.now = { bars: boatBars(w.player, this.ctl.tuning), card: boatCard(w.player, this.ctl.tuning) };
+      this.nowFor = nowKey;
+    }
+    const dests = this.sel ? this.destsFor(run, this.sel) : [];
+    this.renderCells(run, dests);
+    this.renderTreasures(run, dests);
+    this.renderCargo(run);
+    this.renderTop(run);
+    this.renderCard(run);
+    this.renderBar(run);
+    this.renderSandbox();
   }
 
-  /** The tab bar, the stat card (with a before → after preview), warnings, the next fight. */
-  private renderTop(): void {
-    const ctl = this.ctl;
-    const run = this.run!;
-    const tabs = el('div', 'tabs');
-    const names: [Tab, string][] = [['deck', 'Deck'], ['parts', 'Parts'], ['crew', 'Crew']];
-    if (ctl.mode === 'sandbox') names.push(['sandbox', 'Sandbox']);
-    for (const [k, label] of names) {
-      const b = button(label, `tab${this.tab === k ? ' on' : ''}`, () => this.setTab(k));
-      tabs.append(b);
+  private renderCells(run: RunState, dests: Dest[]): void {
+    const build = buildFor(run);
+    const ship = SHIPS[run.ship];
+    const trinket = isTrinketSel(run, this.sel);
+    const selSpot = this.sel?.from === 'boat' ? this.sel.spot : null;
+    const selLayer = this.sel?.from === 'boat' ? this.sel.layer : null;
+    const pv = this.preview && 'spot' in this.preview.dest ? this.preview.dest.spot : null;
+    const pvMember = this.preview && 'member' in this.preview.dest ? this.preview.dest.member : null;
+    for (const { el: d, spot } of this.cells.values()) {
+      d.replaceChildren(el('div', 'rf-face'));
+      const mine = !!selSpot && sameSpot(selSpot, spot);
+      const lee = leeAt(run, spot);
+      const valid = trinket ? !!lee && dests.some((x) => 'member' in x && x.member === lee.uid) : dests.some((x) => 'spot' in x && sameSpot(x.spot, spot));
+      const previewHere = (!!pv && sameSpot(pv, spot)) || (pvMember !== null && lee?.uid === pvMember);
+      const kind = spot.kind === 'edge' ? `outer edge-${spot.facing}` : 'inner';
+      d.className = `rf-cell ${kind}${valid ? ' valid' : ''}${mine ? ' mine' : ''}${previewHere ? ' preview' : ''}${this.sel && !valid && !mine && !previewHere ? ' dim' : ''}`;
+      const raised = (layer: Layer) => (mine && selLayer === layer ? ' raised' : '');
+      if (spot.kind === 'tile') {
+        const floor = itemOf(run, itemAt(run, spot, 'floor'));
+        if (floor) d.append(itemIcon(floor, `rf-floor${raised('floor')}`));
+        const st = itemOf(run, itemAt(run, spot, 'station'));
+        if (st) {
+          const wrap = el('div', `rf-station${raised('station')}`);
+          wrap.append(itemIcon(st, 'rf-icon'));
+          const slotId = slotOf(spot, 'station')!;
+          if (st.category === 'gun') {
+            const slot = slotById(ship, slotId);
+            if (slot) wrap.append(el('span', 'rf-arrow', FACING_ARROW[slotFacing(build, slot)]));
+            const att = itemOf(run, run.loadout[`att:${slotId}`]);
+            if (att) wrap.append(itemIcon(att, 'rf-att'));
+          }
+          d.append(wrap);
+        }
+        if (lee) d.append(this.token(lee, raised('lee')));
+      } else if (spot.kind === 'edge') {
+        const hull = itemOf(run, itemAt(run, spot, 'hull'));
+        if (hull) d.append(itemIcon(hull, `rf-hull${raised('hull')}`));
+        const rail = itemOf(run, itemAt(run, spot, 'rail'));
+        if (rail) d.append(itemIcon(rail, `rf-rail${raised('rail')}`));
+      }
+      if (previewHere) {
+        const ok = el('button', 'rf-ok', '✅');
+        ok.onclick = (e) => {
+          e.stopPropagation();
+          this.commit();
+        };
+        d.append(ok);
+        const labels = this.preview!.displaced.filter((x) => x.to !== 'swap').map((x) => `${x.name} → ${x.to}`);
+        if (labels.length) d.append(el('div', 'rf-displaced', labels.join('\n')));
+      }
     }
-    const now = boatCard(ctl.world.player, ctl.tuning);
-    const next = this.preview;
-    // With an info card open, only the rows that would change (room for the boat and its arcs).
-    const compact = this.cardOpen();
-    const stats = el('div', `stat-card${compact ? ' compact' : ''}`);
-    for (const [name, get, fmt] of CARD_ROWS) {
-      const a = get(now);
-      const changes = !!next && Math.abs(get(next) - a) > 1e-6;
-      if (compact && !changes) continue;
-      const row = el('div', 'sc-row');
-      row.append(el('span', 'sc-k', name));
-      if (next && Math.abs(get(next) - a) > 1e-6) {
-        const b = get(next);
-        const better = name === 'Crew' ? 0 : b > a ? 1 : -1;
-        row.classList.add(better > 0 ? 'up' : better < 0 ? 'down' : 'same');
-        row.append(el('span', 'sc-v', `${fmt(a, now)} → ${fmt(b, next)}`));
-      } else row.append(el('span', 'sc-v', fmt(a, now)));
-      stats.append(row);
-    }
-    if (compact && !stats.childElementCount) stats.classList.add('hidden');
-    const warn = el('div', 'warnings');
-    if (!compact) for (const w of this.warnings()) warn.append(el('div', 'warning', w));
-    const nextFight = el('div', 'next-fight', ctl.mode === 'sandbox' ? `Sandbox · ${this.sandboxSummary()}` : `Fight ${run.fight} · ${encounterSummary(run, ctl.tuning)}`);
-    this.top.replaceChildren(tabs, nextFight, stats, warn);
   }
 
-  /** Non-blocking warnings. */
-  private warnings(): string[] {
+  private token(m: CrewMember, raised: string): HTMLDivElement {
+    const t = el('div', `rf-lee${raised}`);
+    t.append(memberFigure(m.type, ''));
+    if (m.level > 1) t.append(el('span', 'lv', `${m.level}`));
+    if (m.trinkets.some((x) => x !== null)) t.append(el('span', 'rf-trinket-dot', '✧'));
+    t.title = m.label;
+    return t;
+  }
+
+  private renderTreasures(run: RunState, dests: Dest[]): void {
+    const row = this.treasureRow;
+    row.replaceChildren();
+    const spots = allSpots(run, this.ctl.tuning).filter((s): s is Extract<Spot, { kind: 'treasure' }> => s.kind === 'treasure');
+    if (!spots.length) return;
+    row.append(el('span', 'rf-row-label', 'Treasures'));
+    for (const spot of spots) {
+      const def = itemOf(run, itemAt(run, spot, 'treasure'));
+      const mine = this.sel?.from === 'boat' && sameSpot(this.sel.spot, spot);
+      const valid = dests.some((x) => 'spot' in x && sameSpot(x.spot, spot));
+      const pv = !!this.preview && 'spot' in this.preview.dest && sameSpot(this.preview.dest.spot, spot);
+      const c = button('', `rf-treasure${valid ? ' valid' : ''}${mine ? ' mine' : ''}${pv ? ' preview' : ''}`, () => this.tapSpot(spot));
+      c.append(def ? itemIcon(def) : el('span', 'slot-glyph', '✦'));
+      if (pv) c.append(el('span', 'rf-ok-small', '✅'));
+      row.append(c);
+    }
+  }
+
+  private renderCargo(run: RunState): void {
+    const box = this.cargoEl;
+    box.replaceChildren();
     const ctl = this.ctl;
-    const run = this.run!;
+    const sandbox = ctl.mode === 'sandbox';
+    const tabs = el('div', 'rf-tabs');
+    for (const [k, label] of TABS) {
+      tabs.append(
+        button(label, `tab${this.tab === k ? ' on' : ''}`, () => {
+          this.tab = k;
+          this.lastSig = '';
+          this.render();
+        }),
+      );
+    }
+    const head = el('div', 'rf-cargo-head');
+    const boatSel = !!this.sel && (this.sel.from === 'boat' || this.sel.from === 'worn');
+    head.append(
+      el('span', 'cargo-head', boatSel ? '⬇ Tap the cargo to stow it' : sandbox ? 'Catalog (sandbox: unlimited)' : `Cargo · ${cargo(run).length} items · ${ashore(run).length} ashore`),
+      button('Auto-equip', 'hud-btn', () => {
+        this.clearSel();
+        ctl.autoEquip();
+      }),
+    );
+    box.classList.toggle('stow', boatSel);
+    const list = el('div', 'cargo rf-list');
+    const must = run.mustPlace;
+    const chip = (s: Sel, icon: HTMLElement, label: string, mustGlow: boolean) => {
+      const on = !!this.sel && JSON.stringify(this.sel) === JSON.stringify(s);
+      const trinketDest = s.from === 'ashore' && isTrinketSel(run, this.sel);
+      const pv = s.from === 'ashore' && !!this.preview && 'member' in this.preview.dest && this.preview.dest.member === s.member;
+      const c = button('', `chip${on ? ' on' : ''}${mustGlow ? ' must' : ''}${trinketDest ? ' fits' : ''}`, () => this.tapChip(s));
+      c.append(icon, el('span', '', label));
+      if (pv) c.append(el('span', 'rf-ok-small', '✅'));
+      list.append(c);
+    };
+    if (this.tab === 'all' || this.tab === 'lees') {
+      for (const m of ashore(run)) chip({ from: 'ashore', member: m.uid }, memberFigure(m.type, 'chip-figure'), `${m.label}${m.level > 1 ? ` · Lv ${m.level}` : ''}`, must?.kind === 'lee' && must.uid === m.uid);
+    }
+    const show = (d: ItemDef) => this.tab === 'all' || TAB_OF[d.category] === this.tab;
+    if (sandbox) {
+      let last = '';
+      for (const d of Object.values(ITEMS)) {
+        if (!show(d)) continue;
+        if (d.category !== last) {
+          last = d.category;
+          list.append(el('div', 'cargo-cat', CATEGORY_NAMES[d.category]));
+        }
+        chip({ from: 'catalog', item: d.id }, itemIcon(d), d.name, false);
+      }
+    } else {
+      for (const inst of cargo(run)) {
+        const d = ITEMS[inst.item];
+        if (!d || !show(d)) continue;
+        chip({ from: 'cargo', uid: inst.uid }, itemIcon(d), d.name, must?.kind === 'item' && must.uid === inst.uid);
+      }
+    }
+    if (!list.childElementCount) list.append(el('span', 'tray-empty', this.tab === 'all' ? 'Cargo is empty: rewards after a fight land here.' : 'Nothing here.'));
+    box.append(tabs, head, list);
+  }
+
+  /** Next fight, the five stat bars (with the preview), details, warnings. */
+  private renderTop(run: RunState): void {
+    const ctl = this.ctl;
     const t = ctl.tuning;
-    const boat = ctl.world.player;
+    const now = this.now!;
+    const next = this.preview;
+    const nextFight = el('div', 'next-fight', ctl.mode === 'sandbox' ? `Sandbox · ${this.sandboxSummary()}` : `Fight ${run.fight} · ${encounterSummary(run, t)}`);
+    // The bars are the same elements from render to render, so changes animate.
+    const bars = this.barsEl;
+    const full: Record<keyof BoatBars, number> = { firepower: t.refit.barFirepower, toughness: t.refit.barToughness, speed: t.refit.barSpeed, boarding: t.refit.barBoarding, repair: t.refit.barRepair };
+    const dur = `${Math.max(0, t.refit.barAnimTime)}s`;
+    // Bars can overflow a little past "full" (to 120%).
+    const w = (v: number) => `${(Math.min(1.2, Math.max(0, v)) / 1.2) * 100}%`;
+    for (const k of BAR_KEYS) {
+      let row = this.barRows.get(k);
+      if (!row) {
+        const r = el('div', 'rf-bar-row');
+        const track = el('div', 'rf-track');
+        const fill = el('div', 'rf-fill');
+        const delta = el('div', 'rf-delta');
+        track.append(fill, delta, el('div', 'rf-full'));
+        r.append(el('span', 'rf-bar-k', BAR_NAMES[k]), track);
+        bars.append(r);
+        row = { fill, delta };
+        this.barRows.set(k, row);
+      }
+      const a = now.bars[k] / Math.max(1e-6, full[k]);
+      const b = next ? next.bars[k] / Math.max(1e-6, full[k]) : a;
+      row.delta.className = `rf-delta ${b > a ? 'add' : 'remove'}`;
+      row.fill.style.transitionDuration = dur;
+      row.delta.style.transitionDuration = dur;
+      row.fill.style.width = w(Math.min(a, b));
+      row.delta.style.left = w(Math.min(a, b));
+      row.delta.style.width = `calc(${w(Math.max(a, b))} - ${w(Math.min(a, b))})`;
+    }
+    const toggle = button(this.details ? 'Hide details' : 'Details', 'rf-details-btn', () => {
+      this.details = !this.details;
+      this.lastSig = '';
+      this.render();
+    });
+    const out: HTMLElement[] = [nextFight, bars, toggle];
+    if (this.details) {
+      const stats = el('div', 'stat-card');
+      for (const [name, get, fmt] of CARD_ROWS) {
+        const a = get(now.card);
+        const row = el('div', 'sc-row');
+        row.append(el('span', 'sc-k', name));
+        if (next && Math.abs(get(next.card) - a) > 1e-6) {
+          const b = get(next.card);
+          row.classList.add(name === 'Crew' ? 'same' : b > a ? 'up' : 'down');
+          row.append(el('span', 'sc-v', `${fmt(a, now.card)} → ${fmt(b, next.card)}`));
+        } else row.append(el('span', 'sc-v', fmt(a, now.card)));
+        stats.append(row);
+      }
+      out.push(stats);
+    }
+    const warn = el('div', 'warnings');
+    for (const x of this.warnings(run)) warn.append(el('div', 'warning', x));
+    out.push(warn);
+    this.top.replaceChildren(...out);
+  }
+
+  private warnings(run: RunState): string[] {
+    const ctl = this.ctl;
     const out: string[] = [];
-    const hullGuns = boat.guns.filter((g) => g.targets === 'hull');
-    if (boat.guns.length && !boat.guns.some((g) => boat.crew.lees.some((l) => l.home === g.station))) out.push('No gunner on any gun: your guns won’t fire until someone mans one.');
-    else if (!hullGuns.length && !boat.guns.length) out.push('No guns at all.');
-    for (const uid of this.displaced) {
-      const m = run.crew.find((x) => x.uid === uid);
-      if (m) out.push(`${m.label}'s station was removed: now damage control.`);
-    }
-    if (ctl.mode === 'run' && run.crew.length < crewMin(run, t)) out.push(`Short-handed: ${run.crew.length} of the ${SHIPS[run.ship].name}'s usual ${crewMin(run, t)}.`);
-    const ashore = run.crew.filter((m) => m.home === null).length;
-    if (ashore) out.push(`${ashore} Lee${ashore === 1 ? '' : 's'} ashore (not placed).`);
-    const spareGun = cargo(run).find((c) => ITEMS[c.item]?.category === 'gun');
-    if (spareGun) {
-      const empty = runSlots(run, t).find((s) => run.loadout[s.id] === undefined && canEquip(run, spareGun.uid, s.id));
-      if (empty) out.push(`An empty slot could take the ${ITEMS[spareGun.item].name} in your cargo.`);
-    }
+    if (ctl.mustPlace()) out.push(run.mustPlace?.kind === 'lee' ? 'Place your new recruit before the next fight: tap them in cargo, then a green tile.' : 'Equip your reward before the next fight: tap it in cargo, then a green spot.');
+    const boat = ctl.world.player;
+    if (boat.guns.length && !boat.crew.lees.some((l) => l.job === 'fire')) out.push('Nobody starts on the guns: they won’t fire until you send someone (🔫).');
+    const n = ashore(run).length;
+    if (n && !ctl.mustPlace()) out.push(`${n} Lee${n === 1 ? '' : 's'} ashore (in cargo).`);
     return out;
   }
 
@@ -294,549 +584,128 @@ export class RefitPanel {
     return e.map((s) => `${SHIPS[s.ship]?.name ?? s.ship} (${crewCount(s)} Lees)`).join(' + ');
   }
 
-  private setTab(tab: Tab): void {
-    this.tab = tab;
-    this.selLee = null;
-    this.selSlot = null;
-    this.pick = null;
-    this.selTrinket = null;
-    if (tab !== 'crew') this.selMember = null;
-    this.ctl.arcPreview = null;
-    this.lastSig = '';
-    this.render();
-  }
+  // ------------------------------------------------------------ the selection card
 
-  // ------------------------------------------------------------ tiles
-
-  private renderTiles(): void {
-    const run = this.run!;
-    this.tileEls.forEach((d, i) => {
-      for (const c of [...d.querySelectorAll('.token, .slot-mark, .tile-label, .tile-icon')]) c.remove();
-      d.className = 'tile';
-      const tile = this.tiles[i];
-      if (this.tab === 'deck') {
-        if (tile.station) {
-          d.classList.add('station');
-          const icon = el('img', 'tile-icon');
-          icon.src = iconUrl((tile.station === 'gun' ? gunIcon(tile.fixture?.item) : STATION_ICON[tile.station]) as never);
-          icon.draggable = false;
-          d.append(icon);
-        }
-        const m = run.crew.find((x) => x.home === i);
-        d.classList.toggle('occupied', !!m);
-        if (m) d.append(this.token(m, this.selLee === m.uid));
-      } else if (this.tab === 'parts') {
-        this.renderSlotMarks(d, tile);
-      }
-    });
-    if (this.tab === 'deck') this.updateLabels();
-  }
-
-  /** Slot markers on a tile for the current layer, highlighted when the picked item fits. */
-  private renderSlotMarks(d: HTMLDivElement, tile: Tile): void {
-    const run = this.run!;
-    const ids = this.slotsOnTile(tile);
-    const pickDef = this.pickDef();
-    if (!ids.length) {
-      d.classList.add('no-slot');
+  private renderCard(run: RunState): void {
+    const c = this.card;
+    c.replaceChildren();
+    const s = this.sel;
+    if (!s) {
+      c.classList.add('hidden');
       return;
     }
-    let fitsAny = false;
-    for (const id of ids) {
-      const slot = slotById(SHIPS[run.ship], id);
-      if (!slot) continue;
-      const mark = el('div', `slot-mark ${slot.type}${slot.type === 'rail' ? ` edge-${slot.facing}` : ''}${this.selSlot === id ? ' selected' : ''}`);
-      const uid = run.loadout[id];
-      const def = itemOf(run, uid);
-      if (def) mark.append(itemIcon(def, 'slot-item'));
-      else mark.append(el('span', 'slot-glyph', SLOT_TYPES[slot.type].glyph));
-      if (slot.type === 'edge' && slot.facing) mark.append(el('span', 'slot-arrow', FACING_ARROW[slot.facing]));
-      if (slot.type === 'interior' && def?.category === 'gun') {
-        const f = run.facings[id] ?? slot.facing ?? 'bow';
-        mark.append(el('span', 'slot-arrow', FACING_ARROW[f]));
-      }
-      // Attachment on the gun here.
-      if (slot.type === 'edge' || slot.type === 'interior') {
-        const att = itemOf(run, run.loadout[`att:${id}`]);
-        if (att) mark.append(itemIcon(att, 'slot-att'));
-      }
-      if (pickDef && this.pickFits(pickDef, id)) fitsAny = true;
-      d.append(mark);
-    }
-    d.classList.add(ids.some((id) => run.loadout[id] !== undefined) ? 'filled' : 'empty-slot');
-    if (pickDef) d.classList.add(fitsAny ? 'fits' : 'dim');
-    const m = run.crew.find((x) => x.home === tile.index);
-    if (m && this.layer === 'fixture') d.classList.add('has-lee');
-  }
-
-  /** Slot ids on a tile in the current layer. */
-  private slotsOnTile(tile: Tile): string[] {
-    const ship = SHIPS[this.run!.ship];
-    if (this.layer === 'floor') return [`floor:${tile.col},${tile.row}`];
-    const want = this.layer === 'fixture' ? ['edge', 'interior'] : this.layer === 'rail' ? ['rail'] : [];
-    return ship.slots.filter((s) => s.tile && s.tile[0] === tile.col && s.tile[1] === tile.row && want.includes(s.type)).map((s) => s.id);
-  }
-
-  private pickDef(): ItemDef | undefined {
-    const p = this.pick;
-    if (!p) return undefined;
-    return 'uid' in p ? itemOf(this.run!, p.uid) : ITEMS[p.id];
-  }
-
-  /** Does the picked item fit this slot (attachments: the gun slot's attachment)? */
-  private pickFits(def: ItemDef, slotId: string): boolean {
-    const run = this.run!;
-    if (def.category === 'attachment') {
-      const gun = itemOf(run, run.loadout[slotId]);
-      return gun?.category === 'gun';
-    }
-    const type = slotType(run, slotId);
-    return !!type && def.fits.includes(type);
-  }
-
-  // ------------------------------------------------------------ deck tab
-
-  private token(m: CrewMember, selected: boolean): HTMLDivElement {
-    const t = el('div', `token${selected ? ' selected' : ''}`);
-    t.append(memberFigure(m.type, ''), el('span', 'badge', m.label.replace(/.*#/, '')));
-    if (m.level > 1) t.append(el('span', 'lv', `${m.level}`));
-    if (this.displaced.has(m.uid)) t.classList.add('flag');
-    t.title = m.label;
-    t.onpointerdown = (e) => this.pressToken(m.uid, e, t);
-    t.onclick = (e) => {
-      e.stopPropagation();
-      if (this.suppressClick) {
-        this.suppressClick = false;
-        return;
-      }
-      this.tapLee(m.uid);
-    };
-    return t;
-  }
-
-  /** Card for a crew arrangement (cheap: re-boards the crew on the existing boat). */
-  private crewCard(homes: Map<number, number | null>): BoatCard {
-    const run = this.run!;
-    const w = this.ctl.world;
-    const specs = crewSpecs(run, this.ctl.tuning).map((s) => ({ ...s, home: homes.has(s.uid!) ? homes.get(s.uid!)! : s.home }));
-    w.placePlayerCrew(specs);
-    const card = boatCard(w.player, this.ctl.tuning);
-    w.placePlayerCrew(crewSpecs(run, this.ctl.tuning));
-    return card;
-  }
-
-  /** Homes after moving `uid` to `tile` (null = ashore), swapping like Controller.placeLee. */
-  private moved(uid: number, tile: number | null): Map<number, number | null> {
-    const run = this.run!;
-    const out = new Map<number, number | null>();
-    const m = run.crew.find((x) => x.uid === uid)!;
-    if (tile !== null) {
-      const other = run.crew.find((x) => x !== m && x.home === tile);
-      if (other) out.set(other.uid, m.home);
-    }
-    out.set(uid, tile);
-    return out;
-  }
-
-  private updateLabels(): void {
-    const run = this.run!;
-    const sel = this.selLee;
-    if (sel === null) return;
-    const boat = this.ctl.world.player;
-    const now = this.crewCard(new Map());
-    const me = run.crew.find((m) => m.uid === sel);
-    this.tileEls.forEach((d, i) => {
-      d.classList.add('targets');
-      d.classList.toggle('mine', me?.home === i);
-      if (me?.home === i) return;
-      const other = run.crew.find((m) => m.home === i);
-      const station = this.tiles[i].station;
-      const role = station ? roleName(boat, i) : 'Repairs';
-      const fx = effects(now, this.crewCard(this.moved(sel, i))).slice(0, 2);
-      const label = el('div', `tile-label${fx.length ? '' : ' quiet'}`);
-      label.append(el('b', '', other ? `⇄ ${role}` : role));
-      for (const f of fx) label.append(el('span', `fx ${f.good ? 'good' : 'bad'}`, f.text));
-      d.append(label);
-    });
-  }
-
-  private tapLee(uid: number): void {
-    const run = this.run!;
-    const sel = this.selLee;
-    if (sel === null || sel === uid) {
-      this.selLee = sel === uid ? null : uid;
-      this.lastSig = '';
-      this.render();
-      return;
-    }
-    const target = run.crew.find((m) => m.uid === uid)?.home ?? null;
-    if (target === null) {
-      this.selLee = uid;
-      this.lastSig = '';
-      this.render();
-      return;
-    }
-    this.selLee = null;
-    this.ctl.placeLee(sel, target);
-  }
-
-  private tapTile(tile: number): void {
-    if (this.tab === 'parts') {
-      this.tapSlotTile(tile);
-      return;
-    }
-    if (this.tab !== 'deck') return;
-    const run = this.run!;
-    const sel = this.selLee;
-    if (sel === null) {
-      const occupant = run.crew.find((m) => m.home === tile);
-      if (occupant) this.tapLee(occupant.uid);
-      return;
-    }
-    this.selLee = null;
-    this.displaced.delete(sel);
-    if (run.crew.find((m) => m.uid === sel)?.home === tile) {
-      this.lastSig = '';
-      this.render();
-      return;
-    }
-    this.ctl.placeLee(sel, tile);
-  }
-
-  private pressToken(uid: number, e: PointerEvent, from: HTMLElement): void {
-    if (this.drag || this.tab !== 'deck') return;
-    e.stopPropagation();
-    from.setPointerCapture(e.pointerId);
-    this.drag = { uid, x: e.clientX, y: e.clientY, id: e.pointerId, ghost: null, from, over: null };
-    from.onpointermove = (m) => this.moveDrag(m);
-    from.onpointerup = (u) => this.endDrag(u, false);
-    from.onpointercancel = (u) => this.endDrag(u, true);
-  }
-
-  private moveDrag(e: PointerEvent): void {
-    const d = this.drag;
-    if (!d || e.pointerId !== d.id) return;
-    if (!d.ghost && Math.hypot(e.clientX - d.x, e.clientY - d.y) > 8) {
-      d.ghost = el('div', 'token drag-ghost');
-      const m = this.run!.crew.find((x) => x.uid === d.uid)!;
-      d.ghost.append(memberFigure(m.type, ''), el('span', 'badge', m.label.replace(/.*#/, '')));
-      document.body.append(d.ghost);
-      d.from.classList.add('dragging');
-      this.card.classList.add('hidden');
-    }
-    if (d.ghost) {
-      d.ghost.style.left = `${e.clientX}px`;
-      d.ghost.style.top = `${e.clientY}px`;
-      const over = this.tileAtPoint(e.clientX, e.clientY);
-      this.tileEls.forEach((t, i) => t.classList.toggle('drop', i === over));
-      d.over = over;
-    }
-  }
-
-  private endDrag(e: PointerEvent, cancelled: boolean): void {
-    const d = this.drag;
-    if (!d || e.pointerId !== d.id) return;
-    this.drag = null;
-    d.from.onpointermove = null;
-    d.from.onpointerup = null;
-    d.from.onpointercancel = null;
-    if (!d.ghost) return; // a tap: the click handler takes it
-    d.ghost.remove();
-    d.from.classList.remove('dragging');
-    for (const t of this.tileEls) t.classList.remove('drop');
-    this.suppressClick = true;
-    setTimeout(() => (this.suppressClick = false), 0);
-    this.selLee = null;
-    this.lastSig = '';
-    if (cancelled) {
-      this.render();
-      return;
-    }
-    const tile = this.tileAtPoint(e.clientX, e.clientY);
-    this.displaced.delete(d.uid);
-    if (tile !== null) this.ctl.placeLee(d.uid, tile);
-    else this.ctl.placeLee(d.uid, null); // dropped off the deck: ashore
-  }
-
-  private tileAtPoint(x: number, y: number): number | null {
-    for (let i = 0; i < this.tileEls.length; i++) {
-      const r = this.tileEls[i].getBoundingClientRect();
-      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return i;
-    }
-    return null;
-  }
-
-  // ------------------------------------------------------------ parts tab
-
-  private tapSlotTile(tile: number): void {
-    const ids = this.slotsOnTile(this.tiles[tile]);
-    if (!ids.length) return;
-    // Several rail slots on a corner tile: cycle through them.
-    const i = this.selSlot ? ids.indexOf(this.selSlot) : -1;
-    this.tapSlot(ids[(i + 1) % ids.length]);
-  }
-
-  /** Tap a slot: with an item picked, equip it there (if it fits); otherwise select the slot. */
-  private tapSlot(slotId: string): void {
-    const def = this.pickDef();
-    if (def && this.pickFits(def, slotId)) {
-      const target = def.category === 'attachment' ? `att:${slotId}` : slotId;
-      this.doEquip(target);
-      return;
-    }
-    this.pick = null;
-    this.selSlot = this.selSlot === slotId ? null : slotId;
-    const run = this.run!;
-    this.ctl.arcPreview = this.selSlot && itemOf(run, run.loadout[this.selSlot])?.category === 'gun' ? this.selSlot : null;
-    this.lastSig = '';
-    this.render();
-  }
-
-  private tapCargo(p: Pick): void {
-    const same = this.pick && JSON.stringify(this.pick) === JSON.stringify(p);
-    this.pick = same ? null : p;
-    const def = this.pickDef();
-    if (def) {
-      // Show the layer the item goes in.
-      if (def.category === 'trinket') {
-        this.toast('Trinkets are worn by Lees: equip it from the Crew tab.');
-      } else {
-        const layer = layerOf(def.category === 'attachment' ? 'edge' : def.fits[0]);
-        if (layer) this.layer = layer;
-      }
-      // Keep a selected slot only if the item fits it.
-      if (this.selSlot && !this.pickFits(def, this.selSlot) && !(def.category === 'attachment' && this.selSlot.startsWith('att:'))) this.selSlot = null;
-    }
-    this.lastSig = '';
-    this.render();
-  }
-
-  /** Where the picked item would go: the selected slot if it fits, else the first empty slot it fits. */
-  private pickTarget(): string | null {
-    const def = this.pickDef();
-    const run = this.run!;
-    if (!def) return null;
-    if (this.selSlot) {
-      if (def.category === 'attachment' && this.selSlot.startsWith('att:')) return this.selSlot;
-      if (this.pickFits(def, this.selSlot)) return def.category === 'attachment' ? `att:${this.selSlot}` : this.selSlot;
-    }
-    for (const s of runSlots(run, this.ctl.tuning)) {
-      if (def.category === 'attachment') {
-        if (s.type !== 'attachment') continue;
-      } else if (!def.fits.includes(s.type)) continue;
-      if (run.loadout[s.id] === undefined) return s.id;
-    }
-    return null;
-  }
-
-  private doEquip(slot: string): void {
-    const p = this.pick;
-    if (!p) return;
-    const before = this.stationHomes();
-    const ok = this.ctl.equip('uid' in p ? p.uid : p.id, slot);
-    if (!ok) {
-      this.toast('That doesn’t fit there.');
-      return;
-    }
-    this.flagDisplaced(before);
-    this.pick = null;
-    this.selSlot = slot.startsWith('att:') ? slot.slice(4) : slot;
-    const run = this.run!;
-    this.ctl.arcPreview = itemOf(run, run.loadout[this.selSlot])?.category === 'gun' ? this.selSlot : null;
-    this.lastSig = '';
-    this.render();
-  }
-
-  private doUnequip(uid: number): void {
-    const before = this.stationHomes();
-    this.ctl.unequip(uid);
-    this.flagDisplaced(before);
-    this.lastSig = '';
-    this.render();
-  }
-
-  /** Lees whose home tile has a station, by uid. */
-  private stationHomes(): Set<number> {
-    const out = new Set<number>();
-    for (const m of this.run!.crew) if (m.home !== null && this.tiles[m.home]?.station) out.add(m.uid);
-    return out;
-  }
-
-  /** After an equipment change: any Lee whose station disappeared is now damage control; say so. */
-  private flagDisplaced(before: Set<number>): void {
-    const run = this.run!;
-    const tiles = this.ctl.world.player.grid.tiles;
-    for (const uid of before) {
-      const m = run.crew.find((x) => x.uid === uid);
-      if (!m || m.home === null || tiles[m.home]?.station) continue;
-      this.displaced.add(uid);
-      this.toast(`${m.label}'s station was removed: now damage control.`);
-    }
-  }
-
-  private computePreview(): BoatCard | null {
-    if (this.tab !== 'parts' || !this.pick) return null;
-    const target = this.pickTarget();
-    if (!target) return null;
-    const run = structuredClone(this.run!);
-    const p = this.pick;
-    let uid: number;
-    if ('uid' in p) uid = p.uid;
-    else {
-      uid = run.nextUid++;
-      run.items.push({ uid, item: p.id });
-    }
-    if (!equipRun(run, uid, target)) return null;
-    const w = new World(this.ctl.tuning, 1, { player: setupFor(run, this.ctl.tuning), enemies: [], assists: this.ctl.mode === 'sandbox' });
-    return boatCard(w.player, this.ctl.tuning);
-  }
-
-  // ------------------------------------------------------------ lower panel
-
-  private renderBelow(): void {
-    const box = this.below;
-    box.replaceChildren();
-    box.className = `setup-below tab-${this.tab}`;
-    if (this.tab === 'deck') this.renderDeckBelow(box);
-    else if (this.tab === 'parts') this.renderPartsBelow(box);
-    else if (this.tab === 'crew') this.renderCrewBelow(box);
-    else this.renderSandboxBelow(box);
-  }
-
-  private renderDeckBelow(box: HTMLDivElement): void {
-    const run = this.run!;
-    const tray = el('div', 'setup-tray');
-    const ashore = run.crew.filter((m) => m.home === null);
-    if (!ashore.length) tray.append(el('span', 'tray-empty', run.crew.length ? 'All hands aboard' : 'No crew'));
-    for (const m of ashore) tray.append(this.token(m, this.selLee === m.uid));
-    tray.onclick = (e) => {
-      if (e.target !== tray || this.selLee === null) return;
-      const uid = this.selLee;
-      this.selLee = null;
-      this.ctl.placeLee(uid, null);
-    };
-    const sel = this.selLee !== null ? run.crew.find((m) => m.uid === this.selLee) : null;
-    const hint = el(
-      'div',
-      'setup-hint',
-      !sel ? 'Tap a Lee, then a tile (or drag it). Its tile sets its job.' : sel.home === null ? `Place ${sel.label}: tap a tile` : `Move ${sel.label}: tap a tile, another Lee to swap, or the tray to send ashore`,
-    );
-    box.append(tray, hint);
-  }
-
-  private renderPartsBelow(box: HTMLDivElement): void {
-    const run = this.run!;
     const ctl = this.ctl;
-    const layers = el('div', 'chips layers');
-    for (const l of Object.keys(LAYER_NAMES) as Layer[]) {
-      layers.append(
-        button(LAYER_NAMES[l], `chip${this.layer === l ? ' on' : ''}`, () => {
-          this.layer = l;
-          this.selSlot = null;
-          this.ctl.arcPreview = null;
+    const t = ctl.tuning;
+    const out: HTMLElement[] = [];
+    const buttons = el('div', 'card-buttons');
+    if (this.preview) {
+      // Compact while previewing: the bars and arcs are what matter now.
+      out.push(el('div', 'card-sub rf-hint', 'Tap ✅ (or the same spot again) to confirm, or tap anything else.'));
+      for (const d of this.preview.displaced) out.push(el('div', 'card-sub', d.to === 'swap' ? `${d.name} swaps places` : `${d.name} → ${d.to}`));
+      buttons.append(button('Cancel', 'hud-btn', () => this.select(null)));
+      out.push(buttons);
+      c.append(...out);
+      c.classList.remove('hidden');
+      return;
+    }
+    const lee = s.from === 'catalog' ? null : pickedLee(run, s);
+    const def = s.from === 'catalog' ? ITEMS[s.item] : pickedItem(run, s);
+    if (lee) {
+      const ldef = LEE_DEFS[lee.type];
+      const head = el('div', 'card-head');
+      head.append(memberFigure(lee.type));
+      const names = el('div', 'card-names');
+      const job = lee.home !== null ? lee.job ?? startingJob(ctl.world.player, lee.home) : null;
+      names.append(el('div', 'card-name', lee.label), el('div', 'card-sub', job ? `Starts as ${JOB_INFO[job].icon} ${JOB_INFO[job].name}` : 'Ashore: stays behind'), el('div', 'card-flavor', ldef.flavor));
+      head.append(names, levelBadge(lee, t));
+      out.push(head);
+      if (ldef.trait) out.push(el('div', 'card-trait', `${ldef.trait.name}: ${ldef.trait.text}`));
+      if (lee.bonuses.length) out.push(el('div', 'card-sub', `Level bonuses: ${lee.bonuses.map((b) => bonusLabel(b, t, STAT_LABELS)).join(', ')}`));
+      // Trinkets it wears: tap one to pick it up (onto another Lee, or into cargo).
+      const tr = el('div', 'chips');
+      lee.trinkets.forEach((u, i) => {
+        const d = itemOf(run, u);
+        const chip = button('', 'chip', () => {
+          if (d) this.select({ from: 'worn', member: lee.uid, index: i });
+        });
+        chip.append(d ? itemIcon(d) : el('span', 'slot-glyph', '✧'), el('span', '', d ? d.name : 'empty trinket slot'));
+        tr.append(chip);
+      });
+      out.push(tr);
+      const w = ctl.world.player.crew.lees.find((l) => l.uid === lee.uid);
+      out.push(fullStats(ldef, t, w?.mods ?? {}));
+      buttons.append(
+        button('Release', 'hud-btn danger', () => {
+          if (!confirmAction(`Release ${lee.label}? They leave the crew for good; their trinkets go to cargo.`)) return;
+          this.clearSel();
+          ctl.releaseLee(lee.uid);
+        }),
+      );
+      if (lee.home !== null) buttons.append(button('Send ashore', 'hud-btn', () => this.stowSelected()));
+    } else if (def) {
+      const extra: HTMLElement[] = [];
+      if (s.from === 'boat') extra.push(el('div', 'card-sub', `${LAYER_NAMES[s.layer]} · tap the tile again for the layer under it`));
+      out.push(itemCard(def, extra));
+      if (s.from === 'boat' && s.layer === 'station' && def.category === 'gun' && s.spot.kind === 'tile') {
+        const slotId = slotOf(s.spot, 'station')!;
+        const slot = slotById(SHIPS[run.ship], slotId);
+        const ways: Facing[] = slot?.type === 'interior' ? ['port', 'bow', 'starboard', 'stern'] : slot?.facings ?? [];
+        if (slot && ways.length > 1 && (t.items[def.id]?.arc ?? 360) < 360) {
+          const f = slotFacing(buildFor(run), slot);
+          const nextWay = ways[(ways.indexOf(f) + 1) % ways.length];
+          buttons.append(button(`Turn ${FACING_ARROW[nextWay]}`, 'hud-btn', () => ctl.setFacing(slotId, nextWay)));
+        }
+        const att = run.loadout[`att:${slotId}`];
+        if (att !== undefined) buttons.append(button(`Take off ${itemOf(run, att)?.name ?? 'attachment'}`, 'hud-btn', () => ctl.unequip(att)));
+      }
+      if (s.from === 'boat' || s.from === 'worn') buttons.append(button('Stow in cargo', 'hud-btn', () => this.stowSelected()));
+    }
+    buttons.append(button('Done', 'hud-btn', () => this.select(null)));
+    out.push(buttons);
+    c.append(...out);
+    c.classList.remove('hidden');
+  }
+
+  // ------------------------------------------------------------ buttons
+
+  private renderBar(run: RunState): void {
+    const ctl = this.ctl;
+    const bar = this.bar;
+    bar.replaceChildren();
+    if (ctl.mode === 'sandbox') {
+      bar.append(
+        button(this.sandboxOpen ? 'Close sandbox' : 'Sandbox…', 'hud-btn', () => {
+          this.sandboxOpen = !this.sandboxOpen;
           this.lastSig = '';
           this.render();
         }),
       );
     }
-    box.append(layers);
-    const def = this.pickDef();
-    if (this.layer === 'hull') {
-      const chips = el('div', 'chips slots');
-      for (const s of runSlots(run, ctl.tuning).filter((x) => x.type === 'hull' || x.type === 'treasure')) {
-        const it = itemOf(run, run.loadout[s.id]);
-        const slot = slotById(SHIPS[run.ship], s.id);
-        const name = s.type === 'treasure' ? `Treasure ${Number(s.id.split(':')[1]) + 1}` : `${SHIPS[run.ship].layout.parts.find((p) => p.id === slot?.part)?.label ?? slot?.part} hull`;
-        const c = button('', `chip slot-chip${this.selSlot === s.id ? ' on' : ''}${def ? (this.pickFits(def, s.id) ? ' fits' : ' dim') : ''}`, () => this.tapSlot(s.id));
-        c.append(it ? itemIcon(it) : el('span', 'slot-glyph', SLOT_TYPES[s.type].glyph), el('span', '', it ? `${name}: ${it.name}` : `${name}: empty`));
-        chips.append(c);
+    const blocked = ctl.mustPlace();
+    const launch = button('LAUNCH', `start-btn${blocked ? ' blocked' : ''}`, () => {
+      if (blocked) {
+        this.toast('Equip your reward first: tap it in cargo, then a green spot.');
+        return;
       }
-      box.append(chips);
-    }
-    // Cargo (sandbox: the whole catalog).
-    const head = el('div', 'cargo-head', ctl.mode === 'sandbox' ? 'Catalog (sandbox: unlimited)' : `Cargo (${cargo(run).length}${ctl.tuning.run.cargoLimit > 0 ? ` / ${ctl.tuning.run.cargoLimit}` : ''})`);
-    const list = el('div', 'cargo');
-    const entries: { pick: Pick; def: ItemDef }[] =
-      ctl.mode === 'sandbox'
-        ? Object.values(ITEMS).map((d) => ({ pick: { id: d.id } as Pick, def: d }))
-        : cargo(run).map((c) => ({ pick: { uid: c.uid } as Pick, def: ITEMS[c.item] }));
-    if (!entries.length) list.append(el('span', 'tray-empty', 'Cargo is empty: rewards after a fight land here.'));
-    let lastCat = '';
-    for (const { pick, def: d } of entries) {
-      if (!d) continue;
-      if (ctl.mode === 'sandbox' && d.category !== lastCat) {
-        lastCat = d.category;
-        list.append(el('div', 'cargo-cat', CATEGORY_NAMES[d.category]));
+      if (!run.crew.some((m) => m.home !== null)) {
+        this.toast('Nobody is aboard: place at least one Lee.');
+        return;
       }
-      const on = !!this.pick && JSON.stringify(this.pick) === JSON.stringify(pick);
-      const fitsSel = this.selSlot && !this.pick ? this.pickFitsDef(d, this.selSlot) : false;
-      const c = button('', `chip cargo-item${on ? ' on' : ''}${fitsSel ? ' fits' : ''}`, () => this.tapCargo(pick));
-      c.append(itemIcon(d), el('span', '', d.name));
-      list.append(c);
-    }
-    box.append(head, list);
-    const hint = def
-      ? `${def.name}: tap a highlighted slot${def.category === 'trinket' ? ' (trinkets: Crew tab)' : ''}.`
-      : this.selSlot
-        ? 'Pick an item from the cargo to put it here, or tap another slot.'
-        : 'Pick an item to see where it fits, or tap a slot.';
-    box.append(el('div', 'setup-hint', hint));
+      this.clearSel();
+      ctl.launch();
+    });
+    launch.append(el('small', '', blocked ? 'equip your reward' : ctl.mode === 'sandbox' ? 'sandbox' : `fight ${run.fight}`));
+    bar.append(launch);
   }
 
-  private pickFitsDef(def: ItemDef, slotId: string): boolean {
-    const run = this.run!;
-    if (slotId.startsWith('att:')) return def.category === 'attachment';
-    const type = slotType(run, slotId);
-    return !!type && def.fits.includes(type);
-  }
+  // ------------------------------------------------------------ sandbox
 
-  private renderCrewBelow(box: HTMLDivElement): void {
-    const run = this.run!;
-    const ctl = this.ctl;
-    const t = ctl.tuning;
-    const head = el('div', 'cargo-head', `Crew ${run.crew.length} / ${crewMax(run, t)}${ctl.mode === 'run' ? ` · minimum ${crewMin(run, t)}` : ''}`);
-    const list = el('div', 'crew-list');
-    const boat = ctl.world.player;
-    for (const m of run.crew) {
-      const row = el('div', `crew-item${this.selMember === m.uid ? ' on' : ''}${this.displaced.has(m.uid) ? ' flag' : ''}`);
-      row.onclick = () => {
-        this.selMember = this.selMember === m.uid ? null : m.uid;
-        this.selTrinket = null;
-        this.lastSig = '';
-        this.render();
-      };
-      const names = el('div', 'ci-names');
-      names.append(el('b', '', m.label), el('small', '', m.home === null ? 'ashore' : `${roleName(boat, m.home)} · ${boat.grid.tiles[m.home]?.label ?? ''}`));
-      const trinkets = el('div', 'ci-trinkets');
-      m.trinkets.forEach((u, i) => {
-        const d = itemOf(run, u);
-        const c = button('', `trinket-slot${this.selMember === m.uid && this.selTrinket === i ? ' on' : ''}`, () => {
-          this.selMember = m.uid;
-          this.selTrinket = this.selTrinket === i && this.selMember === m.uid ? null : i;
-          this.lastSig = '';
-          this.render();
-        });
-        c.append(d ? itemIcon(d) : el('span', 'slot-glyph', SLOT_TYPES.trinket.glyph));
-        trinkets.append(c);
-      });
-      row.append(memberFigure(m.type, 'chip-figure'), names, levelBadge(m, t), trinkets);
-      list.append(row);
-    }
-    box.append(head, list);
-    if (ctl.mode === 'sandbox') {
-      const add = el('div', 'row add-lee');
-      const type = el('select');
-      for (const d of Object.values(LEE_DEFS)) type.append(new Option(d.name, d.id));
-      const level = el('select');
-      for (let l = 1; l <= Math.round(t.leveling.levelCap); l++) level.append(new Option(`Level ${l}`, String(l)));
-      add.append(type, level, button('+ Add Lee', 'hud-btn', () => ctl.addLee(type.value, Number(level.value))));
-      box.append(add);
-    }
-    const tags = countTags([...buildTags(this.ctl.world.player.build), ...run.crew.map((m) => LEE_DEFS[m.type]?.tags ?? [])]);
-    if (Object.keys(tags).length) box.append(el('div', 'setup-hint', `Tags aboard: ${Object.entries(tags).map(([k, v]) => `${tagName(k)} ${v}`).join(' · ')}`));
-  }
-
-  private renderSandboxBelow(box: HTMLDivElement): void {
+  private renderSandbox(): void {
+    const box = this.sandboxEl;
+    const open = this.sandboxOpen && this.ctl.mode === 'sandbox';
+    box.classList.toggle('hidden', !open);
+    if (!open) return;
+    box.replaceChildren();
     const ctl = this.ctl;
     const t = ctl.tuning;
     const sb = ctl.sandbox!;
@@ -847,6 +716,13 @@ export class RefitPanel {
     ship.onchange = () => ctl.setShip(ship.value);
     shipRow.append(el('b', '', 'Your ship'), ship);
     box.append(shipRow);
+    const add = el('div', 'row add-lee');
+    const type = el('select');
+    for (const d of Object.values(LEE_DEFS)) type.append(new Option(d.name, d.id));
+    const level = el('select');
+    for (let l = 1; l <= Math.round(t.leveling.levelCap); l++) level.append(new Option(`Level ${l}`, String(l)));
+    add.append(type, level, button('+ Add Lee', 'hud-btn', () => ctl.addLee(type.value, Number(level.value))));
+    box.append(add);
 
     box.append(el('div', 'cargo-head', 'Encounter builder'));
     const preset = el('select');
@@ -872,10 +748,12 @@ export class RefitPanel {
       const s = el('select');
       for (const id of SHIP_ORDER) s.append(new Option(SHIPS[id].name, id));
       s.value = spec.ship;
-      s.onchange = () => update((e) => {
-        e[bi].ship = s.value;
-        e[bi].loadout = {};
-      });
+      s.onchange = () =>
+        update((e) => {
+          e[bi].ship = s.value;
+          e[bi].loadout = {};
+          delete e[bi].fullLoadout;
+        });
       const ai = el('select');
       for (const id of Object.keys(t.ai)) ai.append(new Option(`AI: ${id}`, id));
       ai.value = spec.ai;
@@ -894,258 +772,19 @@ export class RefitPanel {
         count.max = '12';
         count.value = String(c.count ?? 1);
         count.onchange = () => update((e) => (e[bi].crew[ci].count = Math.max(0, Math.round(Number(count.value) || 0))));
-        const level = el('input');
-        level.type = 'number';
-        level.min = '1';
-        level.max = String(Math.round(t.leveling.levelCap));
-        level.value = String(c.level ?? 1);
-        level.onchange = () => update((e) => (e[bi].crew[ci].level = Math.max(1, Math.round(Number(level.value) || 1))));
-        r.append(type, el('span', '', '×'), count, el('span', '', 'Lv'), level, button('✕', 'hud-btn', () => update((e) => e[bi].crew.splice(ci, 1))));
+        const lvl = el('input');
+        lvl.type = 'number';
+        lvl.min = '1';
+        lvl.max = String(Math.round(t.leveling.levelCap));
+        lvl.value = String(c.level ?? 1);
+        lvl.onchange = () => update((e) => (e[bi].crew[ci].level = Math.max(1, Math.round(Number(lvl.value) || 1))));
+        r.append(type, el('span', '', '×'), count, el('span', '', 'Lv'), lvl, button('✕', 'hud-btn', () => update((e) => e[bi].crew.splice(ci, 1))));
         card.append(r);
       });
       card.append(button('+ Lee type', 'hud-btn', () => update((e) => e[bi].crew.push({ type: 'basic', count: 1, level: 1 }))));
       list.append(card);
     });
-    box.append(list, button('+ Enemy boat', 'hud-btn', () => update((e) => e.push({ ship: 'sloop', ai: 'standard', crew: [{ type: 'basic', count: 4 }] }))));
-    box.append(el('div', 'setup-hint', 'Enemies get their ship’s default loadout. Sandbox assists (Tune → Global) apply here, never in a run.'));
+    box.append(list, button('+ Enemy boat', 'hud-btn', () => update((e) => e.push({ ship: 'basic', ai: 'standard', crew: [{ type: 'basic', count: 4 }] }))));
+    box.append(el('div', 'setup-hint', 'Enemies sail their ship’s standard fit. Sandbox assists (Tune → Global) apply here, never in a run. The cargo is the whole catalog.'));
   }
-
-  private renderBar(): void {
-    const ctl = this.ctl;
-    const run = this.run!;
-    const bar = this.bar;
-    bar.replaceChildren();
-    if (this.tab === 'deck') {
-      bar.append(
-        button('Clear all', 'hud-btn', () => {
-          this.selLee = null;
-          ctl.clearCrew();
-        }),
-        button('Auto-arrange', 'hud-btn', () => {
-          this.selLee = null;
-          this.displaced.clear();
-          ctl.autoArrangeCrew();
-        }),
-      );
-    }
-    const launch = button('LAUNCH', 'start-btn', () => {
-      this.selLee = null;
-      this.selSlot = null;
-      this.pick = null;
-      this.displaced.clear();
-      if (!run.crew.some((m) => m.home !== null)) {
-        this.toast('Nobody is aboard: place at least one Lee.');
-        return;
-      }
-      ctl.launch();
-    });
-    launch.append(el('small', '', ctl.mode === 'sandbox' ? 'sandbox' : `fight ${run.fight}`));
-    bar.append(launch);
-  }
-
-  // ------------------------------------------------------------ info card
-
-  /** Is an info card showing? */
-  private cardOpen(): boolean {
-    return (this.tab === 'deck' && this.selLee !== null) || (this.tab === 'parts' && (!!this.selSlot || !!this.pick)) || (this.tab === 'crew' && this.selMember !== null);
-  }
-
-  private renderCard(): void {
-    const c = this.card;
-    c.replaceChildren();
-    let content: HTMLElement[] | null = null;
-    if (this.tab === 'deck' && this.selLee !== null) content = this.deckCard();
-    else if (this.tab === 'parts' && (this.selSlot || this.pick)) content = this.partsCard();
-    else if (this.tab === 'crew' && this.selMember !== null) content = this.memberCard();
-    if (!content) {
-      c.classList.add('hidden');
-      return;
-    }
-    c.append(...content);
-    c.classList.remove('hidden');
-  }
-
-  private deckCard(): HTMLElement[] | null {
-    const run = this.run!;
-    const m = run.crew.find((x) => x.uid === this.selLee);
-    if (!m) return null;
-    const boat = this.ctl.world.player;
-    const def = LEE_DEFS[m.type];
-    const head = el('div', 'card-head');
-    head.append(memberFigure(m.type));
-    const names = el('div', 'card-names');
-    names.append(el('div', 'card-name', m.label), el('div', 'card-flavor', def.flavor));
-    head.append(names, levelBadge(m, this.ctl.tuning));
-    const role = el('div', 'card-role');
-    if (m.home === null) role.append(el('b', '', 'Ashore'), el('span', '', ' · stays behind unless placed'));
-    else role.append(el('b', '', roleName(boat, m.home)), el('span', '', ` · ${boat.grid.tiles[m.home].label}`));
-    const buttons = el('div', 'card-buttons');
-    if (m.home !== null) buttons.append(button('Send ashore', 'hud-btn', () => {
-      this.selLee = null;
-      this.ctl.placeLee(m.uid, null);
-    }));
-    buttons.append(button('Done', 'hud-btn', () => {
-      this.selLee = null;
-      this.lastSig = '';
-      this.render();
-    }));
-    const out: HTMLElement[] = [head, role];
-    if (def.trait) out.push(el('div', 'card-trait', `${def.trait.name}: ${def.trait.text}`));
-    out.push(buttons);
-    return out;
-  }
-
-  private partsCard(): HTMLElement[] | null {
-    const run = this.run!;
-    const ctl = this.ctl;
-    const out: HTMLElement[] = [];
-    const pickDef = this.pickDef();
-    const slotId = this.selSlot;
-    const slot = slotId ? (slotId.startsWith('treasure:') ? null : slotById(SHIPS[run.ship], slotId)) : null;
-    const slotName = (id: string): string => {
-      if (id.startsWith('treasure:')) return `Treasure slot ${Number(id.split(':')[1]) + 1}`;
-      if (id.startsWith('att:')) return `Attachment on ${slotName(id.slice(4))}`;
-      const s = slotById(SHIPS[run.ship], id);
-      if (!s) return id;
-      const where = s.part ? SHIPS[run.ship].layout.parts.find((p) => p.id === s.part)?.label ?? s.part : s.tile ? this.tiles.find((x) => x.col === s.tile![0] && x.row === s.tile![1])?.label ?? '' : '';
-      return `${SLOT_TYPES[s.type].name} slot${s.facing && (s.type === 'edge' || s.type === 'rail') ? ` ${FACING_ARROW[s.facing]} ${FACING_NAME[s.facing]}` : ''}${where ? ` · ${where}` : ''}`;
-    };
-    if (pickDef) {
-      const target = this.pickTarget();
-      const extra: HTMLElement[] = [el('div', 'card-sub', target ? `Into: ${slotName(target)}` : 'No free slot it fits: tap a highlighted slot to swap.')];
-      const buttons = el('div', 'card-buttons');
-      if (target) buttons.append(button('Equip', 'hud-btn primary', () => this.doEquip(target)));
-      buttons.append(button('Cancel', 'hud-btn', () => {
-        this.pick = null;
-        this.lastSig = '';
-        this.render();
-      }));
-      out.push(buttons, itemCard(pickDef, extra));
-      return out;
-    }
-    if (!slotId) return null;
-    const uid = run.loadout[slotId];
-    const def = itemOf(run, uid);
-    const extra: HTMLElement[] = [el('div', 'card-sub', slotName(slotId))];
-    const buttons = el('div', 'card-buttons');
-    if (def && uid !== undefined) {
-      buttons.append(button('Unequip', 'hud-btn', () => this.doUnequip(uid)));
-      if (def.category === 'gun' && slot?.type === 'interior' && (ctl.tuning.items[def.id]?.arc ?? 360) < 360) {
-        const f = run.facings[slotId] ?? slot.facing ?? 'bow';
-        buttons.append(button(`Rotate ${FACING_ARROW[f]}`, 'hud-btn', () => ctl.setFacing(slotId, FACINGS[(FACINGS.indexOf(f) + 1) % FACINGS.length] as Facing)));
-      }
-      if (def.category === 'gun') {
-        const att = itemOf(run, run.loadout[`att:${slotId}`]);
-        const attChip = button('', 'chip slot-chip', () => {
-          this.selSlot = `att:${slotId}`;
-          this.lastSig = '';
-          this.render();
-        });
-        attChip.append(att ? itemIcon(att) : el('span', 'slot-glyph', SLOT_TYPES.attachment.glyph), el('span', '', att ? `Attachment: ${att.name}` : 'Attachment: empty'));
-        extra.push(attChip);
-      }
-      buttons.append(button('Done', 'hud-btn', () => {
-        this.selSlot = null;
-        this.ctl.arcPreview = null;
-        this.lastSig = '';
-        this.render();
-      }));
-      out.push(buttons, itemCard(def, extra));
-      return out;
-    }
-    const empty = el('div', 'card item-card');
-    const type = slotId.startsWith('treasure:') ? 'treasure' : slotId.startsWith('att:') ? 'attachment' : slot?.type ?? 'edge';
-    empty.append(el('div', 'card-title', `Empty ${SLOT_TYPES[type].name.toLowerCase()} slot`), el('div', 'card-sub', slotName(slotId)), el('div', 'card-text', SLOT_TYPES[type].help));
-    const fits = (ctl.mode === 'sandbox' ? Object.values(ITEMS) : cargo(run).map((c) => ITEMS[c.item])).filter((d) => d && this.pickFitsDef(d, slotId));
-    empty.append(el('div', 'card-sub', fits.length ? `Fits here from ${ctl.mode === 'sandbox' ? 'the catalog' : 'your cargo'}: ${[...new Set(fits.map((d) => d.name))].join(', ')}` : 'Nothing in your cargo fits here.'));
-    buttons.append(button('Done', 'hud-btn', () => {
-      this.selSlot = null;
-      this.lastSig = '';
-      this.render();
-    }));
-    empty.append(buttons);
-    out.push(empty);
-    return out;
-  }
-
-  private memberCard(): HTMLElement[] | null {
-    const run = this.run!;
-    const ctl = this.ctl;
-    const t = ctl.tuning;
-    const m = run.crew.find((x) => x.uid === this.selMember);
-    if (!m) return null;
-    const def = LEE_DEFS[m.type];
-    const lee = ctl.world.player.crew.lees.find((l) => l.uid === m.uid);
-    const head = el('div', 'card-head');
-    head.append(memberFigure(m.type));
-    const names = el('div', 'card-names');
-    names.append(el('div', 'card-name', m.label), el('div', 'card-sub', `${def.role} · ${m.fights} fights · ${m.kills} kills`), el('div', 'card-flavor', def.flavor));
-    head.append(names, levelBadge(m, t));
-    const out: HTMLElement[] = [head];
-    if (def.trait) out.push(el('div', 'card-trait', `${def.trait.name}: ${def.trait.text}`));
-    if (m.bonuses.length) out.push(el('div', 'card-sub', `Level bonuses: ${m.bonuses.map((b) => bonusLabel(b, t, STAT_LABELS)).join(', ')}`));
-    out.push(fullStats(def, t, lee?.mods ?? {}));
-    if (def.tags.length) out.push(tagChips(def.tags));
-    // Trinkets: pick a slot, then a trinket from cargo.
-    const ti = this.selTrinket;
-    if (ti !== null) {
-      const worn = itemOf(run, m.trinkets[ti]);
-      const box = el('div', 'trinket-pick');
-      box.append(el('div', 'card-sub', `Trinket slot ${ti + 1}${worn ? `: ${worn.name}` : ': empty'}`));
-      if (worn) box.append(button(`Take off ${worn.name}`, 'hud-btn', () => {
-        this.ctl.unequip(m.trinkets[ti]!);
-      }));
-      const options = ctl.mode === 'sandbox' ? Object.values(ITEMS).filter((d) => d.category === 'trinket').map((d) => ({ pick: d.id as number | string, def: d })) : cargo(run).filter((c) => ITEMS[c.item]?.category === 'trinket').map((c) => ({ pick: c.uid as number | string, def: ITEMS[c.item] }));
-      if (!options.length) box.append(el('div', 'card-sub', 'No trinkets in cargo.'));
-      const chips = el('div', 'chips');
-      for (const o of options) {
-        const c = button('', 'chip', () => this.ctl.wear(o.pick, m.uid, ti));
-        c.append(itemIcon(o.def), el('span', '', `${o.def.name}: ${o.def.description}`));
-        chips.append(c);
-      }
-      box.append(chips);
-      out.push(box);
-    } else out.push(el('div', 'card-sub', 'Tap a trinket slot on the crew list to equip one.'));
-    const buttons = el('div', 'card-buttons');
-    buttons.append(
-      button('Release', 'hud-btn danger', () => {
-        if (!confirmAction(`Release ${m.label}? They leave the crew for good; their trinkets go to cargo.`)) return;
-        this.selMember = null;
-        this.ctl.releaseLee(m.uid);
-      }),
-      button('Done', 'hud-btn', () => {
-        this.selMember = null;
-        this.selTrinket = null;
-        this.lastSig = '';
-        this.render();
-      }),
-    );
-    out.push(buttons);
-    return out;
-  }
-}
-
-interface Effect {
-  text: string;
-  good: boolean;
-}
-
-/** What changes between two crew arrangements, biggest first. */
-function effects(a: BoatCard, b: BoatCard): Effect[] {
-  const out: (Effect & { size: number })[] = [];
-  const add = (d: number, text: string, size: number) => {
-    if (Math.abs(d) < 1e-6) return;
-    out.push({ text: `${d > 0 ? '+' : '−'}${text}`, good: d > 0, size });
-  };
-  const dg = b.gunsManned - a.gunsManned;
-  add(dg, `${Math.abs(dg)} gun${Math.abs(dg) === 1 ? '' : 's'}`, Math.abs(dg) * 0.5);
-  const ds = Math.round(((b.speed - a.speed) / Math.max(1e-6, a.speed)) * 100);
-  add(ds, `${Math.abs(ds)}% speed`, Math.abs(ds) / 100);
-  const dt = Math.round(((b.turn - a.turn) / Math.max(1e-6, a.turn)) * 100);
-  add(dt, `${Math.abs(dt)}% turning`, Math.abs(dt) / 100);
-  const dr = b.repair - a.repair;
-  add(dr, `${Math.abs(dr).toFixed(1)} repair/s`, Math.abs(dr) / 5);
-  const dh = Math.round(b.hullDpm - a.hullDpm);
-  if (!dg) add(dh, `${Math.abs(dh)} dmg/min`, Math.abs(dh) / Math.max(1, a.hullDpm));
-  return out.sort((x, y) => y.size - x.size);
 }

@@ -4,14 +4,14 @@ import { BASIC_LEE, LEE_DEFS } from '../src/config/lees';
 import { defaultTuning, type Tuning } from '../src/config/tuning';
 import { createBoat, gunSpec, motionParams, structureFraction, type Boat } from '../src/sim/boat';
 import { boatCard } from '../src/sim/boatStats';
-import { createLee, leeStat, taskKey, type Lee } from '../src/sim/crew';
+import { createLee, jobSeats, leeStat, taskKey, type Lee } from '../src/sim/crew';
 import { tileAtCell } from '../src/sim/grid';
 import { defaultBuild } from '../src/sim/loadout';
 import { pointInPolygon, toWorld, type Vec } from '../src/sim/math';
 import { FIXED_DT } from '../src/sim/steering';
 import { World, type CrewPlacement, type Shell } from '../src/sim/world';
 
-const grid = createBoat(0, 'player', defaultBuild('sloop'), defaultTuning(), { x: 0, y: 0 }, 0).grid;
+const grid = createBoat(0, 'player', defaultBuild('basic'), defaultTuning(), { x: 0, y: 0 }, 0).grid;
 const tile = (col: number, row: number) => tileAtCell(grid, col, row)!.index;
 const T = {
   portCannon1: tile(1, 0),
@@ -32,11 +32,18 @@ function quiet(t: Tuning): Tuning {
 }
 
 /** An enemy Sloop with nobody aboard (its guns stay silent). */
-const emptySloop = () => ({ build: defaultBuild('sloop'), crew: [] });
+const emptySloop = () => ({ build: defaultBuild('basic'), crew: [] });
+
+/** The Sloop without its lookout (so a gunner has no other gun-crew work). */
+function noLookout() {
+  const b = defaultBuild('basic');
+  delete b.loadout['fix:3,1'];
+  return b;
+}
 
 /** A world with the player frozen at the origin (bow north) and one crewless enemy pinned at `enemyAt`. */
-function setup(t: Tuning, crew: CrewPlacement, enemyAt: Vec = { x: 0, y: -400 }) {
-  const w = new World(t, 1, { enemies: [emptySloop()], crew });
+function setup(t: Tuning, crew: CrewPlacement, enemyAt: Vec = { x: 0, y: -400 }, build = defaultBuild('basic')) {
+  const w = new World(t, 1, { enemies: [emptySloop()], player: { build, crew: crew.map((home) => ({ type: 'basic', home })) } });
   w.start();
   const pin = (at: Vec) => {
     enemyAt = at;
@@ -77,7 +84,7 @@ describe('deck grid', () => {
     const count = (s: string | null) => grid.tiles.filter((t) => t.station === s).length;
     expect([count('gun'), count('oars'), count('sails'), count('lookout'), count(null)]).toEqual([4, 2, 1, 1, 7]);
     // The Sloop's starting crew is short-handed: fewer Lees than stations.
-    expect(defaultTuning().ships.sloop.crewMin).toBeLessThan(8);
+    expect(defaultTuning().ships.basic.crewMin).toBeLessThan(8);
     expect(grid.tiles[T.portCannon2].label).toBe('Port cannon 2');
     expect(grid.tiles[T.lookout].label).toBe('Lookout');
     expect(grid.tiles[T.midDeck].neighbors.sort()).toEqual([tile(0, 1), tile(1, 0), tile(1, 2), tile(2, 1)].sort());
@@ -115,7 +122,7 @@ describe('stations need crew', () => {
     const half = new World(t, 1, { crew: [T.portOars] });
     expect(half.player.mobility.speed).toBeCloseTo(t.crew.oarBaseline + t.items.oars.boost);
     // A third set of oars stacks.
-    const three = new World(t, 1, { player: { build: { ship: 'sloop', loadout: { ...defaultBuild('sloop').loadout, 'fix:4,1': 'oars' } }, crew: [T.portOars, tile(0, 2), tile(4, 1)].map((home) => ({ type: 'basic', home })) } });
+    const three = new World(t, 1, { player: { build: { ship: 'basic', loadout: { ...defaultBuild('basic').loadout, 'fix:4,1': 'oars' } }, crew: [T.portOars, tile(0, 2), tile(4, 1)].map((home) => ({ type: 'basic', home })) } });
     expect(three.player.mobility.speed).toBeCloseTo(t.crew.oarBaseline + 3 * t.items.oars.boost);
   });
 
@@ -153,106 +160,100 @@ describe('boat stat card', () => {
     // Two 70° broadsides cover 140° of the circle; a bow gun adds its own wedge.
     expect(a.arcCoverage).toBeGreaterThanOrEqual(138);
     expect(a.arcCoverage).toBeLessThanOrEqual(144);
-    const chaser = boatCard(new World(t, 1, { player: { build: { ship: 'sloop', loadout: { ...defaultBuild('sloop').loadout, 'fix:4,1': 'longGun' } }, crew: [] } }).player, t);
+    const chaser = boatCard(new World(t, 1, { player: { build: { ship: 'basic', loadout: { ...defaultBuild('basic').loadout, 'fix:4,1': 'longGun' } }, crew: [] } }).player, t);
     expect(chaser.arcCoverage - a.arcCoverage).toBeGreaterThanOrEqual(34);
   });
 });
 
-describe('crew reallocation (§5.5)', () => {
-  test('enemy on the other side: the gunner crosses the deck, then crosses back', () => {
-    const { w, run, pin } = setup(quiet(defaultTuning()), [T.starCannon2], PORT);
-    run(4);
+describe('jobs (Phase 5 §5)', () => {
+  test('a gunner follows the enemy to a gun that bears, after holding its own gun for a few seconds', () => {
+    const t = quiet(defaultTuning());
+    const { w, run, pin } = setup(t, [T.starCannon2], PORT);
     const l = lee(w);
+    expect(l.job).toBe('fire');
+    run(t.jobs.gunStick - 0.5);
+    // Stickiness: turning the boat doesn't send the gun crew running across the deck at once.
+    expect(l.task).toEqual({ type: 'station', target: T.starCannon2 });
+    run(2.5);
     expect(l.task.type).toBe('station');
     expect([T.portCannon1, T.portCannon2]).toContain(l.task.target);
     expect(l.working).toBe(true);
     expect(l.reason).toMatch(/Port cannon \d: enemy in arc/);
+    run(4);
     expect(w.stats.player.shellsFired).toBeGreaterThan(0);
     pin(STARBOARD);
-    run(5);
-    expect(l.task).toEqual({ type: 'station', target: T.starCannon2 }); // home again
+    run(t.jobs.gunStick + 3);
+    expect(l.task).toEqual({ type: 'station', target: T.starCannon2 });
   });
 
-  test('cannon knocked offline with no other gun bearing: the gunner repairs it, then goes back to it', () => {
+  test('a gun knocked offline: the gunner finds other gun-crew work (the lookout), a fixer patches it, the gunner goes back', () => {
     const t = quiet(defaultTuning());
-    const { w, run } = setup(t, [T.portCannon2], PORT);
+    const { w, run } = setup(t, [T.portCannon2, T.midDeck], PORT);
     run(1);
     const guns = part(w.player, 'port');
     guns.layers[0].hp = guns.layers[0].maxHp * 0.2;
     run(0.5);
-    const l = lee(w);
-    expect(l.task).toEqual({ type: 'repair', target: guns.index });
-    expect(l.reason).toMatch(/abandoned Port cannon 2: offline/);
+    const [gunner, fixer] = [lee(w, 1), lee(w, 2)];
+    expect(gunner.task).toEqual({ type: 'station', target: T.lookout });
+    expect(fixer.task).toEqual({ type: 'repair', target: guns.index });
     run(25);
     expect(structureFraction(guns)).toBeGreaterThan(t.boat.function.gunOfflineAt);
-    expect(l.task).toEqual({ type: 'station', target: T.portCannon2 });
+    expect([T.portCannon1, T.portCannon2]).toContain(gunner.task.target);
   });
 
-  test('a part is hit: the nearest damage-control Lee patches it up to the ceiling, then goes home', () => {
+  test('idle fallback: a gunner with no gun-crew work left repairs instead of standing there', () => {
     const t = quiet(defaultTuning());
-    const { w, run } = setup(t, [T.midDeck, T.lookout]);
-    const bow = part(w.player, 'bow');
-    bow.layers[0].hp = bow.layers[0].maxHp * 0.3;
-    run(1);
-    const dc = lee(w, 1);
-    expect(dc.task).toEqual({ type: 'repair', target: bow.index });
-    run(40);
-    expect(structureFraction(bow)).toBeCloseTo(t.crew.repairCeiling, 3);
-    expect(dc.task.type).toBe('idle');
-    expect(dc.tile).toBe(T.midDeck);
-    expect(dc.stats.hpRepaired).toBeGreaterThan(0);
+    const w = new World(t, 1, { enemies: [emptySloop()], player: { build: noLookout(), crew: [{ type: 'basic', home: T.portCannon2 }] } });
+    w.start();
+    const guns = part(w.player, 'port');
+    for (let i = 0; i < 1 / FIXED_DT; i++) w.step(FIXED_DT);
+    guns.layers[0].hp = guns.layers[0].maxHp * 0.2;
+    for (let i = 0; i < 1 / FIXED_DT; i++) w.step(FIXED_DT);
+    const l = lee(w);
+    expect(l.job).toBe('fire');
+    expect(l.task).toEqual({ type: 'repair', target: guns.index });
+    expect(l.reason).toMatch(/nothing to do as fire/);
   });
 
-  test('a wrecked part cannot be repaired mid-fight (by default)', () => {
-    const { w, run } = setup(quiet(defaultTuning()), [T.midDeck]);
-    const bow = part(w.player, 'bow');
-    bow.layers[0].hp = 0;
-    run(5);
-    expect(bow.layers[0].hp).toBe(0);
-    expect(lee(w).task.type).toBe('idle');
-  });
-
-  test('flooding: a Lee at a quiet post bails, then returns to it', () => {
+  test('flooding: a gunner whose gun can\'t bear bails, then stands ready at a gun again', () => {
     const t = quiet(defaultTuning());
-    const { w, run } = setup(t, [T.lookout]);
+    const { w, run } = setup(t, [T.portCannon2], undefined, noLookout());
     const mid = part(w.player, 'midship');
     mid.water = mid.capacity * 0.8;
-    run(1);
+    run(t.jobs.gunStick + 1);
     const l = lee(w);
     expect(l.task.type).toBe('bail');
     run(80);
     expect(l.stats.waterBailed).toBeGreaterThan(0);
-    expect(l.task).toEqual({ type: 'station', target: T.lookout });
+    expect(l.task.type).toBe('station');
+    expect(w.player.grid.tiles[l.task.target].station).toBe('gun');
   });
 
-  test('short-staffed: urgent jobs fill first, low-urgency stations stay empty', () => {
+  test('each Lee works its own job: the rower keeps rowing and the fixer doesn\'t man the guns', () => {
     const t = quiet(defaultTuning());
-    // A rower and a damage-control Lee; the enemy is on the port beam.
     const { w, run } = setup(t, [T.portOars, T.midDeck], PORT);
     run(4);
     const [rower, dc] = [lee(w, 1), lee(w, 2)];
-    expect(rower.task).toEqual({ type: 'station', target: T.portOars }); // keeps rowing
-    expect(dc.task.type).toBe('station'); // mans a gun that bears
-    expect([T.portCannon1, T.portCannon2]).toContain(dc.task.target);
-    // Nobody wastes time on the lookout or the guns facing away.
-    const busy = w.player.crew.lees.map((l) => taskKey(l.task));
-    for (const k of [T.lookout, T.starCannon1, T.starCannon2]) expect(busy).not.toContain(`station:${k}`);
+    expect(rower.task).toEqual({ type: 'station', target: T.portOars });
+    expect(dc.job).toBe('fix');
+    expect(dc.task.type).toBe('idle');
+    expect(w.stats.player.shellsFired).toBe(0);
   });
 
-  test('claims prevent pile-ons: one damaged part draws one Lee, not the whole crew', () => {
+  test('claims prevent pile-ons: one damaged part draws one fixer; a real emergency pulls in a helper', () => {
     const t = quiet(defaultTuning());
-    // A gunner, a rower (standing in the engine room), a sail hand and one damage-control Lee.
-    const { w, run } = setup(t, [T.portCannon2, T.portOars, T.sails, T.midDeck]);
+    // A gunner, a rower, a sail hand and two fixers.
+    const { w, run } = setup(t, [T.portCannon2, T.portOars, T.sails, T.midDeck, T.bowDeck]);
     const engine = part(w.player, 'stern');
     engine.layers[0].hp = engine.layers[0].maxHp * 0.3;
     run(1);
     const repairing = w.player.crew.lees.filter((l) => l.task.type === 'repair');
     expect(repairing.map((l) => l.number)).toEqual([4]);
-    // A real emergency (heavy flooding) does pull in a helper who has nothing better to do.
     const mid = part(w.player, 'midship');
     mid.water = mid.capacity;
     run(1);
-    expect(w.player.crew.lees.filter((l) => l.task.type === 'bail').length).toBeGreaterThanOrEqual(2);
+    expect(w.player.crew.lees.filter((l) => l.task.type === 'bail').length).toBeGreaterThanOrEqual(1);
+    expect(w.player.crew.lees.filter((l) => l.task.type === 'bail' || l.task.type === 'repair').every((l) => l.job === 'fix' || l.task.type === 'bail')).toBe(true);
   });
 
   test('two Lees never claim the same station', () => {
@@ -266,6 +267,33 @@ describe('crew reallocation (§5.5)', () => {
     expect(clash).toBe(0);
     const manned = w.player.crew.lees.filter((l) => l.task.type === 'station').map((l) => l.task.target).sort();
     expect(manned).toEqual([T.portCannon1, T.portCannon2].sort());
+  });
+
+  test('best fit: an order moves the Lee with the biggest gain, and a full job takes nobody', () => {
+    const t = quiet(defaultTuning());
+    const w = new World(t, 1, {
+      enemies: [emptySloop()],
+      player: {
+        build: defaultBuild('basic'),
+        crew: [
+          { type: 'deft', home: T.portCannon1 }, // a good sailor stuck on a gun
+          { type: 'quick', home: T.portOars }, // a good gunner stuck rowing
+          { type: 'basic', home: T.midDeck },
+        ],
+      },
+    });
+    w.start();
+    const [deft, quick] = w.player.crew.lees;
+    expect(w.order('sail')?.id).toBe(deft.id);
+    expect(w.order('fire')?.id).toBe(quick.id);
+    // Two oars and a sail: three seats; fill them and the next order finds no seat.
+    w.order('sail');
+    w.order('sail');
+    expect(jobSeats(w.player, 'sail', t)).toBe(3);
+    expect(w.order('sail')).toBeNull();
+    expect(w.drainEvents().some((e) => e.type === 'orderFull' && e.job === 'sail')).toBe(true);
+    // Fix has no seat limit.
+    expect(w.order('fix')).not.toBeNull();
   });
 });
 
@@ -380,7 +408,7 @@ describe('Lee types', () => {
     const t = quiet(defaultTuning());
     const w = new World(t, 1, {
       enemies: [emptySloop()],
-      player: { build: defaultBuild('sloop'), crew: [{ type: 'quick', home: tile(1, 1) }, { type: 'handy', home: tile(2, 0) }] },
+      player: { build: defaultBuild('basic'), crew: [{ type: 'quick', home: tile(1, 1) }, { type: 'handy', home: tile(2, 0) }] },
     });
     w.start();
     // Both are damage control (plain deck); the Handy Lee is the better repairer.
@@ -398,7 +426,7 @@ describe('Lee types', () => {
     const w = new World(t, 1, {
       enemies: [emptySloop()],
       player: {
-        build: defaultBuild('sloop'),
+        build: defaultBuild('basic'),
         crew: [
           { type: 'basic', home: T.portCannon2 },
           { type: 'hard', home: tile(2, 0) },
@@ -418,7 +446,7 @@ describe('Lee types', () => {
 
   test('a Lee carries its level bonuses and trinkets in its mods', () => {
     const t = quiet(defaultTuning());
-    const w = new World(t, 1, { player: { build: defaultBuild('sloop'), crew: [{ type: 'quick', home: T.portCannon1, level: 3, mods: { loadSpeed: 1.2, hp: 1.25 } }] } });
+    const w = new World(t, 1, { player: { build: defaultBuild('basic'), crew: [{ type: 'quick', home: T.portCannon1, level: 3, mods: { loadSpeed: 1.2, hp: 1.25 } }] } });
     const q = w.player.crew.lees[0];
     expect(q.level).toBe(3);
     expect(leeStat(q, 'loadSpeed', w.player, t)).toBeCloseTo(1.5 * 1.2);

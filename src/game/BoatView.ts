@@ -240,16 +240,6 @@ export class BoatView {
         g.fillRect(m.x - 0.45, m.y - 0.45, 0.9, 0.9);
         break;
       }
-      case 'hooks': {
-        const f = tile.edges[0] ?? 'port';
-        const a = FACING_ANGLE[f];
-        const tip = W({ x: c.x + Math.cos(a) * 1.4, y: c.y + Math.sin(a) * 1.4 });
-        const m = W(c);
-        g.lineStyle(0.16, ink, alpha);
-        g.lineBetween(m.x, m.y, tip.x, tip.y);
-        g.strokeCircle(tip.x, tip.y, 0.3);
-        break;
-      }
       case 'powder': {
         const m = W(c);
         g.fillStyle(dead ? 0x3a2a20 : 0xa0302a, alpha);

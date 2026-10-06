@@ -56,7 +56,7 @@ export function preloadArt(scene: Phaser.Scene): void {
 }
 
 const ICONS: IconKind[] = [
-  'gun', 'row', 'sail', 'lookout', 'pump', 'hooks', 'powder', 'repair', 'bail', 'walk', 'idle', 'cannon', 'oars', 'sails', 'spyglass',
+  'gun', 'row', 'sail', 'lookout', 'pump', 'powder', 'repair', 'bail', 'walk', 'idle', 'cannon', 'oars', 'sails', 'spyglass',
   'board', 'repel', 'melee', 'swing', 'recall', 'pistol', 'gatling',
 ];
 

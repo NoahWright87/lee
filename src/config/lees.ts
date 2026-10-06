@@ -34,7 +34,7 @@ export type LeeStats = Record<LeeStatKey, number>;
 export const LOWER_IS_BETTER: ReadonlySet<LeeStatKey> = new Set(['impactTaken', 'pistolTaken']);
 
 /** Kinds of work a Lee can do. Each maps to one stat (see WORK_STAT). */
-export type WorkKind = 'gun' | 'row' | 'sail' | 'lookout' | 'pump' | 'hooks' | 'powder' | 'repair' | 'bail' | 'board' | 'repel';
+export type WorkKind = 'gun' | 'row' | 'sail' | 'lookout' | 'pump' | 'powder' | 'repair' | 'bail' | 'board' | 'repel';
 /**
  * What a Lee is spending its time on, for icons and the result screen.
  * 'board' = on an enemy deck hunting for a fight, 'melee' = sword fighting on a
@@ -42,7 +42,7 @@ export type WorkKind = 'gun' | 'row' | 'sail' | 'lookout' | 'pump' | 'hooks' | '
  */
 export type ActivityKind = WorkKind | 'melee' | 'swing' | 'walk' | 'idle';
 
-export const ACTIVITY_KINDS: ActivityKind[] = ['gun', 'row', 'sail', 'lookout', 'pump', 'hooks', 'powder', 'repair', 'bail', 'board', 'repel', 'melee', 'swing', 'walk', 'idle'];
+export const ACTIVITY_KINDS: ActivityKind[] = ['gun', 'row', 'sail', 'lookout', 'pump', 'powder', 'repair', 'bail', 'board', 'repel', 'melee', 'swing', 'walk', 'idle'];
 
 /** The stat that drives each kind of work. The AI weighs it when choosing tasks. */
 export const WORK_STAT: Record<WorkKind, LeeStatKey> = {
@@ -51,7 +51,6 @@ export const WORK_STAT: Record<WorkKind, LeeStatKey> = {
   sail: 'sailHandling',
   lookout: 'spotting',
   pump: 'bailRate',
-  hooks: 'swingSpeed',
   powder: 'loadSpeed',
   repair: 'repairRate',
   bail: 'bailRate',
@@ -59,6 +58,39 @@ export const WORK_STAT: Record<WorkKind, LeeStatKey> = {
   board: 'meleeDamage',
   repel: 'meleeDamage',
 };
+
+/**
+ * A Lee's job: one of the four action buttons. It picks which tile to work
+ * live, by its job and what's needed (see sim/crew.ts).
+ */
+export type Job = 'sail' | 'fire' | 'board' | 'fix';
+export const JOBS: Job[] = ['sail', 'fire', 'board', 'fix'];
+
+export const JOB_INFO: Record<Job, { icon: string; name: string; text: string }> = {
+  sail: { icon: '⏩', name: 'SAIL', text: 'Oars and sails' },
+  fire: { icon: '🔫', name: 'FIRE', text: 'Guns, the lookout and the powder store' },
+  board: { icon: '⚔️', name: 'BOARD', text: 'The boarding party' },
+  fix: { icon: '🛠️', name: 'FIX', text: 'Repairs, bailing and the pump' },
+};
+
+/** How good a Lee is at a job, from its stats (best-fit orders compare these). */
+export function jobSkill(job: Job, stat: (k: LeeStatKey) => number): number {
+  switch (job) {
+    case 'sail':
+      return Math.max(stat('rowStrength'), stat('sailHandling'));
+    case 'fire':
+      return stat('loadSpeed') * stat('accuracy');
+    case 'board':
+      return stat('meleeDamage') * stat('meleeRate');
+    case 'fix':
+      return (stat('repairRate') + stat('bailRate')) / 2;
+  }
+}
+
+/** Fights boarders by charging them (true) or by shooting from a tile away (false). */
+export function meleeFocused(stat: (k: LeeStatKey) => number): boolean {
+  return stat('meleeDamage') * stat('meleeRate') * stat('hp') >= stat('pistolAccuracy') * stat('pistolRate') * stat('pistolDamage');
+}
 
 /**
  * A generic ability: "while <trigger>, multiply <stat(s)> of <target> by <multiply>".
