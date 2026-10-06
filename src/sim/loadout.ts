@@ -10,7 +10,7 @@
 import { ITEMS, type EffectDef, type ItemDef } from '../config/items';
 import type { LeeStatKey } from '../config/lees';
 import { SHIPS, type ShipDef } from '../config/ships';
-import { attachmentSlotId, FACING_ANGLE, floorSlotId, type Facing, type ShipSlot, type SlotType } from '../config/slots';
+import { attachmentSlotId, FACING_ANGLE, type Facing, type ShipSlot, type SlotType } from '../config/slots';
 import type { Tuning } from '../config/tuning';
 import { labelTiles, tileAtCell, type Grid } from './grid';
 import { pointInPolygon, type Vec } from './math';
@@ -71,10 +71,9 @@ function fold(target: Record<string, number>, stat: string, e: EffectDef, v: num
 
 // ------------------------------------------------------------ slots
 
-/** Every slot of a ship: its own list, a floor slot per tile, and an attachment slot per gun in the loadout. */
-export function allSlots(ship: ShipDef, grid: Grid, loadout: Record<string, string> = {}): ShipSlot[] {
+/** Every slot of a ship: its own list (fixtures, floors, rails, hull modules) and an attachment slot per gun in the loadout. */
+export function allSlots(ship: ShipDef, _grid: Grid | null, loadout: Record<string, string> = {}): ShipSlot[] {
   const out = [...ship.slots];
-  for (const tile of grid.tiles) out.push({ id: floorSlotId(tile.col, tile.row), type: 'floor', tile: [tile.col, tile.row] });
   for (const s of ship.slots) {
     if (ITEMS[loadout[s.id]]?.category === 'gun') out.push({ id: attachmentSlotId(s.id), type: 'attachment', gun: s.id });
   }
@@ -96,14 +95,20 @@ export function fits(item: ItemDef | undefined, type: SlotType): boolean {
   return !!item && item.fits.includes(type);
 }
 
-/** A ship's default build (its default loadout, no treasures). */
+/** A ship's standard fit (what enemies and the sandbox sail). */
 export function defaultBuild(ship: string): BoatBuild {
-  return { ship, loadout: { ...(SHIPS[ship]?.defaults ?? {}) }, facings: {}, treasures: [] };
+  return { ship, loadout: { ...(SHIPS[ship]?.defaults ?? {}) }, facings: {}, treasures: [...(SHIPS[ship]?.defaultTreasures ?? [])] };
+}
+
+/** A ship's preset build (a new run starts with it). */
+export function presetBuild(ship: string): BoatBuild {
+  const p = SHIPS[ship]?.preset;
+  return { ship, loadout: { ...(p?.loadout ?? {}) }, facings: { ...(p?.facings ?? {}) }, treasures: [...(p?.treasures ?? [])] };
 }
 
 /** Drop anything that doesn't belong: unknown items or slots, wrong slot types, attachments without a gun, extra treasures. */
 export function cleanBuild(b: BoatBuild, t?: Tuning): BoatBuild {
-  const ship = SHIPS[b.ship] ?? SHIPS.sloop;
+  const ship = SHIPS[b.ship] ?? SHIPS.basic;
   const loadout: Record<string, string> = {};
   for (const [slotId, item] of Object.entries(b.loadout)) {
     const slot = slotById(ship, slotId);
@@ -117,7 +122,13 @@ export function cleanBuild(b: BoatBuild, t?: Tuning): BoatBuild {
   }
   const cap = t ? Math.max(0, Math.round(t.ships[ship.id]?.treasures ?? 0)) : Infinity;
   const treasures = (b.treasures ?? []).filter((i) => ITEMS[i]?.category === 'treasure').slice(0, cap);
-  return { ship: ship.id, loadout, facings: { ...(b.facings ?? {}) }, treasures };
+  // Facings only where a gun can turn that way (interior: any; edge: its own sides).
+  const facings: Record<string, Facing> = {};
+  for (const [slotId, f] of Object.entries(b.facings ?? {})) {
+    const slot = slotById(ship, slotId);
+    if (slot?.type === 'interior' || slot?.facings?.includes(f)) facings[slotId] = f;
+  }
+  return { ship: ship.id, loadout, facings, treasures };
 }
 
 // ------------------------------------------------------------ building
@@ -140,7 +151,7 @@ function tileOf(grid: Grid, slot: ShipSlot | null | undefined): number {
 
 /** Fold every effect of a build into boat mods. */
 export function computeMods(b: BoatBuild, grid: Grid, partIds: string[], partRoles: string[], t: Tuning): BoatMods {
-  const ship = SHIPS[b.ship] ?? SHIPS.sloop;
+  const ship = SHIPS[b.ship] ?? SHIPS.basic;
   const n = partIds.length;
   const mods: BoatMods = {
     speed: 1,
@@ -174,7 +185,9 @@ export function computeMods(b: BoatBuild, grid: Grid, partIds: string[], partRol
           for (let i = 0; i < n; i++) if (partRoles[i] === 'engine' && e.stat === 'hp') mods.partHp[i] *= v;
           break;
         case 'part': {
-          const i = slot?.part ? partIds.indexOf(slot.part) : -1;
+          // The hull part of the slot (a hull module sits along the edge of a tile of that part).
+          const ti = tileOf(grid, slot);
+          const i = slot?.part ? partIds.indexOf(slot.part) : ti >= 0 ? grid.tiles[ti].part : -1;
           if (i < 0) break;
           if (e.stat === 'armor') mods.partArmor[i] += v;
           else if (e.stat === 'hp') mods.partHp[i] *= v;
@@ -226,7 +239,7 @@ export function trinketMods(trinkets: readonly string[], t: Tuning): StatMods {
 
 /** Place a build's fixtures, rails and floors on a grid, set tile durability, and relabel. */
 export function furnishGrid(b: BoatBuild, grid: Grid, layoutLabel: Parameters<typeof labelTiles>[0], mods: BoatMods, t: Tuning): void {
-  const ship = SHIPS[b.ship] ?? SHIPS.sloop;
+  const ship = SHIPS[b.ship] ?? SHIPS.basic;
   for (const tile of grid.tiles) {
     tile.station = null;
     tile.fixture = null;
@@ -269,10 +282,17 @@ export function muzzleLocal(polys: readonly (readonly Vec[])[], center: Vec, ang
   return { x: center.x + dx * (d + 0.3), y: center.y + dy * (d + 0.3) };
 }
 
+/** Which way a gun in this slot faces: turned (interior: any way; a corner: either side), or the slot's own facing. */
+export function slotFacing(b: BoatBuild, slot: ShipSlot): Facing {
+  const turned = b.facings?.[slot.id];
+  if (slot.type === 'interior') return turned ?? slot.facing ?? 'bow';
+  if (turned && slot.facings?.includes(turned)) return turned;
+  return slot.facing ?? 'port';
+}
+
 /** Local angle a gun in this slot points. */
 export function gunFacing(b: BoatBuild, slot: ShipSlot): number {
-  const f = slot.type === 'interior' ? b.facings?.[slot.id] ?? slot.facing ?? 'bow' : slot.facing ?? 'port';
-  return FACING_ANGLE[f];
+  return FACING_ANGLE[slotFacing(b, slot)];
 }
 
 /** Tags on a build (ship, every equipped item, treasures). */

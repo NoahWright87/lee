@@ -2,9 +2,10 @@
 // screen is up, and session settings (speed, debug, pause). The Phaser scene
 // and the DOM HUD both talk to this.
 //
-// Flow: MENU → choose ship → draft → starting part → REFIT → FIGHT → post-fight
-// (results, level-ups, reward) → REFIT → ... until the boat sinks or the crew
-// is gone (RUN OVER). The run is saved locally at every step outside a fight;
+// Flow: MENU → choose ship (it comes with its preset) → REFIT → FIGHT →
+// post-fight (results, level-ups, reward) → REFIT → ... until the boat sinks or
+// the crew is gone (RUN OVER). The first fight's reward must be equipped before
+// the second fight. The run is saved locally at every step outside a fight;
 // reloading mid-fight returns to the refit before it. Sandbox mode is the old
 // test bench: any ship, any part, any Lee, any encounter, free refit, nothing
 // permanent.
@@ -13,22 +14,26 @@ import type { EnemySpec } from '../config/encounters';
 import { ITEMS } from '../config/items';
 import type { Facing } from '../config/slots';
 import { defaultTuning, mergeTuning, TUNING_VERSION, type Tuning } from '../config/tuning';
-import { defaultBuild } from '../sim/loadout';
+import type { Boat } from '../sim/boat';
+import { presetBuild } from '../sim/loadout';
+import { applyMove, stow as stowPick, type Dest, type Displaced, type Pick } from '../sim/stack';
 import type { Vec } from '../sim/math';
 import {
   addCrew,
   addItem,
   applyFight,
+  cargo,
   autoArrangeRun,
+  autoEquipAll,
   autoPickAll,
   chooseBonus,
   crewSpecs,
-  draftPick,
   enemySetups,
   equip,
   finishPost,
   fixHomes,
   loadRun,
+  mustPlaceOpen,
   newRun,
   release,
   saveRun,
@@ -36,7 +41,6 @@ import {
   setHome,
   setupFor,
   takeReward,
-  takeStartPart,
   unequip,
   wearTrinket,
   type LoadResult,
@@ -58,7 +62,7 @@ const RESET_KEYS = [STORAGE_KEY, SPEED_KEY, RUN_KEY, SANDBOX_KEY, 'lee.crew.arra
 
 export type SpeedMode = 'ranged' | 'melee';
 export type Mode = 'run' | 'sandbox';
-export type Screen = 'menu' | 'chooseShip' | 'draft' | 'startPart' | 'refit' | 'fight' | 'post' | 'over';
+export type Screen = 'menu' | 'chooseShip' | 'refit' | 'fight' | 'post' | 'over';
 
 /** Sandbox: a free run plus the encounter you're testing against. */
 export interface SandboxState {
@@ -142,8 +146,12 @@ export class Controller {
   sandbox: SandboxState | null = null;
   /** What the saved run looked like at startup (for the menu and the save-error message). */
   saved: LoadResult;
-  /** Selected gun slot on the refit screen (its arc is drawn on the ocean). */
-  arcPreview: string | null = null;
+  /**
+   * Refit gun arcs on the ocean: every gun's arc in grey; the selected gun's
+   * old arc in red and, while a move is previewed, its new arc in green
+   * (drawn from `boat`, the previewed build).
+   */
+  arcPreview: { oldSlot: string | null; newSlot: string | null; boat: Boat | null } | null = null;
   /** Ocean share of the screen right now (animates between setup and fight). Written by the scene. */
   oceanFrac = 0.75;
   stripProjection: StripProjection | null = null;
@@ -171,7 +179,7 @@ export class Controller {
     return this.mode === 'sandbox' ? this.sandbox?.run ?? null : this.run;
   }
 
-  /** A quiet world behind the menus: a Sloop and nobody to fight yet. */
+  /** A quiet world behind the menus: a Basic Ship and nobody to fight yet. */
   private idleWorld(): World {
     return new World(this.tuning, 1, { enemies: [], assists: false });
   }
@@ -226,22 +234,9 @@ export class Controller {
     this.notify();
   }
 
+  /** Choose a ship: it comes with its preset (loadout and crew), ready for fight 1. */
   chooseShip(ship: string): void {
-    this.run = newRun(ship, (Math.random() * 2 ** 31) >>> 0);
-    this.screen = 'draft';
-    this.changed();
-  }
-
-  draft(type: string): void {
-    if (!this.run) return;
-    draftPick(this.run, type, this.tuning);
-    if (this.run.stage === 'startPart') this.screen = 'startPart';
-    this.changed();
-  }
-
-  takeStartPart(item: string): void {
-    if (!this.run) return;
-    takeStartPart(this.run, item, this.tuning);
+    this.run = newRun(ship, (Math.random() * 2 ** 31) >>> 0, this.tuning);
     this.screen = 'refit';
     this.changed();
   }
@@ -252,7 +247,7 @@ export class Controller {
     this.run = this.saved.run;
     this.paused = false;
     const stage = this.run.stage;
-    this.screen = stage === 'draft' ? 'draft' : stage === 'startPart' ? 'startPart' : stage === 'post' ? 'post' : stage === 'over' ? 'over' : 'refit';
+    this.screen = stage === 'post' ? 'post' : stage === 'over' ? 'over' : 'refit';
     this.changed();
   }
 
@@ -308,6 +303,49 @@ export class Controller {
   }
 
   // ------------------------------------------------------------ refit
+
+  /** Move something on the refit screen (commit). Sandbox catalog items are made first. Returns what else moved. */
+  move(pick: Pick | { from: 'catalog'; item: string }, dest: Dest): Displaced[] {
+    const run = this.active;
+    if (!run) return [];
+    let p: Pick;
+    if (pick.from === 'catalog') p = { from: 'cargo', uid: addItem(run, pick.item).uid };
+    else p = pick;
+    const out = applyMove(run, p, dest, this.tuning);
+    this.dropSandboxCargo();
+    this.changed();
+    return out;
+  }
+
+  /** Stow a thing from the boat (a Lee goes ashore, an item to cargo). */
+  stow(pick: Pick): void {
+    const run = this.active;
+    if (!run) return;
+    stowPick(run, pick);
+    this.dropSandboxCargo();
+    this.changed();
+  }
+
+  /** Auto-equip: everything in cargo into empty spots, Lees ashore onto free tiles. Nothing placed moves. */
+  autoEquip(): void {
+    const run = this.active;
+    if (!run) return;
+    autoEquipAll(run, this.tuning);
+    this.changed();
+  }
+
+  /** Is the first reward still waiting to be equipped? (Launch is blocked until it is.) */
+  mustPlace(): boolean {
+    return this.mode === 'run' && !!this.run && mustPlaceOpen(this.run);
+  }
+
+  /** Sandbox: nothing piles up in a cargo hold (Lees ashore stay). */
+  private dropSandboxCargo(): void {
+    if (this.mode !== 'sandbox' || !this.sandbox) return;
+    const run = this.sandbox.run;
+    const loose = new Set(cargo(run).map((x) => x.uid));
+    run.items = run.items.filter((x) => !loose.has(x.uid));
+  }
 
   /** Equip an owned item (by uid) in a slot. Sandbox: an item id from the catalog makes a new one. */
   equip(what: number | string, slot: string): boolean {
@@ -396,8 +434,10 @@ export class Controller {
     run.ship = ship;
     run.items = run.items.filter((i) => ITEMS[i.item]?.category === 'trinket');
     run.loadout = {};
-    run.facings = {};
-    for (const [slot, item] of Object.entries(defaultBuild(ship).loadout)) run.loadout[slot] = addItem(run, item).uid;
+    const build = presetBuild(ship);
+    run.facings = { ...(build.facings ?? {}) };
+    for (const [slot, item] of Object.entries(build.loadout)) run.loadout[slot] = addItem(run, item).uid;
+    (build.treasures ?? []).forEach((item, i) => (run.loadout[`treasure:${i}`] = addItem(run, item).uid));
     autoArrangeRun(run, this.tuning);
     this.changed();
   }
@@ -413,7 +453,7 @@ export class Controller {
 
   /** Launch: the fight starts. */
   launch(): void {
-    if (!this.active) return;
+    if (!this.active || this.mustPlace()) return;
     if (this.world.phase === 'ready') this.world.placePlayerCrew(crewSpecs(this.active, this.tuning));
     this.world.start();
     this.screen = 'fight';
@@ -578,13 +618,12 @@ export class Controller {
   }
 }
 
-/** A new sandbox: the Sloop, a mixed crew, against a lone Sloop. */
+/** A new sandbox: the Basic Ship's preset plus a Hard and a Loud Lee, against a lone Basic Ship. */
 function freshSandbox(t: Tuning): SandboxState {
-  const run = newRun('sloop', 12345);
-  run.stage = 'refit';
-  for (const type of ['quick', 'handy', 'deft', 'hard', 'loud', 'basic']) addCrew(run, type, 1, t);
-  autoArrangeRun(run, t);
-  return { run, enemies: [{ ship: 'sloop', ai: 'standard', crew: [{ type: 'basic', count: 4 }] }] };
+  const run = newRun('basic', 12345, t);
+  for (const type of ['hard', 'loud']) addCrew(run, type, 1, t);
+  autoEquipAll(run, t);
+  return { run, enemies: [{ ship: 'basic', ai: 'standard', crew: [{ type: 'basic', count: 4 }] }] };
 }
 
 function assignDeep(target: Record<string, any>, source: Record<string, any>): void {

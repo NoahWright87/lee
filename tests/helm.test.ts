@@ -21,7 +21,7 @@ const run = (w: World, seconds: number, each?: () => void) => {
 function world() {
   const t = defaultTuning();
   t.boat.flooding.leakRate = 0;
-  const w = new World(t, 1, { enemies: [{ build: defaultBuild('sloop'), crew: [] }], crew: [] });
+  const w = new World(t, 1, { enemies: [{ build: defaultBuild('basic'), crew: [] }], crew: [] });
   w.start();
   Object.assign(w.enemies[0].motion, { x: 0, y: -2000 });
   const freezeEnemy = () => {
@@ -107,7 +107,7 @@ describe('the ⚔️ button', () => {
 
   test('tapping an enemy targets it and heads for it; ⚔️ sends one Lee per tap; tapping the ocean cancels the maneuver but keeps the party', () => {
     const t = defaultTuning();
-    const w = new World(t, 1, { enemies: [{ build: defaultBuild('sloop'), crew: [] }] });
+    const w = new World(t, 1, { enemies: [{ build: defaultBuild('basic'), crew: [] }] });
     w.start();
     const e = w.enemies[0];
     w.targetEnemy(e);

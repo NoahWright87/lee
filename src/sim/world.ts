@@ -185,15 +185,15 @@ export interface PlayerCarry {
 export interface WorldOptions {
   /** 1-based fight number in the current run (display only). */
   fight?: number;
-  /** Your boat and crew. Default: the Sloop's default loadout with `crew` Basic Lees. */
+  /** Your boat and crew. Default: the Basic Ship's standard fit with `crew` Basic Lees. */
   player?: BoatSetup;
   /** Enemy boats (encounter data, already built). */
   enemies?: BoatSetup[];
   /** Shorthand: enemy archetype ids ('standard', 'boarder', 'heavy') at level 1. */
   encounter?: string[];
-  /** Shorthand: this many Sloops (standard archetype). */
+  /** Shorthand: this many Basic Ships (standard archetype). */
   enemyCount?: number;
-  /** Shorthand for the player: Basic Lees on these home tiles of the default Sloop. */
+  /** Shorthand for the player: Basic Lees on these home tiles of the standard Basic Ship. */
   crew?: CrewPlacement;
   /** Player damage from the previous fight; repaired by run.repairBetweenFights. */
   carry?: PlayerCarry;
@@ -207,8 +207,8 @@ export interface WorldOptions {
 /** Home tile per Lee slot (null = in the tray). */
 export type CrewPlacement = (number | null)[];
 
-/** The default player setup: the Sloop's loadout and Basic Lees auto-arranged. */
-export function defaultPlayerSetup(t: Tuning, size = 6, ship = 'sloop'): BoatSetup {
+/** The default player setup: the Basic Ship's standard fit and Basic Lees auto-arranged. */
+export function defaultPlayerSetup(t: Tuning, size = 6, ship = 'basic'): BoatSetup {
   const build = defaultBuild(ship);
   const crew: CrewSpec[] = Array.from({ length: size }, () => ({ type: 'basic', home: null }));
   const homes = autoArrange(build, crew, t);
@@ -261,7 +261,7 @@ export class World {
     this.fight = Math.max(1, opts.fight ?? 1);
     this.assists = opts.assists ?? true;
     const assist = (v: number, off: number) => (this.assists ? v : off);
-    const playerSetup: BoatSetup = opts.player ?? (opts.crew ? { build: defaultBuild('sloop'), crew: basicCrew(opts.crew) } : defaultPlayerSetup(tuning));
+    const playerSetup: BoatSetup = opts.player ?? (opts.crew ? { build: defaultBuild('basic'), crew: basicCrew(opts.crew) } : defaultPlayerSetup(tuning));
     this.player = createBoat(1, 'player', playerSetup.build, tuning, { x: 0, y: 0 }, NORTH, { advantage: assist(tuning.global.playerAdvantage, 1) });
     if (opts.carry) this.applyCarry(opts.carry);
     this.playerCrew = playerSetup.crew;

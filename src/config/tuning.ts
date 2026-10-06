@@ -426,11 +426,21 @@ export function defaultTuning() {
       /** Every Nth repeat adds one more Lee to each enemy boat (up to its ship's max). 0 = never. */
       extraCrewEvery: 2,
     },
+    /** The refit's stat bars: the value that fills each bar (bars can overflow past full). */
+    refit: {
+      barFirepower: 1200,
+      barToughness: 500,
+      barSpeed: 1.2,
+      barBoarding: 20,
+      barRepair: 8,
+      /** Seconds the bars take to settle after a change. */
+      barAnimTime: 0.6,
+    },
     layout: {
-      /** Ocean share of the screen in setup mode (the deck grid gets the rest). */
-      setupOceanFraction: 0.54,
-      /** Smallest tile on screen in setup mode, CSS px (touch target). */
-      minTilePx: 46,
+      /** Ocean share of the screen in refit (the deck, cargo and buttons get the rest). */
+      setupOceanFraction: 0.4,
+      /** Smallest tile on screen in refit, CSS px (touch target). */
+      minTilePx: 40,
       /** Seconds for the panels to slide between setup and fight sizes. */
       panelSlideTime: 0.45,
       /** Ocean share of the screen at boarding range (the close-up grows to show the decks you're fighting). */

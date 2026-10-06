@@ -24,10 +24,10 @@ export interface SlotTypeDef {
 }
 
 export const SLOT_TYPES = {
-  edge: { name: 'Edge', glyph: '▮', help: 'A tile on the edge of the boat. Guns mounted here point the way the slot faces; oars and hooks go here too.' },
-  interior: { name: 'Interior', glyph: '◆', help: 'A tile inside the boat: sails, lookout, powder, and turret-style guns.' },
-  rail: { name: 'Rail', glyph: '╫', help: "The outer lip of an edge tile. Spikes, fences and planks; sits alongside the tile's fixture." },
-  hull: { name: 'Hull', glyph: '⬢', help: 'A part of the hull: plating, keel, rudder and other modules.' },
+  edge: { name: 'Edge', glyph: '▮', help: 'A deck tile on the edge of the boat. Guns mounted here point out over that edge (a corner can be turned to either side); oars go here too.' },
+  interior: { name: 'Interior', glyph: '◆', help: 'A deck tile inside the boat: sails, lookout, powder, and turret-style guns.' },
+  rail: { name: 'Rail', glyph: '╫', help: 'Just outside the hull, along one edge tile: spikes, fences and planks.' },
+  hull: { name: 'Hull', glyph: '⬢', help: 'Just outside the hull, under the rail: plating, keel, rudder and other modules.' },
   floor: { name: 'Floor', glyph: '▦', help: 'Under everything else on a tile.' },
   attachment: { name: 'Gun attachment', glyph: '✚', help: 'Fixed to one gun.' },
   treasure: { name: 'Treasure', glyph: '✦', help: 'Held by the ship; applies to the whole ship.' },
@@ -42,9 +42,11 @@ export interface ShipSlot {
   type: SlotType;
   /** Tile [col, row] for edge, interior, rail and floor slots. */
   tile?: [number, number];
-  /** Edge and rail slots: which edge. Interior slots: the default facing of a directional gun mounted there. */
+  /** Edge, rail and hull slots: which edge. Interior slots: the default facing of a directional gun mounted there. */
   facing?: Facing;
-  /** Hull slots: the hull part id. */
+  /** Edge slots: every way a gun here can be turned (a corner has two). */
+  facings?: Facing[];
+  /** Hull part id (not used by generated slots: their part is their tile's). */
   part?: string;
   /** Gun attachment slots: the gun's slot id. */
   gun?: string;

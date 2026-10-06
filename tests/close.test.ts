@@ -20,7 +20,7 @@ import { archetypeSetup, autoArrange, type BoatSetup, type CrewSpec } from '../s
 import { FIXED_DT } from '../src/sim/steering';
 import { World } from '../src/sim/world';
 
-const grid = createBoat(0, 'player', defaultBuild('sloop'), defaultTuning(), { x: 0, y: 0 }, 0).grid;
+const grid = createBoat(0, 'player', defaultBuild('basic'), defaultTuning(), { x: 0, y: 0 }, 0).grid;
 
 /** Enemy crew size override per archetype for the current test (undefined = the archetype's own crew). */
 let size: Record<string, number | undefined> = {};
@@ -85,7 +85,7 @@ const besideAt = (t: Tuning, e: Boat): Vec => ({ x: -(SLOOP.beam / 2 + e.layout.
 
 /** A world with the player at the origin (bow north) and enemy 0 alongside on its port side; `hold` keeps everyone pinned. */
 function alongside(t: Tuning, crew: Place[], types: string[], others: Vec[] = []) {
-  const w = new World(t, 5, { enemies: enemies(t, types), player: { build: defaultBuild('sloop'), crew: crewOf(crew) } });
+  const w = new World(t, 5, { enemies: enemies(t, types), player: { build: defaultBuild('basic'), crew: crewOf(crew) } });
   w.start();
   const e = w.enemies[0];
   const hold = () => {
@@ -116,7 +116,7 @@ describe('minimum cannon range', () => {
 
   test('minimum range comes from the gun: long guns and mortars can\'t hit close, carronades can', () => {
     const t = defaultTuning();
-    const b = createBoat(1, 'enemy', { ship: 'hardship', loadout: { 'fix:1,0': 'cannon', 'fix:2,0': 'carronade', 'fix:3,0': 'longGun', 'fix:1,1': 'mortar' } }, t, { x: 0, y: 0 }, 0);
+    const b = createBoat(1, 'enemy', { ship: 'hard', loadout: { 'fix:1,0': 'cannon', 'fix:2,0': 'carronade', 'fix:3,0': 'longGun', 'fix:1,1': 'mortar' } }, t, { x: 0, y: 0 }, 0);
     const min = (item: string) => gunSpec(b, b.guns.find((g) => g.item === item)!, t).minRange;
     expect(min('longGun')).toBeGreaterThan(min('cannon'));
     expect(min('mortar')).toBeGreaterThan(min('longGun'));
@@ -299,13 +299,13 @@ describe('boarding: only ⚔️ Lees go', () => {
     }
     const why = w.player.crew.lees.filter((l) => l.stats.boardings > 0).map((l) => l.whyBoarded);
     expect(why.length).toBeGreaterThan(0);
-    for (const y of why) expect(y).toMatch(/Board Sloop #1/);
+    for (const y of why) expect(y).toMatch(/Board Basic Ship #1/);
   });
 
   test('out of reach, the boarding party gathers on the side facing the target and waits', () => {
     const t = quiet(defaultTuning());
     size.standard = 2;
-    const w = new World(t, 5, { enemies: enemies(t, ['standard']), player: { build: defaultBuild('sloop'), crew: crewOf([[tile(3, 2), 'board'], [tile(4, 2), 'board']]) } });
+    const w = new World(t, 5, { enemies: enemies(t, ['standard']), player: { build: defaultBuild('basic'), crew: crewOf([[tile(3, 2), 'board'], [tile(4, 2), 'board']]) } });
     w.start();
     const e = w.enemies[0];
     w.boardTargetId = e.id;
@@ -458,7 +458,7 @@ describe('boarding: only ⚔️ Lees go', () => {
     size.standard = 1;
     const w = new World(t, 5, {
       enemies: enemies(t, ['standard']),
-      player: { build: defaultBuild('sloop'), crew: [{ type: 'hard', home: tile(4, 2) }, { type: 'quick', home: tile(4, 0) }] },
+      player: { build: defaultBuild('basic'), crew: [{ type: 'hard', home: tile(4, 2) }, { type: 'quick', home: tile(4, 0) }] },
     });
     w.start();
     const e = w.enemies[0];
@@ -644,7 +644,7 @@ describe('enemy ship types', () => {
   test('each archetype sails its own ship, crew and AI, all from shared content', () => {
     const t = defaultTuning();
     const w = new World(t, 3, { encounter: ['standard', 'boarder', 'heavy'] });
-    expect(w.enemies.map((e) => e.layout.id)).toEqual(['sloop', 'friendship', 'hardship']);
+    expect(w.enemies.map((e) => e.layout.id)).toEqual(['basic', 'friend', 'hard']);
     expect(w.enemies.map((e) => e.crew.lees.length)).toEqual([4, 6, 5]);
     const guns = (b: Boat) => b.guns.filter((c) => c.targets === 'hull').length;
     expect(guns(w.enemies[2])).toBeGreaterThan(guns(w.enemies[0]));
@@ -713,8 +713,8 @@ describe('gatling guns', () => {
     size.standard = 4;
     const gat = tile(1, 0);
     const w = new World(t, 3, {
-      enemies: enemies(t, ['standard'], () => ({ ship: 'sloop', loadout: {} })),
-      player: { build: { ship: 'sloop', loadout: { 'fix:1,0': 'gatling' } }, crew: [{ type: 'basic', home: gat }] },
+      enemies: enemies(t, ['standard'], () => ({ ship: 'basic', loadout: {} })),
+      player: { build: { ship: 'basic', loadout: { 'fix:1,0': 'gatling' } }, crew: [{ type: 'basic', home: gat }] },
     });
     w.start();
     const e = w.enemies[0];
@@ -735,7 +735,7 @@ describe('gatling guns', () => {
     const t = quiet(defaultTuning());
     size.standard = 0;
     const gat = tile(1, 0);
-    const w = new World(t, 3, { enemies: enemies(t, ['standard']), player: { build: { ship: 'sloop', loadout: { 'fix:1,0': 'gatling' } }, crew: [{ type: 'basic', home: gat }] } });
+    const w = new World(t, 3, { enemies: enemies(t, ['standard']), player: { build: { ship: 'basic', loadout: { 'fix:1,0': 'gatling' } }, crew: [{ type: 'basic', home: gat }] } });
     w.start();
     run(w, 5, () => {
       pin(w, w.player, { x: 0, y: 0 });

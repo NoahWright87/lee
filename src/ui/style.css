@@ -2223,3 +2223,442 @@ body {
 .sink-banner {
   bottom: 34px;
 }
+
+/* ------------------------------------------------------------ Phase 5: the stacked refit */
+
+.rf .rf-cell,
+.rf .rf-treasure,
+.rf .rf-cargo,
+.rf .rf-bar,
+.rf .rf-sandbox {
+  pointer-events: auto;
+}
+
+.rf-cell {
+  position: absolute;
+  touch-action: manipulation;
+}
+
+.rf-face {
+  position: absolute;
+  inset: 2px;
+  border-radius: 6px;
+  border: 1.5px dashed rgba(246, 231, 193, 0.35);
+  background: rgba(246, 231, 193, 0.06);
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.rf-cell.outer .rf-face {
+  inset: 5px;
+  border-style: dotted;
+  border-color: rgba(246, 231, 193, 0.22);
+  background: rgba(10, 30, 50, 0.25);
+  border-radius: 10px;
+}
+
+.rf-cell.valid .rf-face {
+  background: rgba(123, 224, 138, 0.28);
+  border: 2px solid rgba(123, 224, 138, 0.95);
+}
+
+.rf-cell.mine .rf-face {
+  background: rgba(255, 224, 138, 0.25);
+  border: 2px solid #ffe08a;
+}
+
+.rf-cell.preview .rf-face {
+  background: rgba(123, 224, 138, 0.5);
+  border: 2.5px solid #b9ffbf;
+}
+
+.rf-cell.dim {
+  opacity: 0.45;
+}
+
+.rf-cell > * {
+  pointer-events: none;
+}
+
+.rf-cell > .rf-ok {
+  pointer-events: auto;
+}
+
+.rf-station {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.15s;
+}
+
+.rf-icon {
+  font-size: 20px;
+  filter: drop-shadow(0 1px 2px #000);
+}
+
+.rf-arrow {
+  position: absolute;
+  right: 4px;
+  top: 2px;
+  font-size: 12px;
+  font-weight: 900;
+  color: #ffe08a;
+  text-shadow: 0 0 2px #000, 0 0 2px #000;
+}
+
+.rf-att {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  font-size: 12px;
+}
+
+.rf-floor {
+  position: absolute;
+  left: 4px;
+  bottom: 3px;
+  font-size: 12px;
+  opacity: 0.9;
+  transition: transform 0.15s;
+}
+
+.rf-lee {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -54%);
+  height: 76%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.15s;
+}
+
+.rf-lee img {
+  height: 100%;
+  max-height: 48px;
+  filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.7));
+}
+
+.rf-lee .lv {
+  position: absolute;
+  left: -6px;
+  bottom: 0;
+  min-width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  background: #ffe08a;
+  color: #10233a;
+  font-size: 9.5px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #10233a;
+}
+
+.rf-trinket-dot {
+  position: absolute;
+  right: -6px;
+  top: 0;
+  font-size: 11px;
+  color: #ffe08a;
+  text-shadow: 0 0 2px #000;
+}
+
+/* With a Lee standing on a gun, the gun icon slides to a corner. */
+.rf-lee ~ .rf-station,
+.rf-station:has(+ .rf-lee) {
+  align-items: flex-end;
+  justify-content: flex-start;
+  padding: 0 0 2px 4px;
+}
+
+.rf-hull,
+.rf-rail {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 17px;
+  filter: drop-shadow(0 1px 2px #000);
+  transition: transform 0.15s;
+}
+
+.rf-hull {
+  font-size: 13px;
+  opacity: 0.85;
+  transform: translate(-20%, -10%);
+}
+
+.rf-rail {
+  transform: translate(-75%, -70%);
+}
+
+/* The selected layer rises and comes to the front. */
+.rf .raised {
+  z-index: 3;
+  filter: drop-shadow(0 0 5px #ffe08a) drop-shadow(0 3px 2px rgba(0, 0, 0, 0.6));
+}
+
+.rf-station.raised {
+  transform: translateY(-4px) scale(1.15);
+}
+
+.rf-lee.raised {
+  transform: translate(-50%, -64%) scale(1.15);
+}
+
+.rf-hull.raised,
+.rf-rail.raised,
+.rf-floor.raised {
+  transform: translate(-50%, -60%) scale(1.3);
+}
+
+.rf-ok {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 5;
+  font-size: 24px;
+  line-height: 1;
+  padding: 4px;
+  border: none;
+  background: rgba(0, 0, 0, 0.35);
+  border-radius: 50%;
+  animation: rf-pop 0.2s ease-out;
+}
+
+@keyframes rf-pop {
+  from { transform: translate(-50%, -50%) scale(0.4); }
+  to { transform: translate(-50%, -50%) scale(1); }
+}
+
+.rf-displaced {
+  position: absolute;
+  left: 50%;
+  bottom: 100%;
+  transform: translateX(-50%);
+  white-space: pre;
+  z-index: 6;
+  font-size: 10px;
+  font-weight: 700;
+  color: #ffd0a0;
+  background: rgba(0, 0, 0, 0.75);
+  padding: 2px 5px;
+  border-radius: 5px;
+}
+
+.rf-treasures {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  pointer-events: none;
+}
+
+.rf-row-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ink-dim);
+  margin-right: 2px;
+}
+
+#hud .rf-treasure {
+  position: relative;
+  width: 36px;
+  height: 34px;
+  border-radius: 8px;
+  border: 1.5px dashed rgba(246, 231, 193, 0.4);
+  background: rgba(0, 0, 0, 0.4);
+  color: var(--ink);
+  font-size: 18px;
+}
+
+#hud .rf-treasure.valid {
+  border: 2px solid rgba(123, 224, 138, 0.95);
+  background: rgba(123, 224, 138, 0.28);
+}
+
+#hud .rf-treasure.mine {
+  border: 2px solid #ffe08a;
+}
+
+#hud .rf-treasure.preview {
+  background: rgba(123, 224, 138, 0.5);
+}
+
+.rf-ok-small {
+  position: absolute;
+  right: -6px;
+  top: -8px;
+  font-size: 14px;
+}
+
+.rf-cargo {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: calc(max(10px, env(safe-area-inset-bottom)) + 58px);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  overflow-y: auto;
+  touch-action: pan-y;
+  padding: 4px;
+  border-radius: 10px;
+  transition: background 0.15s;
+}
+
+.rf-cargo.stow {
+  background: rgba(123, 224, 138, 0.15);
+  outline: 2px dashed rgba(123, 224, 138, 0.8);
+}
+
+.rf-tabs {
+  display: flex;
+  gap: 3px;
+  overflow-x: auto;
+  touch-action: pan-x;
+  flex-shrink: 0;
+  scrollbar-width: none;
+}
+
+.rf-tabs .tab {
+  flex: 0 0 auto;
+  font-size: 12px;
+  min-height: 30px;
+  padding: 0 9px;
+}
+
+.rf-cargo-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+}
+
+.rf-list {
+  flex: 1;
+  align-content: flex-start;
+}
+
+.chip.must {
+  border-color: #ffe08a;
+  animation: rf-glow 1.1s ease-in-out infinite;
+}
+
+@keyframes rf-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 224, 138, 0.0); }
+  50% { box-shadow: 0 0 10px 3px rgba(255, 224, 138, 0.85); }
+}
+
+.start-btn.blocked {
+  filter: grayscale(0.9) brightness(0.75);
+}
+
+.rf-bars {
+  display: grid;
+  gap: 3px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  background: rgba(8, 20, 34, 0.78);
+  border: 1px solid var(--line);
+}
+
+.rf-bar-row {
+  display: grid;
+  grid-template-columns: 70px 1fr;
+  align-items: center;
+  gap: 6px;
+}
+
+.rf-bar-k {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ink-dim);
+}
+
+.rf-track {
+  position: relative;
+  height: 9px;
+  border-radius: 5px;
+  background: #0a1a2a;
+  overflow: hidden;
+}
+
+.rf-fill,
+.rf-delta {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  transition-property: width, left;
+  transition-timing-function: ease-out;
+}
+
+.rf-fill {
+  left: 0;
+  background: var(--ink);
+}
+
+.rf-delta.add {
+  background: var(--win);
+}
+
+.rf-delta.remove {
+  background: var(--lose);
+}
+
+/* "Full" is at 1/1.2 of the track: a tick there. */
+.rf-full {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 83.3%;
+  width: 1.5px;
+  background: rgba(246, 231, 193, 0.35);
+}
+
+#hud .rf-details-btn {
+  align-self: flex-start;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ink-dim);
+  background: none;
+  border: none;
+  padding: 0 2px;
+  text-decoration: underline;
+  pointer-events: auto;
+}
+
+.rf-sandbox {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  top: calc(var(--ocean-frac) + 4px);
+  bottom: calc(max(10px, env(safe-area-inset-bottom)) + 58px);
+  overflow-y: auto;
+  touch-action: pan-y;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border-radius: 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+
+.rf-card {
+  max-height: calc(100% - 140px);
+}
+
+.rf-hint {
+  color: #b9ffbf;
+  font-weight: 700;
+}

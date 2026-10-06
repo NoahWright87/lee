@@ -635,10 +635,13 @@ export class BattleScene extends Phaser.Scene {
     f.zoom = Math.exp(lerp(Math.log(f.zoom), Math.log(fightZ), k));
     this.stripFrame = f;
     const minTile = this.ctl.tuning.layout.minTilePx * this.dpr;
-    const setupZ = Math.min(Math.max((W * 0.97) / L, minTile / Math.min(grid.tileW, grid.tileH)), (W * 0.98) / (grid.cols * grid.tileW));
+    // Refit: the deck plus the ring of outer tiles around it (rails and hull modules) at touch size.
+    const og = world.player.layout.grid.origin;
+    const halfSpan = Math.max(-(og.x - grid.tileW), og.x + (grid.cols + 1) * grid.tileW);
+    const setupZ = Math.min(Math.max((W * 0.97) / L, minTile / Math.min(grid.tileW, grid.tileH)), (W * 0.98) / (2 * halfSpan));
     const s = this.setupBlend;
     const sz = lerp(f.zoom, setupZ, s);
-    const boatY = lerp(SH / 2, (B * setupZ) / 2 + 16 * this.dpr, s);
+    const boatY = lerp(SH / 2, (-og.y + grid.tileH) * setupZ + 6 * this.dpr, s);
     const d = (SH / 2 - boatY) / sz;
     const c = toWorld({ x: f.x * (1 - s), y: d + f.y * (1 - s) }, p, p.heading);
     this.stripCam.setZoom(sz);
@@ -842,25 +845,34 @@ export class BattleScene extends Phaser.Scene {
   }
 
   /**
-   * Setup: every gun's arc as a faint wedge from its muzzle (so you can see where
-   * each can fire from the slot it's in), and the selected gun's arc bright,
-   * with its minimum and maximum range.
+   * Refit: every gun's arc in grey; the selected gun's arc in red (where it is
+   * now) and, while a move is previewed, in green (where it would be), from
+   * the previewed build.
    */
   private drawRangeRing(g: Phaser.GameObjects.Graphics, world: World, px: (n: number) => number): void {
     const b = world.player;
     const sel = this.ctl.arcPreview;
     for (const gun of b.guns) {
-      const on = sel !== null && gun.slot === sel;
-      this.drawGunArc(g, world, b, gun, px, on ? 0.28 : sel ? 0.05 : 0.09, on);
+      if (sel && gun.slot === sel.oldSlot) continue;
+      this.drawGunArc(g, world, b, gun, px, 0.1, false, 0xb8b8b8);
+    }
+    if (!sel) return;
+    const old = sel.oldSlot ? b.guns.find((x) => x.slot === sel.oldSlot) : undefined;
+    if (old) this.drawGunArc(g, world, b, old, px, sel.newSlot ? 0.16 : 0.26, true, sel.newSlot ? 0xff5a4a : 0xffd27a);
+    const pb = sel.boat;
+    const fresh = pb && sel.newSlot ? pb.guns.find((x) => x.slot === sel.newSlot) : undefined;
+    if (pb && fresh) {
+      Object.assign(pb.motion, b.motion);
+      this.drawGunArc(g, world, pb, fresh, px, 0.26, true, 0x6fe07a);
     }
   }
 
   /** One gun's arc: a wedge from its muzzle between its minimum and maximum range. */
-  private drawGunArc(g: Phaser.GameObjects.Graphics, world: World, b: Boat, gun: GunState, px: (n: number) => number, alpha: number, outline: boolean): void {
+  private drawGunArc(g: Phaser.GameObjects.Graphics, world: World, b: Boat, gun: GunState, px: (n: number) => number, alpha: number, outline: boolean, tint?: number): void {
     const spec = gunSpec(b, gun, world.tuning);
     const from = world.muzzle(b, gun);
     const face = world.gunFacing(b, gun);
-    const color = gun.targets === 'crew' ? 0xffa0d0 : 0xffd27a;
+    const color = tint ?? (gun.targets === 'crew' ? 0xffa0d0 : 0xffd27a);
     const full = spec.arcHalf >= Math.PI - 1e-6;
     const a0 = full ? 0 : face - spec.arcHalf;
     const a1 = full ? Math.PI * 2 : face + spec.arcHalf;

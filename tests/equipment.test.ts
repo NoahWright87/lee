@@ -18,7 +18,7 @@ function quiet(t: Tuning): Tuning {
   return t;
 }
 
-const sloopTile = (col: number, row: number) => tileAtCell(createBoat(0, 'player', defaultBuild('sloop'), defaultTuning(), { x: 0, y: 0 }, 0).grid, col, row)!.index;
+const sloopTile = (col: number, row: number) => tileAtCell(createBoat(0, 'player', defaultBuild('basic'), defaultTuning(), { x: 0, y: 0 }, 0).grid, col, row)!.index;
 
 const run = (w: World, seconds: number, each?: () => void) => {
   for (let i = 0; i < seconds / FIXED_DT; i++) {
@@ -66,7 +66,7 @@ describe('tiles', () => {
     const t = quiet(defaultTuning());
     t.tiles.durability = 25;
     const gun = sloopTile(1, 0);
-    const w = new World(t, 1, { enemies: [setupOf(defaultBuild('sloop'))], crew: [gun] });
+    const w = new World(t, 1, { enemies: [setupOf(defaultBuild('basic'))], crew: [gun] });
     w.start();
     const tile = w.player.grid.tiles[gun];
     const g = w.player.guns.find((x) => x.station === gun)!;
@@ -91,15 +91,15 @@ describe('tiles', () => {
 
   test('reinforced planks double a tile\'s durability', () => {
     const t = defaultTuning();
-    const b = createBoat(1, 'player', { ship: 'sloop', loadout: { 'floor:1,1': 'reinforcedPlanks' } }, t, { x: 0, y: 0 }, 0);
+    const b = createBoat(1, 'player', { ship: 'basic', loadout: { 'floor:1,1': 'reinforcedPlanks' } }, t, { x: 0, y: 0 }, 0);
     expect(b.grid.tiles[sloopTile(1, 1)].maxHp).toBeCloseTo(2 * b.grid.tiles[sloopTile(2, 1)].maxHp);
   });
 
   test('a powder store explodes when its tile blows out, damaging tiles, parts and Lees around it, and chains', () => {
     const t = quiet(defaultTuning());
     // Two powder stores side by side (interior tiles 1,1 and 2,1).
-    const build: BoatBuild = { ship: 'sloop', loadout: { 'fix:1,1': 'powder', 'fix:2,1': 'powder', 'fix:3,1': 'lookout' } };
-    const w = new World(t, 1, { enemies: [setupOf(defaultBuild('sloop'))], player: setupOf(build, basic([sloopTile(3, 1)])) });
+    const build: BoatBuild = { ship: 'basic', loadout: { 'fix:1,1': 'powder', 'fix:2,1': 'powder', 'fix:3,1': 'lookout' } };
+    const w = new World(t, 1, { enemies: [setupOf(defaultBuild('basic'))], player: setupOf(build, basic([sloopTile(3, 1)])) });
     w.start();
     const mid = w.player.parts.find((p) => p.def.id === 'midship')!;
     const hp0 = mid.layers[0].hp;
@@ -130,8 +130,8 @@ describe('rail items', () => {
 
   test('spikes along a touching edge wear down the other boat', () => {
     const t = quiet(defaultTuning());
-    const mine = setupOf({ ship: 'sloop', loadout: { 'rail:2,0:port': 'spikes' } }, basic([sloopTile(1, 1)]));
-    const theirs = setupOf(defaultBuild('sloop'), [], { ...t.ai.standard });
+    const mine = setupOf({ ship: 'basic', loadout: { 'rail:2,0:port': 'spikes' } }, basic([sloopTile(1, 1)]));
+    const theirs = setupOf(defaultBuild('basic'), [], { ...t.ai.standard });
     const { w, e, hold } = docked(t, mine, theirs);
     const hp0 = e.parts.reduce((a, p) => a + p.layers[0].hp, 0);
     run(w, 5, hold);
@@ -142,8 +142,8 @@ describe('rail items', () => {
     const t = quiet(defaultTuning());
     t.items.fence.hp = 30;
     // Your whole port side fenced... but the Sloop has one port rail, so a boarder can still land on the neighbors.
-    const mine = setupOf({ ship: 'sloop', loadout: { 'rail:2,0:port': 'fence' } }, basic([sloopTile(2, 1)]));
-    const theirs = setupOf(defaultBuild('friendship'), Array.from({ length: 4 }, () => ({ type: 'hard', home: null, job: 'board' as const })), { ...t.ai.boarder });
+    const mine = setupOf({ ship: 'basic', loadout: { 'rail:2,0:port': 'fence' } }, basic([sloopTile(2, 1)]));
+    const theirs = setupOf(defaultBuild('friend'), Array.from({ length: 4 }, () => ({ type: 'hard', home: null, job: 'board' as const })), { ...t.ai.boarder });
     theirs.crew.forEach((c, i) => (c.home = [7, 8, 9, 10][i]));
     const { w, hold } = docked(t, mine, theirs);
     const fenced = sloopTile(2, 0);
@@ -161,8 +161,8 @@ describe('rail items', () => {
     t.items.fence.hp = 20;
     // A tiny deck stand-in: fence every port-facing rail of the Friend Ship, and dock a Sloop on its port side.
     const fences: Record<string, string> = { 'rail:3,0:port': 'fence' };
-    const mine = setupOf({ ship: 'friendship', loadout: fences }, basic([10]));
-    const theirs = setupOf(defaultBuild('sloop'), Array.from({ length: 3 }, () => ({ type: 'hard', home: null, job: 'board' as const })), { ...t.ai.boarder });
+    const mine = setupOf({ ship: 'friend', loadout: fences }, basic([10]));
+    const theirs = setupOf(defaultBuild('basic'), Array.from({ length: 3 }, () => ({ type: 'hard', home: null, job: 'board' as const })), { ...t.ai.boarder });
     theirs.crew.forEach((c, i) => (c.home = [1, 4, 6][i]));
     const w = new World(t, 5, { enemies: [theirs], player: mine });
     w.start();
@@ -185,8 +185,8 @@ describe('rail items', () => {
 
   test('boarding planks: Lees leaving from that tile swing faster, hit harder with pistols, and can be shot mid-swing', () => {
     const t = quiet(defaultTuning());
-    const mine = setupOf({ ship: 'sloop', loadout: { 'rail:2,0:port': 'planks' } }, basic([sloopTile(2, 0), sloopTile(2, 1)], 'board'));
-    const theirs = setupOf(defaultBuild('sloop'), basic([sloopTile(2, 1)]), { ...t.ai.standard });
+    const mine = setupOf({ ship: 'basic', loadout: { 'rail:2,0:port': 'planks' } }, basic([sloopTile(2, 0), sloopTile(2, 1)], 'board'));
+    const theirs = setupOf(defaultBuild('basic'), basic([sloopTile(2, 1)]), { ...t.ai.standard });
     const { w, hold } = docked(t, mine, theirs);
     let planked = 0;
     run(w, 4, () => {
@@ -205,8 +205,8 @@ describe('stations', () => {
     const t = quiet(defaultTuning());
     const crossed = (treasures: string[]) => {
       const w = new World(t, 1, {
-        enemies: [setupOf(defaultBuild('sloop'), basic([sloopTile(1, 1)]))],
-        player: setupOf({ ship: 'sloop', loadout: {}, treasures }, basic([sloopTile(2, 0)], 'board')),
+        enemies: [setupOf(defaultBuild('basic'), basic([sloopTile(1, 1)]))],
+        player: setupOf({ ship: 'basic', loadout: {}, treasures }, basic([sloopTile(2, 0)], 'board')),
       });
       w.start();
       const e = w.enemies[0];
@@ -229,7 +229,7 @@ describe('stations', () => {
   test('a manned bilge pump drains water faster than a bailer', () => {
     const t = quiet(defaultTuning());
     const drained = (loadout: Record<string, string>, home: number) => {
-      const w = new World(t, 1, { enemies: [setupOf(defaultBuild('sloop'))], player: setupOf({ ship: 'sloop', loadout }, basic([home])) });
+      const w = new World(t, 1, { enemies: [setupOf(defaultBuild('basic'))], player: setupOf({ ship: 'basic', loadout }, basic([home])) });
       w.start();
       const mid = w.player.parts.find((p) => p.def.id === 'midship')!;
       mid.water = mid.capacity * 0.5;
@@ -244,7 +244,7 @@ describe('stations', () => {
 
   test('a manned powder store speeds every gun\'s reload', () => {
     const t = quiet(defaultTuning());
-    const w = new World(t, 1, { enemies: [setupOf(defaultBuild('sloop'))], player: setupOf({ ship: 'sloop', loadout: { 'fix:2,1': 'powder' } }, basic([sloopTile(2, 1)])) });
+    const w = new World(t, 1, { enemies: [setupOf(defaultBuild('basic'))], player: setupOf({ ship: 'basic', loadout: { 'fix:2,1': 'powder' } }, basic([sloopTile(2, 1)])) });
     expect(w.player.fx.reload).toBeCloseTo(t.items.powder.reload);
   });
 });
@@ -252,10 +252,10 @@ describe('stations', () => {
 describe('guns shoot differently', () => {
   test('a scrap cannon fires a burst of pellets with one shaded area telegraph; a mortar gets a bigger X', () => {
     const t = quiet(defaultTuning());
-    const enemyBuild: BoatBuild = { ship: 'sloop', loadout: { 'fix:1,2': 'scrap', 'fix:1,1': 'mortar' }, facings: { 'fix:1,1': 'starboard' } };
+    const enemyBuild: BoatBuild = { ship: 'basic', loadout: { 'fix:1,2': 'scrap', 'fix:1,1': 'mortar' }, facings: { 'fix:1,1': 'starboard' } };
     const w = new World(t, 2, {
       enemies: [setupOf(enemyBuild, basic([sloopTile(1, 2), sloopTile(1, 1)]), { ...t.ai.standard })],
-      player: setupOf({ ship: 'sloop', loadout: {} }, []),
+      player: setupOf({ ship: 'basic', loadout: {} }, []),
     });
     w.start();
     let bursts = 0;

@@ -123,7 +123,7 @@ export interface Boat {
 
 /** A ship's numbers (tuning.ships.<id>). */
 export function shipStats(b: { type: string }, t: Tuning): ShipStats {
-  return t.ships[b.type] ?? t.ships.sloop ?? Object.values(t.ships)[0];
+  return t.ships[b.type] ?? t.ships.basic ?? Object.values(t.ships)[0];
 }
 
 export interface BoatOptions {

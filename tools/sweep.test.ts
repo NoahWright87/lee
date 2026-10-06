@@ -25,7 +25,7 @@ test('run sweep', () => {
   // The captain places its own seek point (like the enemy brain), so no orbit capture.
   t.boat.movement.orbitCapture = 0;
   const rows: string[] = [];
-  for (const ship of ['sloop', 'skiff', 'friendship', 'hardship']) {
+  for (const ship of ['basic', 'longdistance', 'friend', 'hard']) {
     for (let f = 1; f <= FIGHTS; f++) {
       let wins = 0;
       let time = 0;
@@ -46,10 +46,10 @@ test('run sweep', () => {
           const bearing = Math.atan2(e.motion.y - p.y, e.motion.x - p.x);
           const d = Math.hypot(e.motion.x - p.x, e.motion.y - p.y);
           if (dir === 0) dir = 1;
-          if (ship === 'friendship') {
+          if (ship === 'friend') {
             w.setAlongside(w.isAttached(w.player) ? null : e);
           } else {
-            const want = ship === 'skiff' ? 150 : 90;
+            const want = ship === 'longdistance' ? 150 : 90;
             const off = Math.min(120, Math.max(30, 90 - (d - want))) * (Math.PI / 180);
             const h = bearing - dir * off;
             w.player.target = { x: p.x + Math.cos(h) * 60, y: p.y + Math.sin(h) * 60 };
