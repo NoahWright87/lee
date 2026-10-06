@@ -32,8 +32,12 @@ class PipRow {
   private pips = new Map<number, PipEl>();
   private hollow: HTMLDivElement[] = [];
 
-  constructor(cls: string) {
+  /** Extra rows stack downward (yours, under the buttons) or upward (theirs, above them). */
+  private dir: 1 | -1;
+
+  constructor(cls: string, dir: 1 | -1) {
     this.root = el('div', `pip-row ${cls}`);
+    this.dir = dir;
   }
 
   clear(): void {
@@ -61,7 +65,7 @@ class PipRow {
       const col = i % per;
       return colX(job) + (col - (per - 1) / 2) * (PIP + GAP);
     };
-    const yOf = (i: number, n: number) => Math.floor(i / Math.max(1, Math.min(n, 4))) * (PIP + GAP);
+    const yOf = (i: number, n: number) => this.dir * Math.floor(i / Math.max(1, Math.min(n, 4))) * (PIP + GAP);
     const live = new Set<number>();
     for (const l of crew) {
       let p = this.pips.get(l.id);
@@ -142,8 +146,8 @@ export class ActionBar {
   readonly root: HTMLDivElement;
   private ctl: Controller;
   private buttons = new Map<Job, { btn: HTMLButtonElement; label: HTMLSpanElement }>();
-  private mine = new PipRow('mine');
-  private theirs = new PipRow('theirs');
+  private mine = new PipRow('mine', 1);
+  private theirs = new PipRow('theirs', -1);
   private theirsFor: number | null = null;
   private theirsAlpha = 0;
   private stopped: HTMLDivElement;

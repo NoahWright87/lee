@@ -234,8 +234,8 @@ export class CrewView {
       const feet = S(base, 0, FIG_H * 0.45 - lift);
       // Team: a ring under the feet (cream for yours, red for theirs).
       if (!lee.swing) {
-        g.lineStyle(px(2.5), friend ? COLOR.teamPlayer : COLOR.teamEnemy, 0.95 * alpha);
-        g.strokeEllipse(feet.x, feet.y, 1.25, 0.55);
+        g.lineStyle(px(2), friend ? COLOR.teamPlayer : COLOR.teamEnemy, 0.7 * alpha);
+        g.strokeEllipse(feet.x, feet.y, 1.0, 0.42);
       }
 
       // Wading.

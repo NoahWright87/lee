@@ -2105,7 +2105,7 @@ body {
 }
 
 .pip-row.theirs {
-  bottom: 58px;
+  top: -26px;
   opacity: 0;
 }
 
@@ -2185,7 +2185,7 @@ body {
 .stopped-badge {
   position: absolute;
   left: 50%;
-  bottom: 62px;
+  top: -64px;
   transform: translateX(-50%);
   white-space: nowrap;
   font: 800 11px/1 system-ui, sans-serif;
@@ -2198,4 +2198,28 @@ body {
 
 .speed-btn {
   min-width: 46px;
+}
+
+/* Phase 5: the action buttons and pips take the top of the close-up; the gauges sit along its bottom edge. */
+.strip-gauges {
+  inset: auto 6px 6px 6px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px;
+  pointer-events: none;
+}
+
+.strip-gauges .gauge {
+  position: static;
+  padding: 2px 6px;
+  font-size: 10px;
+}
+
+.strip-gauges .gauge-bar {
+  width: 40px;
+}
+
+.sink-banner {
+  bottom: 34px;
 }
