@@ -15,7 +15,7 @@ export type ItemCategory = 'gun' | 'station' | 'rail' | 'hull' | 'attachment' | 
 
 /** Who an effect applies to. */
 export type EffectScope =
-  /** Boat-wide stats: speed, turn, leak, gunRange, gunSpread, gunMinRange. */
+  /** Boat-wide stats: speed, turn, leak, gunRange, gunSpread, gunMinRange, boardRange, swing (swing time ×). */
   | 'boat'
   /** Every hull part: hp (×), hpFlat (+). */
   | 'allParts'
@@ -42,7 +42,7 @@ export interface EffectDef {
   param: string;
 }
 
-export type StationKind = 'gun' | 'oars' | 'sails' | 'lookout' | 'pump' | 'hooks' | 'powder';
+export type StationKind = 'gun' | 'oars' | 'sails' | 'lookout' | 'pump' | 'powder';
 export type RailKind = 'spikes' | 'fence' | 'planks';
 /** How a gun's shot travels and is telegraphed. */
 export type GunMode = 'shell' | 'lob' | 'stream' | 'burst';
@@ -199,7 +199,7 @@ const list: ItemDef[] = [
     name: 'Oars',
     icon: '🚣',
     description: 'A rowing station: each manned set adds speed (they stack).',
-    tradeoff: 'Needs a Lee on it, and does nothing while attached.',
+    tradeoff: 'Needs a Lee on it, and does nothing while you’re stopped.',
     category: 'station',
     fits: ['edge'],
     tags: ['skirmish'],
@@ -213,7 +213,7 @@ const list: ItemDef[] = [
     name: 'Sail',
     icon: '⛵',
     description: 'A sail station: adds turning while manned.',
-    tradeoff: 'Needs a Lee on it, and does nothing while attached.',
+    tradeoff: 'Needs a Lee on it, and does nothing while you’re stopped.',
     category: 'station',
     fits: ['interior'],
     tags: ['skirmish'],
@@ -251,20 +251,6 @@ const list: ItemDef[] = [
     rewardWeight: 1.5,
   },
   {
-    id: 'hooks',
-    name: 'Boarding Hooks',
-    icon: '🪝',
-    description: 'While manned, grappling takes half as long and your Lees swing across 30% faster.',
-    tradeoff: 'Does nothing at range.',
-    category: 'station',
-    fits: ['edge'],
-    tags: ['board'],
-    params: { grapple: 0.5, swing: 0.7 },
-    effects: [],
-    station: 'hooks',
-    rewardWeight: 1.5,
-  },
-  {
     id: 'powder',
     name: 'Powder Store',
     icon: '🛢️',
@@ -285,12 +271,12 @@ const list: ItemDef[] = [
     id: 'spikes',
     name: 'Spikes',
     icon: '🔱',
-    description: 'Rams through this edge hit 50% harder. A boat attached here takes slow damage, and enemy Lees landing on this tile get hurt.',
-    tradeoff: 'No effect at range. Any attachment through this edge takes longer to cast off, for both boats.',
+    description: 'Rams through this edge hit 50% harder. A boat touching this edge takes slow damage, and enemy Lees landing on this tile get hurt.',
+    tradeoff: 'No effect at range.',
     category: 'rail',
     fits: ['rail'],
     tags: ['board'],
-    params: { ramBonus: 0.5, attachedDps: 0.6, landDamage: 8, disengageExtra: 2 },
+    params: { ramBonus: 0.5, attachedDps: 0.6, landDamage: 8 },
     effects: [],
     rail: 'spikes',
     rewardWeight: 1.5,
@@ -498,6 +484,20 @@ const list: ItemDef[] = [
     tags: ['skirmish'],
     params: { turn: 1.1 },
     effects: [fx('boat', 'turn', 'mul')],
+    rewardWeight: 1,
+  },
+
+  {
+    id: 'ropes',
+    name: 'Swinging Ropes',
+    icon: '🪢',
+    description: 'Your Lees can swing across from 50% farther away, and swing 30% faster.',
+    tradeoff: 'Takes a treasure slot. Does nothing at range.',
+    category: 'treasure',
+    fits: ['treasure'],
+    tags: ['board'],
+    params: { reach: 1.5, swing: 0.7 },
+    effects: [fx('boat', 'boardRange', 'mul', 'reach'), fx('boat', 'swing', 'mul')],
     rewardWeight: 1,
   },
 

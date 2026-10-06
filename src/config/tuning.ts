@@ -4,7 +4,7 @@ import { defaultTraits, LEE_DEFS, type LeeStats } from './lees';
 import { defaultShipStats, type ShipStats } from './ships';
 
 /** Bump when the tuning shape changes incompatibly (saved tuning from another version is dropped). */
-export const TUNING_VERSION = 4;
+export const TUNING_VERSION = 5;
 
 // Every gameplay number lives here. The sim reads from a live Tuning object, so
 // most changes apply the next frame. Values marked "next run" in the tuning
@@ -194,18 +194,12 @@ export function defaultTuning() {
       /** Water let into each part hit. */
       water: 6,
     },
-    /** Docking, ramming and the links they form. */
+    /** Ramming and bumping. Boats never lock together: they stay in close combat only while they stay close. */
     attach: {
-      /** Hulls this close (m, gap between them) can start grappling. */
-      dockDistance: 5,
-      /** Seconds two boats must stay close and slow before they stick. */
-      grappleTime: 1.5,
-      /** Grappling only counts while the boats move slower than this relative to each other, m/s. */
-      dockRelSpeed: 4.5,
-      /** Seconds for docked boats to ease side by side. */
-      dockEaseTime: 0.7,
-      /** Gap between docked hulls, m (close enough to swing across, not overlapping). */
-      dockGap: 1.2,
+      /** Gap the BOARD autopilot aims for beside the other hull, m. */
+      alongsideGap: 1.2,
+      /** Hulls this close (m) are touching: spikes on the touching edge hurt the other boat. */
+      touchGap: 1,
       /** Bow-first contact at or above this closing speed is a ram, m/s. */
       ramSpeed: 6,
       /** Damage to the struck part per m/s of closing speed. */
@@ -218,35 +212,25 @@ export function defaultTuning() {
       ramWarnTime: 1.6,
       /** A ram only lands if its X has been up this long; otherwise the contact is a bump. */
       ramMinWarning: 0.6,
-      /** Bounciness of a bump (0 = dead stop along the contact, 1 = elastic). */
+      /** Bounciness of a bump (0 = dead stop along the contact, 1 = elastic). A ram never bounces. */
       bounce: 0.3,
-      /** Most links one boat can have at once. */
-      cap: 2,
-      /** Most links per side (port, starboard, bow, stern). */
-      perSide: 1,
-      /** Speed an attached pair drifts at, m/s. */
-      driftSpeed: 1.2,
-      /** How fast an attached pair slows to its drift speed, 1/s. */
-      driftDecay: 0.9,
-      /** Seconds between pressing Disengage (or a sinking) and the link breaking: boarders swing home meanwhile. */
-      recallWindow: 2,
-      /** Speed each boat is pushed apart with when a link breaks, m/s. */
-      pushSpeed: 3,
-      /** Seconds after a link breaks before the same two boats can dock again. */
-      redockDelay: 3,
-      /** Holding your finger within this many meters of an enemy hull steers you alongside it instead of orbiting. */
-      alongsideGrab: 6,
+      /** Seconds after a ram before the same boat can ram the same target again. */
+      ramCooldown: 3,
+      /** RAM autopilot after impact: push this much faster than the target to stay nose-in, m/s. */
+      holdPush: 1,
     },
-    /** Crossing between attached decks. */
+    /** Crossing between decks. Close combat lasts while two hulls stay within boarding range. */
     boarding: {
+      /** Hulls this close (m, gap between them) are in close combat: ⚔️ Lees can swing across (× Swinging Ropes). */
+      range: 4,
+      /** Close combat ends once the gap opens past range + this, m (so it doesn't flicker). */
+      rangeSlack: 2,
       /** Seconds a baseline Lee takes to swing across (÷ swing speed). */
       swingTime: 1.6,
       /** 1 = Lees in mid-swing can be shot by pistols. */
       swingHittable: 0,
       /** Boarders leave a deck once its water passes this fraction of the sink line. */
       evacuateAt: 0.9,
-      /** Always keep at least this many of a crew aboard its own boat (0 = off). */
-      minHomeCrew: 0,
       /** Points lost per Lee already fighting a boarder (low, so ganging up happens). */
       repelHelpPenalty: 8,
       /** Most Lees (either side) that can stand on one tile. Swings and moves wait for room. */
@@ -255,10 +239,27 @@ export function defaultTuning() {
       retreatAt: 0.25,
       /** Seconds between Lees leaving one boat for the same enemy boat (one at a time over the rail). */
       swingInterval: 0.8,
-      /** Casting off (Disengage) takes at least this long, s... */
-      castOffMin: 1,
-      /** ...and at most this long: anyone of yours still over there by then is left behind. */
-      castOffTimeout: 8,
+    },
+    /** Jobs and the four action buttons (⏩ SAIL, 🔫 FIRE, ⚔️ BOARD, 🛠️ FIX). */
+    jobs: {
+      /** A gunner stays on a gun that can't bear for this long before looking elsewhere, s. */
+      gunStick: 3,
+      /** Holding an action button: first repeat after this long, s... */
+      holdDelay: 0.4,
+      /** ...then one more Lee every this many seconds. */
+      holdRepeat: 0.3,
+      /** Stopped (tap your own boat): fixing (repair, bailing, pumping) × this... */
+      stoppedFix: 1.25,
+      /** ...and gunner aim × this (one bonus pair; they don't stack). */
+      stoppedAim: 1.25,
+      /** Counts as stopped below this speed, m/s. */
+      stoppedSpeed: 1.5,
+      /** BOARD → RAM once you're at least this many degrees off parallel to the target's hull... */
+      ramAngle: 80,
+      /** ...and RAM → BOARD once you're back under this many degrees (also the first pick on targeting). */
+      boardAngle: 45,
+      /** Enemy AI: seconds between ⚔️ orders while a boarder closes in. */
+      aiOrderInterval: 0.6,
     },
     /** Pistols: every Lee carries one. Hurts opposing Lees; barely scratches boats. */
     pistol: {
@@ -322,17 +323,13 @@ export function defaultTuning() {
       commitTime: 1.5,
       /** Gunners count a cannon as engaging if the enemy is in its arc now or this many seconds ahead. */
       arcLookahead: 1.5,
-      /** Bonus for tasks worked from the Lee's home tile. */
-      homeBonus: 15,
-      /** Bonus for the kind of work the Lee's home tile sets (gunner → guns, damage control → repair/bail). */
-      roleBonus: 25,
-      /** Bonus for a damage-control Lee standing by at home (so it waits there instead of drifting to low-tier stations). */
-      standbyBonus: 20,
       /** Points lost per second of walking to reach a task. */
       walkPenalty: 3,
       /** Points lost per Lee already on a repair/bail job (so extra hands help only when nothing else needs them). */
       helpPenalty: 45,
-      /** Points per +1.0 of the stat a task uses: the best-qualified Lee takes a job (a tiebreaker, not an override of placement). */
+      /** A second Lee only joins a repair/bail job if it still scores above this after the help penalty (a flood does; a scratch doesn't). */
+      helpThreshold: 50,
+      /** Points per +1.0 of the stat a task uses: within a job, the best-qualified Lee takes the work (a tiebreaker). */
       statAffinity: 8,
       /** The stat term counts at most this far from 1 (so a ×2.0 specialist doesn't abandon its post for its specialty). */
       statAffinityCap: 0.6,
@@ -357,9 +354,9 @@ export function defaultTuning() {
       engageCannon: 60,
       /** Other damaged parts and moderate water → repair / bail. */
       otherDamage: 40,
-      /** Swing across to an attached enemy boat (surplus Lees only). */
+      /** ⚔️ Lees: swing across to the target in reach (or gather at the rail facing it). */
       board: 35,
-      /** Empty oars, sails or boarding hooks → man them. */
+      /** Empty oars or sails → man them. */
       mobility: 30,
       /** Empty support station (lookout, powder store) → man it. */
       lookout: 15,
@@ -436,8 +433,10 @@ export function defaultTuning() {
       minTilePx: 46,
       /** Seconds for the panels to slide between setup and fight sizes. */
       panelSlideTime: 0.45,
-      /** Ocean share of the screen while you're attached (the strip expands to show every attached deck). */
+      /** Ocean share of the screen at boarding range (the close-up grows to show the decks you're fighting). */
       expandedOceanFraction: 0.5,
+      /** The close-up starts growing once an enemy hull is this close to yours (pistol and point-blank range), m. */
+      closeViewStart: 30,
     },
     telegraph: {
       /** Enemy shells always give at least this much warning, s. */
@@ -454,8 +453,10 @@ export function defaultTuning() {
       lingerTime: 0.3,
     },
     camera: {
-      /** Where the ocean camera centers between you (0) and the enemy (1). */
-      enemyBias: 0.35,
+      /** The ocean camera leads you by this many seconds of your velocity. */
+      lookAhead: 1,
+      /** Enemies within gun range (yours or theirs) are kept in view; they drop out past range × (1 + this). */
+      rangeHysteresis: 0.25,
       /** Visible ocean height limits, m. */
       minVisibleHeight: 220,
       maxVisibleHeight: 440,
@@ -469,6 +470,12 @@ export function defaultTuning() {
     input: {
       /** 0 = the target is pinned in the water where you touched (preview stays exact). 1 = target stays under a still finger as the camera moves. */
       targetFollowsCamera: 0,
+      /** A tapped point counts as reached within this distance; then the boat holds the heading it arrived on, m. */
+      arriveRadius: 20,
+      /** Tapping the ocean within this distance of an enemy's hull circles it (the orbit follows the boat), m. */
+      orbitGrab: 45,
+      /** Tapping within this distance of an enemy's hull (plus a finger's width) targets it for ⚔️; of your own, stops, m. */
+      boatGrab: 6,
     },
     visuals: {
       /** Peak height of a shell's arc, m (drawn only). */

@@ -34,10 +34,11 @@ export interface EncounterDef {
 
 /** AI profiles (tuning.ai is built from these). */
 export function defaultAiProfiles() {
-  const p = (preferredRange: number, seekAttach: number, ramLine = 20, ramRange = 70) => ({ preferredRange, seekAttach, ramLine, ramRange });
+  // boardShare: share of the crew it moves to ⚔️ once you're within boardAt meters (the same action buttons you have).
+  const p = (preferredRange: number, seekAttach: number, ramLine = 20, ramRange = 70, boardShare = 0, boardAt = 90) => ({ preferredRange, seekAttach, ramLine, ramRange, boardShare, boardAt });
   return {
-    /** Closes to dock or ram, then boards. */
-    boarder: p(30, 1),
+    /** Closes in to come alongside or ram, moving most of its crew to ⚔️ on the way. */
+    boarder: p(30, 1, 20, 70, 0.7),
     /** Closes to cannon range and orbits. */
     standard: p(85, 0),
     /** Holds range with its broadside. */

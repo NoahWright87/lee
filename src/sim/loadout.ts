@@ -38,6 +38,9 @@ export interface BoatMods {
   gunRange: number;
   gunSpread: number;
   gunMinRange: number;
+  /** Boarding range (×) and swing time (×), from Swinging Ropes. */
+  boardRange: number;
+  swing: number;
   /** Per part index: HP multiplier and armor layer. */
   partHp: number[];
   partArmor: number[];
@@ -146,6 +149,8 @@ export function computeMods(b: BoatBuild, grid: Grid, partIds: string[], partRol
     gunRange: 1,
     gunSpread: 1,
     gunMinRange: 1,
+    boardRange: 1,
+    swing: 1,
     partHp: Array(n).fill(1),
     partArmor: Array(n).fill(0),
     hpFlat: 0,

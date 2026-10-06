@@ -4,7 +4,7 @@
 // by the best-qualified Lee for it.
 
 import { ARCHETYPES, type AiProfile, type EnemySpec } from '../config/encounters';
-import { LEE_DEFS, WORK_STAT } from '../config/lees';
+import { LEE_DEFS, WORK_STAT, type Job } from '../config/lees';
 import type { Tuning } from '../config/tuning';
 import { createBoat } from './boat';
 import { baseStat, STATION_WORK } from './crew';
@@ -21,6 +21,8 @@ export interface CrewSpec {
   level?: number;
   /** Level bonuses, trinkets and the like, already folded. */
   mods?: StatMods;
+  /** Starting job (default: from its tile's station). */
+  job?: Job;
 }
 
 export interface BoatSetup {
@@ -33,7 +35,7 @@ export interface BoatSetup {
 /**
  * Auto-arrange: a home tile for each Lee. Posts in priority order (a gun on
  * each side, oars, one damage-control post, a sail, crew guns, the other guns,
- * more oars and sails, hooks, powder, lookout, pump, then more damage
+ * more oars and sails, powder, lookout, pump, then more damage
  * control), and each post goes to the unplaced Lee best at its work (ties by
  * crew order).
  */
@@ -63,7 +65,6 @@ export function autoArrange(build: BoatBuild, crew: { type: string; mods?: StatM
     ...moreGuns,
     ...oars.slice(1),
     ...sails.slice(1),
-    ...of('hooks').map((x) => x.index),
     ...of('powder').map((x) => x.index),
     ...of('lookout').map((x) => x.index),
     ...of('pump').map((x) => x.index),

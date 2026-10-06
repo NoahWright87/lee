@@ -4,7 +4,7 @@
 import { ITEMS } from '../config/items';
 import { LEE_DEFS } from '../config/lees';
 import type { Side, Tuning } from '../config/tuning';
-import { AttachSystem, sideFacing, spikesOn, type AttachEvent, type Attachment } from './attach';
+import { ContactSystem, hullGap, inReach, sideAboard, sideFacing, spikesOn, type ContactEvent } from './contact';
 import {
   applyDamage,
   createBoat,
@@ -25,13 +25,15 @@ import {
   type PartState,
 } from './boat';
 import { updateEngagement, stepMelee, stepPistols, type CombatEvent } from './combat';
-import { createLee, damageCrewAt, hurtLee, inArc, leeStat, loseLee, stepCrew, tilesWithin, updateMobility, wetFactor, workerAt, type CrewContext, type Lee, type LossCause } from './crew';
+import { createLee, damageCrewAt, hurtLee, inArc, jobCounts, leeStat, loseLee, orderJob, stepCrew, tilesWithin, updateMobility, wetFactor, workerAt, type CrewContext, type Lee, type LossCause } from './crew';
+import type { Job } from '../config/lees';
+import { boardOrRam, nearSide, steer, type Helm, type HelmWorld, type ManeuverKind } from './helm';
 import { tileAt } from './grid';
 import { defaultBuild, itemParam } from './loadout';
 import { combineMods } from './levels';
 import { DEG, dist, NORTH, Rng, rotate, toLocal, toWorld, wrapAngle, type Vec } from './math';
 import { archetypeSetup, autoArrange, basicCrew, type BoatSetup, type CrewSpec } from './setup';
-import { alongsideCommand, stepMotion, type AlongsideSpec } from './steering';
+import { stepMotion } from './steering';
 import { TelegraphSystem } from './telegraph';
 
 export type Phase = 'ready' | 'running' | 'over';
@@ -70,9 +72,11 @@ export type WorldEvent =
   | { type: 'melee'; attacker: number; target: number; pos: Vec; killed: boolean }
   | { type: 'pistol'; shooter: number; from: Vec; to: Vec; hit: boolean; side: Side }
   | { type: 'rammed'; rammer: number; target: number; pos: Vec; damage: number; selfDamage: number; part: number; selfPart: number | null }
-  | { type: 'docked'; a: number; b: number }
+  | { type: 'contact'; a: number; b: number }
   | { type: 'bump'; pos: Vec; speed: number }
-  | { type: 'linkBroken'; a: number; b: number; reason: string }
+  | { type: 'contactEnded'; a: number; b: number }
+  | { type: 'order'; boatId: number; leeId: number; job: Job }
+  | { type: 'orderFull'; boatId: number; job: Job }
   | { type: 'swing'; leeId: number; back: boolean }
   | { type: 'crewLost'; boatId: number }
   | { type: 'gatling'; boatId: number; cannon: number; from: Vec; to: Vec; hit: boolean; side: Side }
@@ -108,9 +112,9 @@ export interface SideStats {
   /** Ram damage dealt to the struck boat (by this side's rams) and taken (by this side's boats, both ways). */
   ramDealt: number;
   ramTaken: number;
-  /** Seconds this side had at least one link. */
-  dockTime: number;
-  disengages: number;
+  /** Seconds this side spent in close combat (any of its boats). */
+  closeTime: number;
+  retreats: number;
   /** This side's tiles blown out, and volatile parts that went up. */
   tilesBlown: number;
   explosions: number;
@@ -144,8 +148,8 @@ const emptyStats = (): SideStats => ({
   ramsTaken: 0,
   ramDealt: 0,
   ramTaken: 0,
-  dockTime: 0,
-  disengages: 0,
+  closeTime: 0,
+  retreats: 0,
 });
 
 export interface Result {
@@ -164,16 +168,12 @@ export interface EnemyBrain {
   range: number;
   /** The point it is currently seeking (debug overlay). */
   seek: Vec | null;
-  /** What it's doing: holding range, coming alongside to dock, ramming, attached, adrift. */
-  mode: 'orbit' | 'alongside' | 'ram' | 'attached' | 'derelict';
+  /** What it's doing: holding range, coming alongside, ramming, holding its nose in after a ram, adrift. */
+  mode: 'orbit' | 'alongside' | 'ram' | 'hold' | 'derelict';
   /** Which of your sides it's coming alongside (+1 starboard, -1 port). */
   side: number;
-}
-
-/** Steering alongside an enemy (the player held a finger on its hull). */
-export interface Alongside {
-  boatId: number;
-  side: number;
+  /** World time of its next ⚔️ order (boarders move Lees to the boarding party as they close). */
+  nextOrder: number;
 }
 
 /** Player damage carried into the next fight (structure fraction and water per part). */
@@ -228,10 +228,14 @@ export class World {
   readonly telegraphs = new TelegraphSystem();
   /** Boats already marked as having lost their whole crew. */
   private crewless = new Set<Boat>();
-  /** Docks and rams: links between boats, contact warnings, collisions. */
-  readonly links = new AttachSystem();
-  /** You're steering alongside this enemy (finger held on its hull), or null. */
-  alongside: Alongside | null = null;
+  /** Close combat between boats, ram warnings, collisions. */
+  readonly contacts = new ContactSystem();
+  /** Your helm: what the steering is set to (it stays set after your finger lifts). */
+  helm: Helm = { kind: 'drift' };
+  /** The enemy you tapped: the ⚔️ target (null = none). */
+  boardTargetId: number | null = null;
+  /** BOARD or RAM for the ⚔️ button (kept between frames for the hysteresis). */
+  private maneuverLabel: ManeuverKind | null = null;
   readonly stats: Record<Side, SideStats> = { player: emptyStats(), enemy: emptyStats() };
   /** Per-enemy AI state, by boat id. */
   readonly brains = new Map<number, EnemyBrain>();
@@ -291,7 +295,7 @@ export class World {
       this.enemies.push(e);
       this.boardCrew(e, setup.crew);
       const jitter = tuning.enemyAI.rangeJitter;
-      this.brains.set(e.id, { orbitDir: 0, range: ai.preferredRange + this.rng.range(-jitter, jitter), seek: null, mode: 'orbit', side: 0 });
+      this.brains.set(e.id, { orbitDir: 0, range: ai.preferredRange + this.rng.range(-jitter, jitter), seek: null, mode: 'orbit', side: 0, nextOrder: 0 });
     });
     this.boats = [this.player, ...this.enemies];
   }
@@ -311,7 +315,7 @@ export class World {
       used.add(home);
       const def = LEE_DEFS[c.type] ?? LEE_DEFS.basic;
       const mods = combineMods(c.mods, boat.mods.crew, assistMods);
-      boat.crew.lees.push(createLee(this.nextLeeId++, slot + 1, def, boat.side, boat, home, this.tuning, { uid: c.uid, label: c.label, level: c.level, mods }));
+      boat.crew.lees.push(createLee(this.nextLeeId++, slot + 1, def, boat.side, boat, home, this.tuning, { uid: c.uid, label: c.label, level: c.level, mods, job: c.job }));
     });
     updateMobility(boat, this.tuning);
   }
@@ -328,62 +332,135 @@ export class World {
     return this.boats.flatMap((b) => b.crew.lees);
   }
 
-  // ------------------------------------------------------------ links
+  // ------------------------------------------------------------ close combat and orders
 
-  /** Boats linked to this one. */
-  attachedTo(b: Boat): Boat[] {
-    return this.links.attachedTo(b);
+  /** Opposing boats in close combat with this one, nearest first. */
+  touching(b: Boat): Boat[] {
+    return this.contacts.touching(b);
   }
 
-  isAttached(b: Boat): boolean {
-    return this.links.linksOf(b).length > 0;
+  inContact(b: Boat): boolean {
+    return this.contacts.contactsOf(b).length > 0;
   }
 
-  /**
-   * Disengage from an attached boat: cast off. Your boarders over there fight
-   * their way back aboard; once they're all home (at least castOffMin, at most
-   * castOffTimeout) the link breaks and the boats are pushed apart. Their
-   * boarders on your deck don't get a free ride home: they stay and fight.
-   * Returns false if there's no such link.
-   */
-  disengage(other: Boat, from: Boat = this.player): boolean {
-    const l = this.links.linkBetween(from, other);
-    if (!l || this.links.castingOff(l) || this.result) return false;
-    this.links.startCastOff(l, from.side, this.time);
-    this.stats[from.side].disengages++;
-    if (this.alongside?.boatId === other.id) this.alongside = null;
-    // Boarders hear the recall now, not at the next think.
-    for (const b of [l.a, l.b]) b.crew.thinkIn = 0;
-    return true;
-  }
-
-  /**
-   * Steer alongside an enemy (finger held on or near its hull), or null to stop.
-   * Picks the side of it you're already on, or its free side.
-   */
-  setAlongside(target: Boat | null): void {
-    if (!target || target.side === this.player.side || this.isSinking(target)) {
-      this.alongside = null;
-      return;
+  /** 0 → 1 as the nearest enemy closes from closeViewStart to boarding range (the close-up view and the melee speed follow it). */
+  closeness(b: Boat = this.player): number {
+    const t = this.tuning;
+    let gap = Infinity;
+    for (const e of this.boats) {
+      if (e.side === b.side || this.isOut(e)) continue;
+      gap = Math.min(gap, hullGap(b, e).gap);
     }
-    if (this.alongside?.boatId === target.id) return;
-    this.alongside = { boatId: target.id, side: this.freeSide(this.player, target) };
+    const near = Math.max(0, t.boarding.range);
+    const far = Math.max(near + 1, t.layout.closeViewStart);
+    return clamp01((far - gap) / (far - near));
   }
 
-  /** Which side (+1 starboard, -1 port) of `target` `self` should come alongside: the near one, unless it's taken. */
-  private freeSide(self: Boat, target: Boat): number {
-    const l = toLocal(self.motion, target.motion, target.motion.heading);
-    const near = l.y >= 0 ? 1 : -1;
-    const ok = (s: number) => this.links.canLink(target, s > 0 ? 'starboard' : 'port', this.tuning);
-    return ok(near) || !ok(-near) ? near : -near;
+  /** Enemies close enough to show in the close-up, nearest first. */
+  closeBoats(b: Boat = this.player): Boat[] {
+    const far = this.tuning.layout.closeViewStart;
+    return this.boats
+      .filter((e) => e.side !== b.side && this.sinkAnim(e) < 1 && hullGap(b, e).gap <= far)
+      .sort((x, y) => hullGap(b, x).gap - hullGap(b, y).gap || x.id - y.id);
   }
 
-  /** The enemy hull within `grab` m of a world point (closest first), for steering alongside. */
+  /** Your ⚔️ target if it's still in the fight, else whoever you're in close combat with. */
+  playerBoardTarget(): Boat | null {
+    const id = this.boardTargetId;
+    const tgt = id !== null ? this.enemies.find((e) => e.id === id && !this.isOut(e)) ?? null : null;
+    if (tgt) return tgt;
+    return this.touching(this.player).find((e) => !this.isOut(e)) ?? null;
+  }
+
+  /** Where a boat's ⚔️ Lees head: yours from your target; enemies always go for you. */
+  boardTargetOf(b: Boat): Boat | null {
+    if (b === this.player) return this.playerBoardTarget();
+    return this.isSinking(this.player) ? null : this.player;
+  }
+
+  /** The ⚔️ button's mode: null (greyed: no target), BOARD, RAM, or CHARGE (in close combat). */
+  meleeMode(): 'board' | 'ram' | 'charge' | null {
+    const target = this.playerBoardTarget();
+    if (!target) {
+      this.maneuverLabel = null;
+      return null;
+    }
+    if (this.contacts.between(this.player, target)) return 'charge';
+    const h = this.helm;
+    if ((h.kind === 'board' || h.kind === 'ram') && h.boatId === target.id) return (this.maneuverLabel = h.kind);
+    this.maneuverLabel = boardOrRam(this.player, target, this.maneuverLabel, this.tuning);
+    return this.maneuverLabel;
+  }
+
+  /** In melee contact: ⏩ shows RETREAT instead of SAIL. */
+  canRetreat(): boolean {
+    const p = this.player;
+    return this.inContact(p) || sideAboard(p, 'enemy', this.allLees()) || p.crew.lees.some((l) => l.alive && l.deck !== p);
+  }
+
+  /** Is the player pulling out (RETREAT)? */
+  get retreating(): boolean {
+    return this.helm.kind === 'retreat';
+  }
+
+  /** Set your helm (a tap). Anything but a maneuver cancels the maneuver; the boarding party stays gathered. */
+  setHelm(h: Helm): void {
+    if (this.player.sinkingSince !== null) return;
+    this.helm = h;
+  }
+
+  /** Tap an enemy: it's your ⚔️ target, and you head for it to BOARD or RAM (whichever the angle says). */
+  targetEnemy(e: Boat): void {
+    if (e.side === this.player.side || this.isOut(e)) return;
+    if (this.boardTargetId !== e.id) this.maneuverLabel = null;
+    this.boardTargetId = e.id;
+    this.startManeuver();
+  }
+
+  /** Head for the ⚔️ target with the current BOARD/RAM choice (no-op without a target). */
+  private startManeuver(): void {
+    const target = this.playerBoardTarget();
+    if (!target) return;
+    const mode = this.meleeMode();
+    if (mode === 'charge') return;
+    const h = this.helm;
+    if ((h.kind === 'board' || h.kind === 'ram') && h.boatId === target.id) return;
+    this.helm = mode === 'ram' ? { kind: 'ram', boatId: target.id, hold: false } : { kind: 'board', boatId: target.id, side: nearSide(this.player, target) };
+  }
+
+  /**
+   * An action button: move the best-fit Lee into a job. ⚔️ also starts the
+   * BOARD/RAM maneuver toward the target. ⏩ in melee contact is RETREAT.
+   * Returns the Lee moved (null: the job is full, or nobody can move).
+   */
+  order(job: Job, boat: Boat = this.player): Lee | null {
+    if (boat === this.player && job === 'board') {
+      if (!this.playerBoardTarget()) return null;
+      this.startManeuver();
+    }
+    const lee = orderJob(boat, job, this.time, this.tuning);
+    if (lee) this.events.push({ type: 'order', boatId: boat.id, leeId: lee.id, job });
+    else this.events.push({ type: 'orderFull', boatId: boat.id, job });
+    return lee;
+  }
+
+  /**
+   * RETREAT: your boarders come home (the boat waits beside them), then you
+   * sail away from the nearest enemy until you set a heading.
+   */
+  retreat(): void {
+    if (this.retreating || this.result) return;
+    this.helm = { kind: 'retreat' };
+    this.stats.player.retreats++;
+    this.player.crew.thinkIn = 0;
+  }
+
+  /** The enemy hull within `grab` m of a world point (closest first). */
   enemyNear(world: Vec, grab: number): Boat | null {
     let best: Boat | null = null;
     let bestD = Infinity;
     for (const e of this.enemies) {
-      if (this.isSinking(e)) continue;
+      if (this.isOut(e)) continue;
       const d = distanceToHull(e, world);
       if (d <= grab && d < bestD) {
         bestD = d;
@@ -393,49 +470,50 @@ export class World {
     return best;
   }
 
-  /** Lees of `side` still over on `deck` (standing there, or in the air on the way). */
-  private stillAcross(side: Side, deck: Boat): number {
-    return this.allLees().filter((l) => l.alive && l.side === side && (l.swing ? l.swing.to === deck : l.deck === deck)).length;
+  /** Helm queries for the shared steering code. */
+  private helmWorld(): HelmWorld {
+    return {
+      tuning: this.tuning,
+      live: (id) => this.boats.find((b) => b.id === id && !this.isOut(b)) ?? null,
+      nearestFoe: (self) => {
+        let best: Boat | null = null;
+        let bestD = Infinity;
+        for (const b of this.boats) {
+          if (b.side === self.side || this.isOut(b)) continue;
+          const d = dist(b.motion, self.motion);
+          if (d < bestD) {
+            bestD = d;
+            best = b;
+          }
+        }
+        return best;
+      },
+      waitFor: (self) => {
+        for (const l of self.crew.lees) {
+          if (!l.alive || l.deck === self || l.deck.sinkingSince !== null) continue;
+          if (l.swing && !l.swing.back) return l.swing.to;
+          if (!l.swing && inReach(self, l.deck, this.tuning)) return l.deck;
+        }
+        return null;
+      },
+    };
   }
 
-  /** Disengage button text: who you're still waiting for. */
-  castOffStatus(other: Boat): string {
-    const l = this.links.linkBetween(this.player, other);
-    if (!l) return '';
-    if (l.breakAt !== null) return `${Math.max(0, l.breakAt - this.time).toFixed(1)}s`;
-    if (this.spikeHold(l) > 0 && l.castOff && this.time - l.castOff.since < this.spikeHold(l)) return 'spikes stuck in';
-    const n = this.stillAcross(this.player.side, other);
-    return n ? `${n} still aboard them` : 'pushing off';
-  }
-
-  /** Casting off: break the link once that side's boarders are home (or time's up). */
-  private stepCastOffs(): void {
-    const b = this.tuning.boarding;
-    for (const l of this.links.links) {
-      if (!l.castOff || l.breakAt !== null) continue;
-      const other = l.a.side === l.castOff.side ? l.b : l.a;
-      const age = this.time - l.castOff.since;
-      const home = this.stillAcross(l.castOff.side, other) === 0;
-      // Spikes stuck in either edge hold the boats together a while longer.
-      const min = Math.max(0, b.castOffMin) + this.spikeHold(l);
-      if ((home && age >= min) || age >= Math.max(min, b.castOffTimeout + this.spikeHold(l))) {
-        l.breakAt = this.time;
-      }
-    }
-  }
-
-  /** Opposing boats this boat's guns may fire on: not attached to it, nor to any boat on its side (§4.6). */
+  /** Opposing boats this boat's guns may fire on: in the fight, and with none of the shooter's own boarders aboard. */
   gunTargets(shooter: Boat): Boat[] {
-    return this.boats.filter(
-      (b) =>
-        b.side !== shooter.side &&
-        !this.isOut(b) &&
-        !this.links.attachedTo(b).some((o) => o.side === shooter.side),
-    );
+    const lees = this.allLees();
+    return this.boats.filter((b) => b.side !== shooter.side && !this.isOut(b) && !sideAboard(b, shooter.side, lees));
   }
 
   private crewContext(b: Boat): CrewContext {
-    return { tuning: this.tuning, time: this.time, foes: this.gunTargets(b), lees: this.allLees(), links: this.links };
+    return {
+      tuning: this.tuning,
+      time: this.time,
+      foes: this.gunTargets(b),
+      lees: this.allLees(),
+      boardTarget: this.boardTargetOf(b),
+      retreating: b === this.player && this.retreating,
+    };
   }
 
   findLee(id: number): { lee: Lee; boat: Boat } | null {
@@ -518,27 +596,19 @@ export class World {
     }
     for (const e of this.enemies) this.thinkEnemy(e);
     this.steerPlayer();
-    const grouped = this.links.grouped();
     for (const b of this.boats) {
-      if (grouped.has(b) && !this.isSinking(b)) continue; // attached: the group drifts as one
       const target = this.isSinking(b) ? null : b.target;
-      const params = motionParams(b, this.tuning);
-      // Enemy brains (and coming alongside) place their seek point themselves, so they seek it directly.
-      if (b.side === 'enemy' || (b === this.player && this.alongside)) params.orbitCapture = 0;
-      stepMotion(b.motion, target, params, dt);
+      stepMotion(b.motion, target, motionParams(b, this.tuning), dt);
     }
-    this.links.moveGroups(this.tuning, dt);
-    this.stepCastOffs();
-    for (const ev of this.links.step({ tuning: this.tuning, time: this.time, boats: this.boats, playerAlongside: this.alongside?.boatId ?? null }, dt)) {
-      this.handleLinkEvent(ev);
-    }
+    for (const ev of this.contacts.step({ tuning: this.tuning, time: this.time, boats: this.boats }, dt)) this.handleContactEvent(ev);
     if (!decided) {
       for (const side of ['player', 'enemy'] as const) {
-        if (this.boats.some((b) => b.side === side && this.isAttached(b))) this.stats[side].dockTime += dt;
+        if (this.boats.some((b) => b.side === side && this.inContact(b))) this.stats[side].closeTime += dt;
       }
       for (const b of this.boats) this.stepGuns(b, dt);
       this.stepSpikes(dt);
     }
+    this.stepSunkDecks();
     this.stepShells(dt);
     this.telegraphs.step(dt);
     for (const b of this.boats) {
@@ -597,10 +667,14 @@ export class World {
     this.events.push({ type: 'leeLost', boatId: lee.deck.id, leeId: lee.id, pos: toWorld(lee.pos, lee.deck.motion, lee.deck.motion.heading), cause: lee.lostCause ?? 'cannon' });
   }
 
-  private handleLinkEvent(ev: AttachEvent): void {
+  private handleContactEvent(ev: ContactEvent): void {
     switch (ev.type) {
-      case 'docked':
-        this.events.push({ type: 'docked', a: ev.a.id, b: ev.b.id });
+      case 'contact':
+        this.events.push({ type: 'contact', a: ev.a.id, b: ev.b.id });
+        for (const b of [ev.a, ev.b]) b.crew.thinkIn = 0;
+        break;
+      case 'contactEnded':
+        this.events.push({ type: 'contactEnded', a: ev.a.id, b: ev.b.id });
         for (const b of [ev.a, ev.b]) b.crew.thinkIn = 0;
         break;
       case 'rammed': {
@@ -622,60 +696,46 @@ export class World {
           selfPart: ev.selfPart?.index ?? null,
         });
         for (const b of [ev.rammer, ev.target]) b.crew.thinkIn = 0;
-        if (ev.rammer === this.player || ev.target === this.player) this.alongside = null;
+        // No bounce: the rammer keeps its nose in until somebody sails off.
+        if (ev.rammer === this.player) {
+          this.boardTargetId = ev.target.id;
+          this.helm = { kind: 'ram', boatId: ev.target.id, hold: true };
+        } else {
+          const brain = this.brains.get(ev.rammer.id);
+          if (brain && brain.mode === 'ram') brain.mode = 'hold';
+        }
         break;
       }
       case 'bump':
         this.events.push({ type: 'bump', pos: ev.pos, speed: ev.speed });
         break;
-      case 'linkBroken': {
-        this.events.push({ type: 'linkBroken', a: ev.a.id, b: ev.b.id, reason: ev.reason });
-        // Anyone left on a deck that's going under goes with it.
-        for (const deck of [ev.a, ev.b]) {
-          if (!this.isSinking(deck)) continue;
-          for (const l of this.allLees()) {
-            if (!l.alive || l.deck !== deck || l.side === deck.side) continue;
-            if (this.result?.winner === l.side) {
-              l.swing = null;
-              // The fight is won and the crews have stood down: winners make it home.
-              l.deck = l.boat;
-              l.tile = l.home;
-              l.dest = l.home;
-              l.path = [];
-              l.pos = { ...l.boat.grid.tiles[l.home].center };
-              l.reason = 'climbed home after the win';
-              continue;
-            }
-            if (l.swing) continue; // in the air on the way out: it lands
-            loseLee(l, this.time, 'sank');
-            this.noteLost(l);
-          }
-        }
-        for (const b of [ev.a, ev.b]) b.crew.thinkIn = 0;
-        break;
-      }
     }
   }
 
-  /** Coming alongside: the helm seeks the slot beside the target and throttles to match it. */
+  /** The helm steers: seek point, throttle, orbit or not, stopped or not. */
   private steerPlayer(): void {
     const p = this.player;
-    p.throttle = 1;
-    const a = this.alongside;
-    if (!a) return;
-    const target = this.enemies.find((e) => e.id === a.boatId);
-    if (!target || this.isSinking(target) || this.isSinking(p) || this.links.linkBetween(p, target)) {
-      if (!target || this.isSinking(target)) this.alongside = null;
+    if (this.isSinking(p)) {
+      p.target = null;
       return;
     }
-    const cmd = alongsideCommand(p.motion, this.alongsideSpec(p, target, a.side), motionParams(p, this.tuning));
+    // RAM turns into holding once we're nose-in, however gently we arrived.
+    const h = this.helm;
+    if (h.kind === 'ram' && !h.hold) {
+      const tgt = this.boats.find((b) => b.id === h.boatId);
+      if (tgt && this.contacts.between(p, tgt)) this.helm = { ...h, hold: true };
+    }
+    // Not steered yet: whatever set the seek point directly (tests, tools) keeps it.
+    if (this.phase === 'ready' || this.helm.kind === 'drift') {
+      p.stopped = false;
+      return;
+    }
+    const { cmd, helm } = steer(p, this.helm, this.helmWorld());
+    this.helm = helm;
     p.target = cmd.target;
     p.throttle = cmd.throttle;
-  }
-
-  /** The slot beside `target` that `self` steers into. */
-  alongsideSpec(self: Boat, target: Boat, side: number): AlongsideSpec {
-    return { other: target.motion, offset: target.layout.beam / 2 + self.layout.beam / 2 + this.tuning.attach.dockGap, side };
+    p.orbit = cmd.orbit;
+    p.stopped = cmd.stopped;
   }
 
   // ------------------------------------------------------------ enemy brain
@@ -684,20 +744,15 @@ export class World {
    * Seek a spot that keeps the player on our beam at our preferred range: aim
    * 90° off the bearing to the player, bent inward when too far and outward
    * when too close, and nudged away from other ships in the pack. Same
-   * steering as the player; only the target differs.
+   * steering as the player; only the target differs. Boarders close in
+   * instead, and move Lees to ⚔️ on the way (the same orders you give).
    */
   private thinkEnemy(e: Boat): void {
     const brain = this.brains.get(e.id)!;
     const p = this.player;
     e.throttle = 1;
+    e.orbit = false;
     if (this.isSinking(e)) {
-      e.target = null;
-      brain.seek = null;
-      return;
-    }
-    if (this.isAttached(e)) {
-      // Propulsion is overridden; enemy boats never disengage on their own.
-      brain.mode = 'attached';
       e.target = null;
       brain.seek = null;
       return;
@@ -710,8 +765,10 @@ export class World {
       return;
     }
     const prof = e.ai ?? this.tuning.ai.standard;
-    if (prof.seekAttach > 0 && !this.isSinking(p) && this.links.canLink(e, 'bow', this.tuning) && this.links.linksOf(p).length < Math.round(this.tuning.attach.cap)) {
-      if (this.thinkBoarder(e, brain, prof)) return;
+    this.orderEnemyCrew(e, brain, prof);
+    if (prof.seekAttach > 0 && !this.isSinking(p)) {
+      this.thinkBoarder(e, brain, prof);
+      return;
     }
     brain.mode = 'orbit';
     const ai = this.tuning.enemyAI;
@@ -742,40 +799,55 @@ export class World {
     e.target = seek;
   }
 
+  /** A boarder AI moves Lees into its boarding party (one order at a time) once you're within boardAt. */
+  private orderEnemyCrew(e: Boat, brain: EnemyBrain, prof: { boardShare: number; boardAt: number }): void {
+    if (prof.boardShare <= 0 || this.time < brain.nextOrder || this.isSinking(this.player)) return;
+    if (dist(e.motion, this.player.motion) > prof.boardAt) return;
+    const alive = e.crew.lees.filter((l) => l.alive).length;
+    if (jobCounts(e).board >= Math.round(alive * Math.min(1, prof.boardShare))) return;
+    brain.nextOrder = this.time + Math.max(0.05, this.tuning.jobs.aiOrderInterval);
+    this.order('board', e);
+  }
+
   /**
    * A boarder closes in: ram when it has a clean line onto your hull (heading
    * already close to the intercept, hitting you square-ish, close enough),
-   * otherwise come alongside to dock. Same steering as everyone else.
-   * Returns false if neither is possible (it then holds range like a gunboat).
+   * otherwise come alongside. After a ram it holds its nose in. Same steering
+   * (and the same autopilot) as yours.
    */
-  private thinkBoarder(e: Boat, brain: EnemyBrain, ai: { ramLine: number; ramRange: number }): boolean {
+  private thinkBoarder(e: Boat, brain: EnemyBrain, ai: { ramLine: number; ramRange: number }): void {
     const p = this.player;
+    const hw = this.helmWorld();
+    const drive = (helm: Helm) => {
+      const { cmd } = steer(e, helm, hw);
+      brain.seek = cmd.target;
+      e.target = cmd.target;
+      e.throttle = cmd.throttle;
+    };
+    if (brain.mode === 'hold') {
+      if (hullGap(e, p).gap <= this.tuning.boarding.range + this.tuning.boarding.rangeSlack) {
+        drive({ kind: 'ram', boatId: p.id, hold: true });
+        return;
+      }
+      brain.mode = 'alongside';
+    }
     const d = dist(e.motion, p.motion);
     const speed = Math.max(1, Math.hypot(e.motion.vx, e.motion.vy));
     const tti = d / speed;
     const aim = { x: p.motion.x + p.motion.vx * tti, y: p.motion.y + p.motion.vy * tti };
     const off = Math.abs(wrapAngle(Math.atan2(aim.y - e.motion.y, aim.x - e.motion.x) - e.motion.heading));
     const across = Math.abs(Math.sin(e.motion.heading - p.motion.heading));
-    const side = sideFacing(p, e.motion);
     const line = (brain.mode === 'ram' ? 2 : 1) * ai.ramLine * DEG;
     const range = ai.ramRange * (brain.mode === 'ram' ? 1.3 : 1);
-    if (off <= line && d <= range && across >= 0.6 && this.links.canLink(p, side, this.tuning) && speed >= this.tuning.attach.ramSpeed) {
+    if (!this.inContact(e) && off <= line && d <= range && across >= 0.6 && speed >= this.tuning.attach.ramSpeed) {
       brain.mode = 'ram';
-      brain.seek = aim;
-      e.target = aim;
-      return true;
+      drive({ kind: 'ram', boatId: p.id, hold: false });
+      return;
     }
-    // Come alongside on the near side (or the free one).
-    if (brain.mode !== 'alongside' || !this.links.canLink(p, brain.side > 0 ? 'starboard' : 'port', this.tuning)) {
-      brain.side = this.freeSide(e, p);
-    }
-    if (!this.links.canLink(p, brain.side > 0 ? 'starboard' : 'port', this.tuning)) return false;
+    // Come alongside on the near side.
+    if (brain.mode !== 'alongside') brain.side = nearSide(e, p);
     brain.mode = 'alongside';
-    const cmd = alongsideCommand(e.motion, this.alongsideSpec(e, p, brain.side), motionParams(e, this.tuning));
-    brain.seek = cmd.target;
-    e.target = cmd.target;
-    e.throttle = cmd.throttle;
-    return true;
+    drive({ kind: 'board', boatId: p.id, side: brain.side });
   }
 
   // ------------------------------------------------------------ guns
@@ -1147,21 +1219,14 @@ export class World {
 
   // ------------------------------------------------------------ spikes
 
-  /** Extra seconds a link holds when casting off because spikes are stuck in either edge. */
-  spikeHold(l: Attachment): number {
-    let extra = 0;
-    for (const [boat, side] of [[l.a, l.sideA], [l.b, l.sideB]] as const) {
-      for (const r of spikesOn(boat, side)) extra = Math.max(extra, itemParam(this.tuning, r.item, 'disengageExtra'));
-    }
-    return extra;
-  }
-
-  /** While attached along a spiked edge, the other boat's part beside the spikes takes slow damage. */
+  /** Boats touching along a spiked edge: the other boat's part beside the spikes takes slow damage. */
   private stepSpikes(dt: number): void {
-    for (const l of this.links.links) {
-      for (const [boat, side, other] of [[l.a, l.sideA, l.b], [l.b, l.sideB, l.a]] as const) {
-        if (other.side === boat.side || this.isSinking(other)) continue;
-        for (const r of spikesOn(boat, side)) {
+    const touch = Math.max(0, this.tuning.attach.touchGap);
+    for (const c of this.contacts.contacts) {
+      if (c.gap > touch) continue;
+      for (const [boat, other] of [[c.a, c.b], [c.b, c.a]] as const) {
+        if (this.isSinking(other)) continue;
+        for (const r of spikesOn(boat, sideFacing(boat, other.motion))) {
           const tile = boat.grid.tiles.find((x) => x.rails.includes(r));
           if (!tile) continue;
           const w = toWorld(tile.center, boat.motion, boat.motion.heading);
@@ -1183,6 +1248,19 @@ export class World {
     }
   }
 
+  /** Once a sinking boat is under, anyone from the other side still standing on it goes down with it. */
+  private stepSunkDecks(): void {
+    for (const deck of this.boats) {
+      if (deck.sinkingSince === null || this.sinkAnim(deck) < 1) continue;
+      for (const l of this.allLees()) {
+        if (!l.alive || l.swing || l.deck !== deck || l.side === deck.side) continue;
+        if (this.result?.winner === l.side) continue; // the winners climbed home already
+        loseLee(l, this.time, 'sank');
+        this.noteLost(l);
+      }
+    }
+  }
+
   // ------------------------------------------------------------ end of fight
 
   private checkSinking(): void {
@@ -1195,16 +1273,14 @@ export class World {
       b.sinkingSince = this.time;
       b.target = null;
       this.events.push({ type: 'sinking', boatId: b.id });
-      // Its links break after the evacuation window; boarders on it swing home meanwhile.
-      for (const l of this.links.linksOf(b)) this.links.breakLink(l, `${b.side === 'player' ? 'your boat' : 'enemy'} sinking`, this.time, this.tuning.attach.recallWindow + this.spikeHold(l));
+      // Boarders on it swing home while it goes down (if home is in reach).
+      for (const o of this.boats) o.crew.thinkIn = 0;
       // Its own boarders elsewhere are lost with it.
       for (const l of b.crew.lees) {
         if (!l.alive || (l.deck === b && !l.swing)) continue;
         loseLee(l, this.time, 'sank');
         this.noteLost(l);
       }
-      if (this.alongside?.boatId === b.id) this.alongside = null;
-      for (const o of this.links.attachedTo(b)) o.crew.thinkIn = 0;
       if (this.result || decided) continue;
       // You lose when you sink; you win when the last enemy is out. First decisive sinking wins.
       if (b.side === 'player') decided = { winner: 'enemy', how: 'sunk' };
@@ -1220,16 +1296,14 @@ export class World {
     if (this.result && this.resultAt !== null && this.time >= this.resultAt) this.phase = 'over';
   }
 
-  /** Boats that just lost their last Lee cast off: nothing aboard to fight, nobody to hold the lines. */
+  /** Boats that just lost their last Lee: out of the fight, adrift. */
   private checkCrews(): void {
     for (const b of this.boats) {
       if (this.crewless.has(b) || !isDerelict(b)) continue;
       this.crewless.add(b);
       b.target = null;
       this.events.push({ type: 'crewLost', boatId: b.id });
-      for (const l of this.links.linksOf(b)) this.links.breakLink(l, `${b.side === 'player' ? 'your' : 'enemy'} crew lost`, this.time, this.tuning.attach.recallWindow + this.spikeHold(l));
-      if (this.alongside?.boatId === b.id) this.alongside = null;
-      for (const o of this.links.attachedTo(b)) o.crew.thinkIn = 0;
+      for (const o of this.boats) o.crew.thinkIn = 0;
     }
   }
 
@@ -1258,6 +1332,8 @@ export class World {
 }
 
 /** Every Lee stat × v (the playerCrewStats assist). */
+const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
+
 function allStats(v: number): Record<string, number> {
   const out: Record<string, number> = {};
   for (const k of Object.keys(LEE_DEFS.basic.stats)) if (k !== 'impactTaken' && k !== 'pistolTaken') out[k] = v;

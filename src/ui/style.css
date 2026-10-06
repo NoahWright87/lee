@@ -322,12 +322,12 @@ body {
 }
 
 .gauge.water {
-  top: 0;
+  bottom: 0;
   left: 0;
 }
 
 .gauge.guns {
-  top: 0;
+  bottom: 0;
   right: 0;
 }
 
@@ -404,7 +404,7 @@ body {
 }
 
 .gauge.crew {
-  bottom: 0;
+  bottom: 26px;
   left: 0;
 }
 
@@ -1030,38 +1030,6 @@ body {
 
 /* Disengage: one per attached boat, beside its deck in the strip. Big enough
    for a thumb mid-fight, never in the bottom quarter where a thumb rests. */
-.disengage-layer {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-}
-
-.disengage-btn {
-  position: absolute;
-  width: 150px;
-  min-height: 52px;
-  padding: 6px 12px;
-  border-radius: 12px;
-  border: 2px solid #1a120a;
-  background: #f2c14e;
-  color: #1a120a;
-  font: 800 13px/1.15 system-ui, sans-serif;
-  letter-spacing: 0.02em;
-  white-space: pre-line;
-  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.45);
-  pointer-events: auto;
-}
-
-.disengage-btn:active {
-  transform: translateY(2px);
-  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.45);
-}
-
-.disengage-btn.breaking {
-  background: #8a8580;
-  color: #f6e7c1;
-}
-
 /* ------------------------------------------------------------ Phase 4: layers */
 
 #hud > .hud-top {
@@ -2040,4 +2008,194 @@ body {
 .lee-card > .card-buttons:first-child {
   margin-top: 0;
   margin-bottom: 4px;
+}
+
+/* ------------------------------------------------------------ Phase 5: action buttons and pips */
+
+/* The four buttons straddle the seam between the ocean and the close-up; your pips hang under them, the enemy's above. */
+.action-bar {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  top: calc(var(--ocean-frac) - 25px);
+  height: 50px;
+  z-index: 5;
+  pointer-events: none;
+}
+
+.action-buttons {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
+#hud .action-btn {
+  pointer-events: auto;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  height: 50px;
+  border-radius: 12px;
+  border: 2px solid #1a120a;
+  background: #2a3f57;
+  color: var(--ink);
+  font: 800 12px/1 system-ui, sans-serif;
+  letter-spacing: 0.04em;
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.45);
+  touch-action: none;
+  -webkit-touch-callout: none;
+  overflow: hidden;
+}
+
+.action-btn::after {
+  /* The hold ring: fills toward the next repeat. */
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: 12px;
+  background: conic-gradient(rgba(246, 231, 193, 0.45) calc(var(--hold, 0) * 360deg), transparent 0);
+  -webkit-mask: radial-gradient(circle, transparent 62%, #000 63%);
+  mask: radial-gradient(circle, transparent 62%, #000 63%);
+  pointer-events: none;
+}
+
+.action-btn:active {
+  transform: translateY(2px);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.45);
+}
+
+.action-icon {
+  font-size: 18px;
+}
+
+.action-btn.job-sail { background: #24506e; }
+.action-btn.job-fire { background: #6b4a1e; }
+.action-btn.job-board { background: #6e2a2a; }
+.action-btn.job-fix { background: #2f5a3a; }
+.action-btn.job-sail.retreat { background: #b98a2a; color: #1a120a; }
+.action-btn.job-board.charge { background: #c23b2a; }
+.action-btn.disabled { filter: grayscale(1) brightness(0.6); }
+.action-btn.full { opacity: 0.75; }
+
+.action-btn.shake {
+  animation: shake 0.28s ease-in-out;
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-4px); }
+  75% { transform: translateX(4px); }
+}
+
+.pip-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+.pip-row.mine {
+  top: 56px;
+}
+
+.pip-row.theirs {
+  bottom: 58px;
+  opacity: 0;
+}
+
+.pip {
+  --c: #c0392b;
+  --hp: 100%;
+  --p: 0%;
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  /* Fill = HP: solid type color below, the same color at 25% above. */
+  background: linear-gradient(to top, var(--c) var(--hp), color-mix(in srgb, var(--c) 25%, transparent) var(--hp));
+  border: 1.5px solid rgba(0, 0, 0, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.2s;
+  will-change: transform;
+}
+
+.pip-row.theirs .pip {
+  border-color: #e2402c;
+}
+
+.pip::before {
+  /* Ring = progress on the current action (only while working). */
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  background: conic-gradient(var(--ink) var(--p), rgba(246, 231, 193, 0.15) 0);
+  -webkit-mask: radial-gradient(circle, transparent 58%, #000 60%);
+  mask: radial-gradient(circle, transparent 58%, #000 60%);
+  opacity: 0;
+}
+
+.pip.busy::before {
+  opacity: 1;
+}
+
+.pip-lv {
+  font: 800 10px/1 system-ui, sans-serif;
+  color: #fff;
+  text-shadow: 0 0 2px #000, 0 0 2px #000;
+}
+
+.pip.transit {
+  opacity: 0.7;
+}
+
+.pip.away {
+  box-shadow: 0 0 0 2px rgba(255, 90, 90, 0.8);
+}
+
+.pip.fighting {
+  box-shadow: 0 0 0 2px #ff3020;
+}
+
+.pip.hollow {
+  background: rgba(0, 0, 0, 0.35);
+  border: 1.5px dashed rgba(246, 231, 193, 0.6);
+}
+
+.pip.dead {
+  animation: pip-death 0.6s ease-in forwards;
+}
+
+@keyframes pip-death {
+  0% { filter: brightness(2); }
+  40% { filter: brightness(2) saturate(0); }
+  100% { opacity: 0; filter: saturate(0); scale: 0.3; }
+}
+
+.stopped-badge {
+  position: absolute;
+  left: 50%;
+  bottom: 62px;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font: 800 11px/1 system-ui, sans-serif;
+  letter-spacing: 0.06em;
+  color: #1a120a;
+  background: #f2c14e;
+  padding: 4px 8px;
+  border-radius: 8px;
+}
+
+.speed-btn {
+  min-width: 46px;
 }

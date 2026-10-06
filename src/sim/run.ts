@@ -509,7 +509,7 @@ export function memorialLine(label: string, type: string, cause: string): string
 export function fightXp(l: Lee, t: Tuning): number {
   const L = t.leveling;
   const s = l.stats;
-  const work = s.time.gun + s.time.row + s.time.sail + s.time.lookout + s.time.pump + s.time.hooks + s.time.powder + s.time.repair + s.time.bail;
+  const work = s.time.gun + s.time.row + s.time.sail + s.time.lookout + s.time.pump + s.time.powder + s.time.repair + s.time.bail;
   return Math.round(
     L.survivalXp + s.damageDealt * L.xpPerDamage + s.hpRepaired * L.xpPerRepair + s.waterBailed * L.xpPerBail + s.leeDamage * L.xpPerLeeDamage + s.meleeKills * L.xpPerKill + work * L.xpPerWorkSecond,
   );

@@ -129,7 +129,6 @@ export const SHIPS: Record<string, ShipDef> = {
       [fix(6, 1)]: 'gatling',
       [fix(2, 0)]: 'oars',
       [fix(2, 1)]: 'oars',
-      [fix(4, 0)]: 'hooks',
       'rail:6,0:bow': 'spikes',
     },
     tags: ['board'],

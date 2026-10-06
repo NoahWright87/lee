@@ -1,9 +1,10 @@
 // One scene, one world, two cameras:
-//  - ocean camera (top ~75%): zoomed out, frames both boats, takes steering input
+//  - ocean camera (top ~75%): centered on you and leading your motion, zoomed
+//    out to keep enemies within gun range in view; takes steering taps
 //  - strip camera (bottom ~25%): your boat, large, always bow-right, with its crew.
-//    While your boat is attached to others the strip expands (to about half the
-//    screen) and frames every attached deck in the direction it lies: a boat on
-//    your port side above yours, starboard below, a rammed one where it hit.
+//    As an enemy closes in (pistol range, inside its guns' minimum range) the
+//    strip grows smoothly (to about half the screen at boarding range) and
+//    frames that deck too, in the direction it lies: port above, starboard below.
 // In setup mode the strip grows to about half the screen and frames the deck
 // grid at touch size; the DOM setup layer draws the interactive grid on top,
 // using the projection published to the Controller.
@@ -14,9 +15,11 @@ import Phaser from 'phaser';
 import { LAYOUTS } from '../config/boats';
 import { shipName } from '../config/ships';
 import {
+  distanceToHull,
   gunOnline,
   gunSpec,
   isDerelict,
+  maxGunRange,
   motionParams,
   sinkProgress,
   structureFraction,
@@ -26,7 +29,7 @@ import {
 import { leeWorldPos } from '../sim/combat';
 import { activity, workerAt } from '../sim/crew';
 import { clamp, DEG, dist, lerp, rotate, toLocal, toWorld, type Vec } from '../sim/math';
-import { FIXED_DT, predictAlongside, predictPath } from '../sim/steering';
+import { FIXED_DT, predictPath } from '../sim/steering';
 import { TelegraphSystem } from '../sim/telegraph';
 import type { World, WorldEvent } from '../sim/world';
 import { BoatView, lerpColor } from './BoatView';
@@ -137,6 +140,10 @@ export class BattleScene extends Phaser.Scene {
   private snapCamera = true;
   private pointerId: number | null = null;
   private pointerScreen: Vec | null = null;
+  /** The finger is steering (drag updates the heading), or it tapped a boat. */
+  private dragSteers = false;
+  /** Enemies the ocean camera keeps in view (in gun range, with hysteresis). */
+  private inView = new Set<number>();
   private clock = 0;
 
   constructor() {
@@ -260,7 +267,7 @@ export class BattleScene extends Phaser.Scene {
     const step = dt / Math.max(0.01, this.ctl.tuning.layout.panelSlideTime);
     const toward = (v: number, want: number) => (want > v ? Math.min(want, v + step) : Math.max(want, v - step));
     this.setupK = toward(this.setupK, world.phase === 'ready' ? 1 : 0);
-    this.expandK = toward(this.expandK, world.phase !== 'ready' && world.isAttached(world.player) ? 1 : 0);
+    this.expandK = toward(this.expandK, world.phase !== 'ready' ? world.closeness() : 0);
     const f = this.targetFrac();
     if (Math.abs(f - this.frac) < 1e-4) return;
     this.frac = f;
@@ -283,40 +290,56 @@ export class BattleScene extends Phaser.Scene {
       if (this.pointerId !== null || !inOcean(p) || this.ctl.blocked) return;
       this.pointerId = p.id;
       this.pointerScreen = { x: p.x, y: p.y };
-      this.aimAt(this.pointerScreen);
+      this.dragSteers = this.tapAt(this.pointerScreen);
     });
     this.input.on('pointermove', (p: Phaser.Input.Pointer) => {
       if (p.id !== this.pointerId) return;
       this.pointerScreen = { x: p.x, y: clamp(p.y, 0, this.oceanH) };
-      this.aimAt(this.pointerScreen);
+      if (this.dragSteers) this.steerAt(this.pointerScreen);
     });
+    // Lifting the finger changes nothing: the helm stays set (hands free for the action buttons).
     const release = (p: Phaser.Input.Pointer) => {
       if (p.id !== this.pointerId) return;
       this.pointerId = null;
       this.pointerScreen = null;
-      this.ctl.world.player.target = null;
-      this.ctl.world.setAlongside(null);
+      this.dragSteers = false;
     };
     this.input.on('pointerup', release);
     this.input.on('pointerupoutside', release);
   }
 
   /**
-   * Steer toward the touched point. Holding on (or right beside) an enemy hull
-   * means "come alongside it" instead. While attached, steering does nothing.
+   * A tap on the ocean. Your own boat: stop. An enemy (generously): target it
+   * for ⚔️ and head for it. Anywhere else: set a heading (near an enemy: circle
+   * it). Returns true if the finger now steers (dragging updates the heading).
    */
-  private aimAt(screen: Vec): void {
+  private tapAt(screen: Vec): boolean {
     const world = this.ctl.world;
-    if (world.isAttached(world.player)) {
-      world.player.target = null;
-      world.setAlongside(null);
-      return;
-    }
+    if (world.phase !== 'running' || world.player.sinkingSince !== null) return false;
     const w = this.oceanCam.getWorldPoint(screen.x, screen.y);
-    const grab = world.tuning.attach.alongsideGrab + this.px(this.oceanCam, 10);
-    const enemy = world.phase === 'running' ? world.enemyNear({ x: w.x, y: w.y }, grab) : null;
-    world.setAlongside(enemy);
-    if (!enemy) world.player.target = { x: w.x, y: w.y };
+    const p = { x: w.x, y: w.y };
+    const grab = world.tuning.input.boatGrab + this.px(this.oceanCam, 14);
+    if (distanceToHull(world.player, p) <= grab) {
+      world.setHelm({ kind: 'stop' });
+      return false;
+    }
+    const enemy = world.enemyNear(p, grab);
+    if (enemy) {
+      world.targetEnemy(enemy);
+      return false;
+    }
+    this.steerAt(screen);
+    return true;
+  }
+
+  /** Steer toward a screen point: a heading through it, or a circle around an enemy it's near. */
+  private steerAt(screen: Vec): void {
+    const world = this.ctl.world;
+    const w = this.oceanCam.getWorldPoint(screen.x, screen.y);
+    const p = { x: w.x, y: w.y };
+    const near = world.enemyNear(p, world.tuning.input.orbitGrab);
+    if (near) world.setHelm({ kind: 'orbit', boatId: near.id, offset: { x: p.x - near.motion.x, y: p.y - near.motion.y } });
+    else world.setHelm({ kind: 'point', p });
   }
 
   // ------------------------------------------------------------ frame
@@ -344,11 +367,7 @@ export class BattleScene extends Phaser.Scene {
       ctl.notify();
     }
 
-    if (this.pointerScreen && (ctl.tuning.input.targetFollowsCamera || world.isAttached(world.player))) this.aimAt(this.pointerScreen);
-    if (this.pointerId === null && (world.player.target || world.alongside)) {
-      world.player.target = null;
-      world.setAlongside(null);
-    }
+    if (this.pointerScreen && this.dragSteers && ctl.tuning.input.targetFollowsCamera) this.steerAt(this.pointerScreen);
 
     this.handleEvents(world.drainEvents());
     this.updateCameras(dt);
@@ -378,6 +397,8 @@ export class BattleScene extends Phaser.Scene {
     this.lastPhase = '';
     this.pointerId = null;
     this.pointerScreen = null;
+    this.dragSteers = false;
+    this.inView.clear();
     this.snapCamera = true;
     for (const e of [this.chips, this.spray, this.smoke, this.bubbles]) e.killAll();
 
@@ -414,9 +435,10 @@ export class BattleScene extends Phaser.Scene {
     o.cameraFilter = show ? o.cameraFilter & ~id : o.cameraFilter | id;
   }
 
-  /** Decks the strip shows: yours, then every boat attached to it. */
+  /** Decks the strip shows: yours, then the enemies closing in (nearest two). */
   private stripDecks(world: World): Boat[] {
-    return [world.player, ...world.attachedTo(world.player)];
+    if (world.phase === 'ready') return [world.player];
+    return [world.player, ...world.closeBoats().slice(0, 2)];
   }
 
   private viewFor(boatId: number): BoatView | undefined {
@@ -488,7 +510,7 @@ export class BattleScene extends Phaser.Scene {
           this.spray.explode(10, e.pos.x, e.pos.y);
           this.rings.push({ x: e.pos.x, y: e.pos.y, t: this.clock, dur: 0.4, r: 3, color: 0xe0f4ff });
           break;
-        case 'docked': {
+        case 'contact': {
           const a = this.ctl.world.boats.find((x) => x.id === e.a);
           const b = this.ctl.world.boats.find((x) => x.id === e.b);
           if (a && b) this.rings.push({ x: (a.motion.x + b.motion.x) / 2, y: (a.motion.y + b.motion.y) / 2, t: this.clock, dur: 0.6, r: 10, color: COLOR.link });
@@ -522,22 +544,32 @@ export class BattleScene extends Phaser.Scene {
     const world = this.ctl.world;
     const t = this.ctl.tuning.camera;
     const p = world.player.motion;
-    // Frame you plus every enemy still on the water (sinking ones until they're under).
-    // Refit: frame your boat alone (its gun arcs are what matter there). Fight: you and every enemy still afloat.
+    // Mostly centered on you, leading the way you're moving. Refit: your boat alone (its gun arcs are what matter there).
     const setup = world.phase === 'ready';
-    const others = setup ? [] : world.enemies.filter((e) => world.sinkAnim(e) < 1).map((e) => e.motion);
-    const focus = others.length ? others : world.enemies.length && !setup ? world.enemies.map((e) => e.motion) : [p];
-    const mean = focus.reduce((a, m) => ({ x: a.x + m.x / focus.length, y: a.y + m.y / focus.length }), { x: 0, y: 0 });
-    const bias = setup ? 0 : clamp(t.enemyBias, 0, 1);
-    const cx = lerp(p.x, mean.x, bias);
-    const cy = lerp(p.y, mean.y, bias);
+    const lead = setup ? 0 : Math.max(0, t.lookAhead);
+    const cx = p.x + p.vx * lead;
+    const cy = p.y + p.vy * lead;
+    // Keep in view every enemy within gun range (yours or theirs), with hysteresis so the zoom doesn't pump.
+    const mine = maxGunRange(world.player, world.tuning);
+    const shown: Vec[] = [];
+    for (const e of world.enemies) {
+      if (setup || world.sinkAnim(e) >= 1) {
+        this.inView.delete(e.id);
+        continue;
+      }
+      const range = Math.max(mine, maxGunRange(e, world.tuning), 60);
+      const d = dist(e.motion, p);
+      if (d <= range) this.inView.add(e.id);
+      else if (d > range * (1 + Math.max(0, t.rangeHysteresis))) this.inView.delete(e.id);
+      if (this.inView.has(e.id)) shown.push(e.motion);
+    }
     const W = this.W;
     // Keep the top bar (buttons) clear: frame the boats in the area below it.
     const inset = TOP_INSET_CSS * this.dpr;
     const H = this.oceanH - inset;
     let dx = Math.abs(p.x - cx);
     let dy = Math.abs(p.y - cy);
-    for (const m of others) {
+    for (const m of shown) {
       dx = Math.max(dx, Math.abs(m.x - cx));
       dy = Math.max(dy, Math.abs(m.y - cy));
     }
@@ -551,7 +583,7 @@ export class BattleScene extends Phaser.Scene {
       const k = 1 - Math.exp(-Math.max(0.01, t.smoothing) * dt);
       this.cam.x += (cx - this.cam.x) * k;
       this.cam.y += (cy - this.cam.y) * k;
-      this.cam.zoom = Math.exp(lerp(Math.log(this.cam.zoom), Math.log(zoom), k));
+      this.cam.zoom = Math.exp(lerp(Math.log(this.cam.zoom), Math.log(zoom), k * 0.6));
     }
     // In refit the stat card covers the top of the ocean: sit the boat a little low.
     const shiftY = inset / 2 / this.cam.zoom - (setup ? (0.04 * H) / this.cam.zoom : 0);
@@ -570,7 +602,9 @@ export class BattleScene extends Phaser.Scene {
     let fx = 0;
     let fy = 0;
     const decks = this.stripDecks(world);
-    if (decks.length > 1) {
+    // The close-up eases from your deck alone to every close deck as they close in.
+    const closeK = clamp(this.expandK, 0, 1);
+    if (decks.length > 1 && closeK > 0) {
       // Bounding box of every deck in your boat's frame.
       let x0 = Infinity;
       let y0 = Infinity;
@@ -587,10 +621,11 @@ export class BattleScene extends Phaser.Scene {
           y1 = Math.max(y1, l.y);
         }
       }
-      const zoom = Math.min((W * 0.94) / (x1 - x0), (SH * 0.86) / (y1 - y0));
-      fightZ = Math.min(fightZ, zoom);
-      fx = (x0 + x1) / 2;
-      fy = (y0 + y1) / 2;
+      const zoom = Math.min(fightZ, (W * 0.94) / (x1 - x0), (SH * 0.86) / (y1 - y0));
+      const s = closeK * closeK * (3 - 2 * closeK);
+      fightZ = Math.exp(lerp(Math.log(fightZ), Math.log(zoom), s));
+      fx = lerp(0, (x0 + x1) / 2, s);
+      fy = lerp(0, (y0 + y1) / 2, s);
     }
     // Smooth the framing so the strip doesn't jump when a deck arrives or leaves.
     const k = this.stripFrame ? 1 - Math.exp(-6 * dt) : 1;
@@ -656,30 +691,7 @@ export class BattleScene extends Phaser.Scene {
     if (world.phase === 'ready') this.drawRangeRing(g, world, px);
     // Minimum-range rings while your finger is on the ocean (and always in debug).
     if ((this.pointerId !== null && world.phase === 'running') || this.ctl.debug) this.drawMinRangeRings(g, world, px);
-    this.drawLinks(g, world, px);
-
-    // Path preview (also before START). Hidden while attached: steering does nothing.
-    const player = world.player;
-    const attached = world.isAttached(player);
-    const along = world.alongside ? world.enemies.find((e) => e.id === world.alongside!.boatId) : undefined;
-    if (this.pointerId !== null && !attached && player.sinkingSince === null && (player.target || along)) {
-      const horizon = Math.max(0.5, world.tuning.global.previewHorizon);
-      const params = motionParams(player, world.tuning);
-      const pts = along
-        ? predictAlongside(player.motion, world.alongsideSpec(player, along, world.alongside!.side), { ...params, orbitCapture: 0 }, horizon)
-        : predictPath(player.motion, player.target!, params, horizon);
-      this.drawMarchingPath(g, pts, px);
-      if (along) {
-        // Coming alongside: a ring around the boat you're closing on.
-        g.lineStyle(px(2), COLOR.path, 0.75);
-        g.strokeCircle(along.motion.x, along.motion.y, along.layout.length / 2 + px(8));
-      } else if (player.target) {
-        g.lineStyle(px(2), COLOR.path, 0.7);
-        g.strokeCircle(player.target.x, player.target.y, px(14));
-        g.fillStyle(COLOR.path, 0.8);
-        g.fillCircle(player.target.x, player.target.y, px(2.5));
-      }
-    }
+    this.drawHelm(g, world, px);
 
     // Shells in flight: ball above its shadow, sized and lobbed by gun (a mortar arcs high, pellets are specks).
     const arcH = world.tuning.visuals.shellArcHeight;
@@ -752,34 +764,71 @@ export class BattleScene extends Phaser.Scene {
     }
   }
 
-  /** Links between attached boats: a rope line between them. */
-  private drawLinks(g: Phaser.GameObjects.Graphics, world: World, px: (n: number) => number): void {
-    for (const l of world.links.links) {
-      const breaking = l.breakAt !== null;
-      g.lineStyle(px(2.5), COLOR.link, breaking ? 0.35 + 0.35 * Math.sin(this.clock * 12) : 0.85);
-      g.lineBetween(l.a.motion.x, l.a.motion.y, l.b.motion.x, l.b.motion.y);
+  /**
+   * Where the helm is taking you: the path preview while your finger is down,
+   * the tapped point (or the circle you're keeping around a boat), a heading
+   * arrow off the bow, and a ring on your ⚔️ target.
+   */
+  private drawHelm(g: Phaser.GameObjects.Graphics, world: World, px: (n: number) => number): void {
+    const player = world.player;
+    if (world.phase !== 'running' || player.sinkingSince !== null) return;
+    const m = player.motion;
+    const h = world.helm;
+    if (this.pointerId !== null && player.target && this.dragSteers) {
+      const horizon = Math.max(0.5, world.tuning.global.previewHorizon);
+      this.drawMarchingPath(g, predictPath(m, player.target, motionParams(player, world.tuning), horizon), px);
+    }
+    if (h.kind === 'point') {
+      g.lineStyle(px(2), COLOR.path, 0.7);
+      g.strokeCircle(h.p.x, h.p.y, px(14));
+      g.fillStyle(COLOR.path, 0.8);
+      g.fillCircle(h.p.x, h.p.y, px(2.5));
+    } else if (h.kind === 'orbit') {
+      const b = world.boats.find((x) => x.id === h.boatId);
+      if (b) {
+        const c = { x: b.motion.x + h.offset.x, y: b.motion.y + h.offset.y };
+        g.lineStyle(px(1.5), COLOR.path, 0.6);
+        const r = px(16);
+        for (let i = 0; i < 12; i += 2) {
+          g.beginPath();
+          g.arc(c.x, c.y, r, (i / 12) * Math.PI * 2 + this.clock, ((i + 1) / 12) * Math.PI * 2 + this.clock);
+          g.strokePath();
+        }
+      }
+    }
+    // Heading arrow off the bow: where the boat is pointed now.
+    if (h.kind !== 'stop') {
+      const a = m.heading;
+      const at = (d: number) => ({ x: m.x + Math.cos(a) * (player.layout.length / 2 + px(d)), y: m.y + Math.sin(a) * (player.layout.length / 2 + px(d)) });
+      const base = at(8);
+      const tip = at(34);
+      g.lineStyle(px(4), COLOR.pathDark, 0.5);
+      g.lineBetween(base.x, base.y, tip.x, tip.y);
+      g.lineStyle(px(2), COLOR.path, 0.85);
+      g.lineBetween(base.x, base.y, tip.x, tip.y);
+      const w = px(7);
+      g.fillStyle(COLOR.path, 0.9);
+      g.fillTriangle(tip.x + Math.cos(a) * w, tip.y + Math.sin(a) * w, tip.x + Math.cos(a + 2.4) * w, tip.y + Math.sin(a + 2.4) * w, tip.x + Math.cos(a - 2.4) * w, tip.y + Math.sin(a - 2.4) * w);
+    }
+    // The ⚔️ target.
+    const target = world.boardTargetId !== null ? world.enemies.find((e) => e.id === world.boardTargetId && !world.isOut(e)) : undefined;
+    if (target) {
+      const r = target.layout.length / 2 + px(10);
+      const pulse = 0.55 + 0.25 * Math.sin(this.clock * 5);
+      g.lineStyle(px(2.5), COLOR.threat, pulse);
+      for (let i = 0; i < 4; i++) {
+        const a0 = (i / 4) * Math.PI * 2 + this.clock * 0.6;
+        g.beginPath();
+        g.arc(target.motion.x, target.motion.y, r, a0, a0 + Math.PI / 3);
+        g.strokePath();
+      }
     }
   }
 
-  /**
-   * Ram X's and dock rings. Red when it's being done to you (same language as
-   * incoming shells); a neutral color when you're the one doing it.
-   */
+  /** Ram X's: red when it's being done to you (same language as incoming shells); a neutral color when you're the one doing it. */
   private drawContactWarnings(g: Phaser.GameObjects.Graphics, world: World, px: (n: number) => number): void {
-    for (const w of world.links.warnings) {
+    for (const w of world.contacts.warnings) {
       const color = w.byPlayer ? COLOR.neutral : COLOR.threat;
-      const { x, y } = w.pos;
-      if (w.kind === 'dock') {
-        // Progress ring filling up over the grapple time.
-        const r = Math.max(px(16), 4);
-        g.lineStyle(px(5), 0x000000, 0.4);
-        g.strokeCircle(x, y, r);
-        g.lineStyle(px(3), color, 0.95);
-        g.beginPath();
-        g.arc(x, y, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * w.progress, false);
-        g.strokePath();
-        continue;
-      }
       this.drawThreatX(g, w.pos, w.progress, false, 1, color, w.byPlayer ? COLOR.pathDark : COLOR.threatDark, world, px);
     }
   }
@@ -1112,12 +1161,11 @@ export class BattleScene extends Phaser.Scene {
     // Every shell's landing point (incl. yours) — debug only, never a red X.
     g.fillStyle(0xffff60, 0.9);
     for (const s of world.shells) g.fillCircle(s.to.x, s.to.y, px(2));
-    // Docking distance around each hull and pistol range around your boat.
-    const at = world.tuning.attach;
+    // Boarding range around each hull and pistol range around your boat.
     for (const b of world.boats) {
       if (b.sinkingSince !== null) continue;
       g.lineStyle(px(1), 0xb0ffb0, 0.35);
-      g.strokeCircle(b.motion.x, b.motion.y, b.layout.length / 2 + at.dockDistance);
+      g.strokeCircle(b.motion.x, b.motion.y, b.layout.length / 2 + world.tuning.boarding.range * b.mods.boardRange);
     }
     g.lineStyle(px(1), 0xfff3d6, 0.3);
     g.strokeCircle(world.player.motion.x, world.player.motion.y, world.player.layout.length / 2 + world.tuning.pistol.range);

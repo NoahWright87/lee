@@ -44,6 +44,8 @@ import {
 } from '../sim/run';
 import type { BonusKey } from '../sim/levels';
 import { enemySetup } from '../sim/setup';
+import type { Job } from '../config/lees';
+import type { Lee } from '../sim/crew';
 import { World } from '../sim/world';
 
 const STORAGE_KEY = 'lee.tuning.current';
@@ -64,11 +66,16 @@ export interface SandboxState {
   enemies: EnemySpec[];
 }
 
-function loadSpeeds(): Record<SpeedMode, 1 | 2> {
-  const out: Record<SpeedMode, 1 | 2> = { ranged: 1, melee: 1 };
+/** The speed button cycles Pause → 0.5× → 1× → 3×. */
+export const SPEEDS = [0, 0.5, 1, 3] as const;
+export type Speed = (typeof SPEEDS)[number];
+
+function loadSpeeds(): Record<SpeedMode, Speed> {
+  const out: Record<SpeedMode, Speed> = { ranged: 1, melee: 1 };
   try {
     const saved = JSON.parse(safeGet(SPEED_KEY) ?? '{}');
-    for (const k of ['ranged', 'melee'] as const) if (saved[k] === 2) out[k] = 2;
+    // Pause is never remembered across reloads.
+    for (const k of ['ranged', 'melee'] as const) if (SPEEDS.includes(saved[k]) && saved[k] > 0) out[k] = saved[k];
   } catch {
     /* defaults */
   }
@@ -118,9 +125,9 @@ export class Controller {
   world: World;
   /**
    * Game speed, remembered separately for sailing (ranged) and for close combat
-   * (while your boat is attached): 2x for the sailing doesn't carry into a boarding fight.
+   * (the close-up open): 3× for the sailing doesn't carry into a boarding fight.
    */
-  speeds: Record<SpeedMode, 1 | 2> = loadSpeeds();
+  speeds: Record<SpeedMode, Speed> = loadSpeeds();
   debug = false;
   /** True while the rotate-your-phone overlay is up. */
   blocked = false;
@@ -481,20 +488,35 @@ export class Controller {
     for (const fn of this.frameListeners) fn();
   }
 
-  /** Which speed setting applies right now. */
+  /** Which speed setting applies right now: close combat once the close-up is more than half open. */
   speedMode(): SpeedMode {
-    return this.world.phase === 'running' && this.world.isAttached(this.world.player) ? 'melee' : 'ranged';
+    return this.world.phase === 'running' && this.world.closeness() > 0.5 ? 'melee' : 'ranged';
   }
 
-  /** Current game speed. */
-  get speed(): 1 | 2 {
+  /** Current game speed (0 = paused by the speed button). */
+  get speed(): Speed {
     return this.speeds[this.speedMode()];
   }
 
-  setSpeed(s: 1 | 2): void {
-    this.speeds[this.speedMode()] = s;
+  /** The speed button: Pause → 0.5× → 1× → 3× → Pause… */
+  cycleSpeed(): void {
+    const mode = this.speedMode();
+    const i = SPEEDS.indexOf(this.speeds[mode]);
+    this.speeds[mode] = SPEEDS[(i + 1) % SPEEDS.length];
     safeSet(SPEED_KEY, JSON.stringify(this.speeds));
     this.notify();
+  }
+
+  /** An action button (a tap, or a repeat while held). Returns the Lee moved, or null. */
+  order(job: Job): Lee | null {
+    const w = this.world;
+    if (w.phase !== 'running' || w.result) return null;
+    if (job === 'sail' && w.canRetreat()) {
+      w.retreat();
+      this.notify();
+      return null;
+    }
+    return w.order(job);
   }
 
   toggleDebug(): void {

@@ -1,14 +1,14 @@
 // DOM HUD over the canvas: the ⚙️ menu, the run screens, the refit screen,
-// speed toggle, tune/debug toggles, the result screen, strip gauges, crew
-// debug, and the rotate-your-phone overlay. Reads the Controller; the canvas
+// the action buttons and pips, the speed button, tune/debug toggles, the
+// result screen, strip gauges, crew debug, and the rotate-your-phone overlay. Reads the Controller; the canvas
 // never draws UI chrome.
 
 import { ACTIVITY_KINDS, type ActivityKind } from '../config/lees';
-import { shipName } from '../config/ships';
-import { gunOnline, motionParams, shipStats, sinkProgress, type Boat } from '../sim/boat';
+import { gunOnline, motionParams, shipStats, sinkProgress } from '../sim/boat';
 import { DEG } from '../sim/math';
-import { roleName } from '../sim/crew';
+import { JOB_INFO } from '../config/lees';
 import type { Controller } from '../game/Controller';
+import { ActionBar } from './actionBar';
 import type { SideStats } from '../sim/world';
 import { CrewDebug } from './crewDebug';
 import { el, fmtTime } from './dom';
@@ -22,7 +22,6 @@ const ACTIVITY_LABEL: Record<ActivityKind, string> = {
   sail: 'Sailing',
   lookout: 'Lookout',
   pump: 'Pumping',
-  hooks: 'Hooks',
   powder: 'Powder',
   repair: 'Repairing',
   bail: 'Bailing',
@@ -45,7 +44,8 @@ export class Hud {
   private gauges: HTMLDivElement;
   private crewText: HTMLSpanElement;
   private moveText: HTMLSpanElement;
-  private speedBtns: HTMLButtonElement[];
+  private speedBtn: HTMLButtonElement;
+  private actions: ActionBar;
   private debugBtn: HTMLButtonElement;
   private result: HTMLDivElement;
   private resultBody: HTMLDivElement;
@@ -60,8 +60,6 @@ export class Hud {
   private sinkBanner: HTMLDivElement;
   private panel: TuningPanel;
   private shownResultFor = -1;
-  /** One Disengage button per boat attached to yours, keyed by boat id. */
-  private disengage = new Map<number, HTMLButtonElement>();
 
   constructor(root: HTMLElement, ctl: Controller) {
     this.ctl = ctl;
@@ -79,13 +77,11 @@ export class Hud {
     this.debugBtn = el('button', 'hud-btn', 'Debug');
     this.debugBtn.onclick = () => ctl.toggleDebug();
     left.append(this.screens.gear, tuneBtn, this.debugBtn);
-    const right = el('div', 'hud-group seg');
-    this.speedBtns = ([1, 2] as const).map((s) => {
-      const b = el('button', 'hud-btn', `${s}x`);
-      b.onclick = () => ctl.setSpeed(s);
-      right.append(b);
-      return b;
-    });
+    const right = el('div', 'hud-group');
+    // One button cycling Pause → 0.5× → 1× → 3× (remembered separately for sailing and close combat).
+    this.speedBtn = el('button', 'hud-btn speed-btn', '1×');
+    this.speedBtn.onclick = () => ctl.cycleSpeed();
+    right.append(this.speedBtn);
     this.fightPill = el('div', 'fight-pill');
     top.append(left, this.fightPill, right);
 
@@ -147,66 +143,22 @@ export class Hud {
     this.gauges = gauges;
     this.sinkBanner = el('div', 'sink-banner hidden', 'SINKING');
     strip.append(gauges, this.sinkBanner);
-    this.root.append(this.disengageLayer);
+    this.actions = new ActionBar(ctl);
+    this.root.append(this.actions.root);
 
     ctl.onChange(() => this.sync());
     ctl.onFrame(() => this.frame());
     this.sync();
   }
 
-  private disengageLayer = el('div', 'disengage-layer');
-
-  /**
-   * Disengage buttons: one per attached boat, beside its deck in the strip,
-   * kept out of the bottom of the screen where a resting thumb sits.
-   */
-  private syncDisengage(): void {
-    const w = this.ctl.world;
-    const proj = this.ctl.stripProjection;
-    const attached = w.phase === 'running' && !w.result ? w.attachedTo(w.player) : [];
-    const keep = new Set(attached.map((b) => b.id));
-    for (const [id, btn] of this.disengage) {
-      if (keep.has(id)) continue;
-      btn.remove();
-      this.disengage.delete(id);
-    }
-    if (!proj) return;
-    const W = this.root.clientWidth || window.innerWidth;
-    // At the seam between the ocean and the close-up, centered: never over the fight itself.
-    const bw = 150;
-    const bh = 52;
-    const gap = 8;
-    const total = attached.length * bw + (attached.length - 1) * gap;
-    attached.forEach((b, i) => {
-      let btn = this.disengage.get(b.id);
-      if (!btn) {
-        btn = el('button', 'disengage-btn');
-        const target: Boat = b;
-        btn.onclick = (ev) => {
-          ev.stopPropagation();
-          this.ctl.world.disengage(target);
-        };
-        this.disengageLayer.append(btn);
-        this.disengage.set(b.id, btn);
-      }
-      const link = w.links.linkBetween(w.player, b);
-      const casting = link ? w.links.castingOff(link) : false;
-      const label = casting ? `Casting off…\n${w.castOffStatus(b)}` : attached.length > 1 ? `Disengage\n${shipName(b.type)}` : 'Disengage';
-      if (btn.textContent !== label) btn.textContent = label;
-      btn.disabled = casting;
-      btn.classList.toggle('breaking', casting);
-      btn.style.left = `${Math.round(W / 2 - total / 2 + i * (bw + gap))}px`;
-      // Resting on the seam, just above it, so it covers neither the strip's gauges nor the decks.
-      btn.style.top = `${Math.round(proj.top - bh - 6)}px`;
-    });
-  }
-
-  /** Speed buttons show the setting for the current mode (sailing or close combat). */
+  /** The speed button shows the setting for the current mode (sailing or close combat). */
   private syncSpeed(): void {
     const ctl = this.ctl;
-    this.speedBtns.forEach((b, i) => b.classList.toggle('on', ctl.speed === i + 1));
-    const melee = ctl.speedMode() === 'melee';
-    for (const b of this.speedBtns) b.title = melee ? 'Speed during close combat' : 'Speed while sailing';
+    const v = ctl.speed;
+    const text = v === 0 ? '⏸' : v === 0.5 ? '½×' : `${v}×`;
+    if (this.speedBtn.textContent !== text) this.speedBtn.textContent = text;
+    this.speedBtn.classList.toggle('on', v === 0);
+    this.speedBtn.title = ctl.speedMode() === 'melee' ? 'Speed during close combat' : 'Speed while sailing';
   }
 
   private sync(): void {
@@ -238,7 +190,7 @@ export class Hud {
     this.root.style.setProperty('--ocean-frac', `${(this.ctl.oceanFrac * 100).toFixed(2)}%`);
     this.refit.frame();
     this.crewDebug.frame();
-    this.syncDisengage();
+    this.actions.frame();
     this.syncSpeed();
     const fighting = this.ctl.screen === 'fight';
     const full = !fighting && this.ctl.screen !== 'refit';
@@ -307,7 +259,7 @@ export class Hud {
         .join(', ') || 'none';
     if (s.leesLost || e.leesLost) rows.push(['  by cause (you)', lost(s)], ['  by cause (enemy)', lost(e)]);
     // Close combat: only when it happened.
-    if (s.dockTime > 0 || e.dockTime > 0) rows.push(['Time attached', fmtTime(Math.max(s.dockTime, e.dockTime))]);
+    if (s.closeTime > 0 || e.closeTime > 0) rows.push(['Time in close combat', fmtTime(Math.max(s.closeTime, e.closeTime))]);
     if (s.boardings || e.boardings) {
       rows.push([
         'Boardings (you / enemy)',
@@ -328,7 +280,7 @@ export class Hud {
     if (s.ramsDone || s.ramsTaken) {
       rows.push(['Rams done / taken', `${s.ramsDone} / ${s.ramsTaken} · dealt ${Math.round(s.ramDealt)} · took ${Math.round(s.ramTaken)}`, true]);
     }
-    if (s.disengages) rows.push(['Disengages', `${s.disengages}`]);
+    if (s.retreats) rows.push(['Retreats', `${s.retreats}`]);
     if (s.tilesBlown || e.tilesBlown) rows.push(['Tiles blown out (you / enemy)', `${s.tilesBlown} / ${e.tilesBlown}${s.explosions || e.explosions ? ` · explosions ${s.explosions} / ${e.explosions}` : ''}`]);
     this.resultBody.replaceChildren(
       ...rows.map(([k, v, key]) => {
@@ -365,8 +317,8 @@ export class Hud {
       const tile = boat.grid.tiles[lee.home];
       const head = el('div', 'crew-row-head');
       head.append(
-        el('b', '', `${lee.label} · ${roleName(boat, lee.home)}`),
-        el('span', 'crew-row-home', tile.label),
+        el('b', '', `${lee.label} · ${JOB_INFO[lee.job].icon} ${JOB_INFO[lee.job].name}`),
+        el('span', 'crew-row-home', `started on ${tile.label}`),
         el('span', `crew-row-status ${lee.alive ? 'ok' : 'lost'}`, lee.alive ? 'survived' : 'lost'),
       );
       const bar = el('div', 'time-bar');
