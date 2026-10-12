@@ -171,7 +171,7 @@ export class ActionBar {
       btns.append(btn);
       this.buttons.set(job, { btn, label });
     }
-    this.stopped = el('div', 'stopped-badge hidden', '⚓ STOPPED · fixing and aim +25%');
+    this.stopped = el('div', 'stopped-badge hidden', '⚓ STOPPED');
     this.root.append(this.theirs.root, btns, this.mine.root, this.stopped);
   }
 
@@ -206,7 +206,8 @@ export class ActionBar {
   frame(): void {
     const ctl = this.ctl;
     const w = ctl.world;
-    const on = ctl.screen === 'fight' && w.phase !== 'ready';
+    // Hidden before the start and once it's over (the result card takes the space).
+    const on = ctl.screen === 'fight' && w.phase === 'running';
     this.root.classList.toggle('hidden', !on);
     if (!on) {
       this.hold = null;

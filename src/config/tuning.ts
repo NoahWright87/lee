@@ -477,6 +477,8 @@ export function defaultTuning() {
       /** Visible ocean height limits, m. */
       minVisibleHeight: 220,
       maxVisibleHeight: 440,
+      /** Refit: ocean height shown, in boat lengths (your boat close up, its gun arcs around it). */
+      refitView: 4,
       /** Extra room around both boats when framing, m. */
       padding: 45,
       /** How quickly the camera catches up, 1/s. */

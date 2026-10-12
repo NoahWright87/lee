@@ -10,7 +10,7 @@ import { countTags, tagName } from '../config/tags';
 import type { Controller } from '../game/Controller';
 import { bonusLabel } from '../sim/levels';
 import { buildFor, crewMax, itemOf, SAVE_VERSION, type RunState } from '../sim/run';
-import { itemCard, itemIcon, leeTypeCard, levelBadge, loadoutIcons, memberFigure, tagChips } from './cards';
+import { itemIcon, itemLine, jobBars, levelBadge, loadoutIcons, memberFigure } from './cards';
 import { button, confirmAction, el } from './dom';
 import { shipPreview } from './shipPreview';
 
@@ -166,41 +166,21 @@ export class Screens {
 
   private renderChooseShip(body: HTMLElement): void {
     const ctl = this.ctl;
-    const t = ctl.tuning;
-    body.append(el('h2', '', 'Choose a ship'), el('div', 'subtitle', 'Each one comes crewed and fitted out, and asks for a different way of fighting.'));
+    body.append(el('h2', '', 'Choose a ship'), el('div', 'subtitle', 'Each comes crewed and fitted out.'));
     const list = el('div', 'card-list');
     for (const id of SHIP_ORDER) {
       const ship = SHIPS[id];
-      const st = t.ships[id];
-      const card = el('div', 'card ship-card');
+      // The whole card is the button.
+      const card = button('', 'card ship-card pick', () => ctl.chooseShip(id));
+      card.setAttribute('aria-label', `Sail the ${ship.name}`);
       const head = el('div', 'card-row');
-      const names = el('div', 'card-names');
-      names.append(el('div', 'card-title', ship.name), el('div', 'card-sub', ship.style));
-      head.append(names);
-      card.append(head, shipPreview(ship, ship.preset.loadout, 250, ship.preset.facings), el('div', 'card-text', ship.blurb));
-      const stats = el('div', 'ship-stats');
-      const stat = (k: string, v: string) => {
-        const s = el('span', 'ship-stat');
-        s.append(el('small', '', k), el('b', '', v));
-        stats.append(s);
-      };
-      stat('Speed', `×${st.speed.toFixed(2)}`);
-      stat('Turning', `×${st.turn.toFixed(2)}`);
-      stat('Hull', `×${st.hullHp.toFixed(2)}`);
-      stat('Crew', `${st.crewMin}–${st.crewMax}`);
-      stat('Treasures', `${st.treasures}`);
-      card.append(stats);
-      // The crew it comes with.
-      const crew = el('div', 'crew-so-far');
-      for (const c of ship.preset.crew) {
-        const chip = el('span', 'crew-chip');
-        chip.append(memberFigure(c.type, 'chip-figure'), document.createTextNode(LEE_DEFS[c.type]?.name ?? c.type));
-        crew.append(chip);
-      }
-      card.append(crew);
-      card.append(loadoutIcons([...Object.values(ship.preset.loadout), ...(ship.preset.treasures ?? [])]));
-      if (ship.tags.length) card.append(tagChips(ship.tags));
-      card.append(button(`Sail the ${ship.name}`, 'big-btn primary', () => ctl.chooseShip(id)));
+      head.append(el('div', 'card-title', ship.name), el('div', 'card-sub', ship.style));
+      card.append(head, shipPreview(ship, ship.preset.loadout, 220, ship.preset.facings), el('div', 'card-text', ship.blurb));
+      // The crew and parts it comes with, as pictures.
+      const row = el('div', 'ship-kit');
+      for (const c of ship.preset.crew) row.append(memberFigure(c.type, 'chip-figure'));
+      row.append(loadoutIcons([...Object.values(ship.preset.loadout), ...(ship.preset.treasures ?? [])]));
+      card.append(row);
       list.append(card);
     }
     body.append(list);
@@ -266,9 +246,8 @@ export class Screens {
     }
     const left = post.levelUps.length;
     body.append(el('h2', '', `${m.label}: level ${up.level}`), el('div', 'subtitle', `Pick one bonus.${left > 1 ? ` ${left - 1} more level-up${left > 2 ? 's' : ''} after this.` : ''}`));
-    const head = el('div', 'card lee-mini');
-    head.append(memberFigure(m.type), el('div', 'card-title', `${LEE_DEFS[m.type]?.role ?? ''}`), el('span', 'level-badge', `Lv ${up.level}`));
-    if (m.bonuses.length) head.append(el('div', 'card-sub', `So far: ${m.bonuses.map((b) => bonusLabel(b, t, STAT_LABELS)).join(', ')}`));
+    const head = el('div', 'card-row');
+    head.append(memberFigure(m.type, 'chip-figure'), el('div', 'card-sub', m.bonuses.length ? `So far: ${m.bonuses.map((b) => bonusLabel(b, t, STAT_LABELS)).join(', ')}` : LEE_DEFS[m.type]?.role ?? ''));
     body.append(head);
     const list = el('div', 'bonus-list');
     up.offers.forEach((b, i) => {
@@ -278,7 +257,7 @@ export class Screens {
     });
     body.append(list);
     const row = el('div', 'row');
-    row.append(button('Auto-pick', 'hud-btn', () => ctl.chooseBonus(m.uid, up.offers[0])), button('Auto-pick all', 'hud-btn', () => ctl.autoPickAll()));
+    if (left > 1) row.append(button('Auto-pick all', 'hud-btn', () => ctl.autoPickAll()));
     body.append(row);
   }
 
@@ -313,22 +292,31 @@ export class Screens {
       }));
       return;
     }
-    body.append(el('h2', '', 'Pick a reward'), el('div', 'subtitle', run.won === 1 ? 'One of three. It goes into your cargo: you’ll equip it before the next fight.' : 'One of three. It goes into your cargo.'));
+    body.append(el('h2', '', 'Pick a reward'), el('div', 'subtitle', run.won === 1 ? 'Equip it before the next fight.' : 'It goes into your cargo.'));
     const list = el('div', 'card-list');
     post.reward.forEach((card, i) => {
       if (card.kind === 'recruit') {
         const full = run.crew.length >= crewMax(run, t);
-        const take = button(full ? `Recruit (release someone)` : `Recruit ${LEE_DEFS[card.type].name}`, 'big-btn primary', () => {
+        const def = LEE_DEFS[card.type];
+        const b = button('', 'card reward-card pick', () => {
           if (full) {
             this.releaseFor = i;
             this.render();
           } else ctl.takeReward(i);
         });
-        list.append(leeTypeCard(card.type, t, card.level, [el('div', 'card-sub', `Recruit · joins at level ${card.level}`), take]));
+        const names = el('div', 'card-names');
+        names.append(el('div', 'card-title', `${def.name}${card.level > 1 ? ` · Lv ${card.level}` : ''}`), el('div', 'card-text', `Recruit · ${def.role}${full ? ' · crew full: release someone' : ''}`));
+        if (def.trait) names.append(el('div', 'card-sub', `${def.trait.name}: ${def.trait.text}`));
+        const head = el('div', 'card-row');
+        head.append(memberFigure(card.type), names);
+        b.append(head, jobBars(card.type, t));
+        list.append(b);
       } else {
         const def = ITEMS[card.item];
         if (!def) return;
-        list.append(itemCard(def, [button(`Take the ${def.name}`, 'big-btn primary', () => ctl.takeReward(i))]));
+        const b = button('', 'card reward-card pick', () => ctl.takeReward(i));
+        b.append(itemLine(def));
+        list.append(b);
       }
     });
     body.append(list);

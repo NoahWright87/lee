@@ -6,31 +6,32 @@
 //    hull module. Treasures sit in their own small row.
 //  - One gesture: tap a tile and its top thing rises and every valid spot
 //    lights up green; tap the same tile again for the next layer down (and
-//    again to let go). Tap a green spot: a ✅ appears there, the stat bars
-//    preview the change (green added, red removed), the moved gun's arc shows
-//    red (now) and green (after), and anything displaced is labeled. Tap the
-//    ✅ (the same spot again) to commit. Moving a lower layer carries what's
-//    above it: a manned cannon brings its Lee.
-//  - Cargo (one hold for parts, Lees ashore, trinkets and treasures) with
-//    tabs; tap an item to light up where it fits, the same preview and ✅.
-//    Select something on the boat and tap the cargo to stow it. Auto-equip
-//    fills empty spots and places Lees ashore, never moving what's placed.
-//  - Five stat bars (Firepower, Toughness, Speed, Boarding, Repair), with the
-//    full numbers behind "Details".
+//    again to let go). Tap a green spot: a ✅ appears there, the card shows
+//    what changes (+Firepower −Speed), the moved gun's arc shows red (now)
+//    and green (after). Tap the ✅ to commit. Moving a lower layer carries
+//    what's above it: a manned cannon brings its Lee. A selected gun that can
+//    turn shows ↻ on its tile.
+//  - Cargo (parts, Lees ashore, trinkets, treasures): tap an item to light up
+//    where it fits. Select something on the boat and tap the cargo to stow
+//    it. Tabs only appear when the cargo is too full to scan.
+//  - The selection card stays small: a Lee shows four job bars (the same
+//    numbers the action buttons use), an item one line of what it does and
+//    what it costs. ⓘ opens a Lee's full sheet; 📊 opens the stat bars.
 //
 // The run's first reward must be equipped before Launch.
 
 import { ARCHETYPE_NAMES, ARCHETYPES, ENCOUNTERS, crewCount, type EnemySpec } from '../config/encounters';
-import { CATEGORY_NAMES, ITEMS, type ItemCategory, type ItemDef } from '../config/items';
+import { ITEMS, type ItemCategory } from '../config/items';
 import { JOB_INFO, LEE_DEFS, STAT_LABELS } from '../config/lees';
 import { SHIP_ORDER, SHIPS } from '../config/ships';
 import { FACING_ARROW, type Facing } from '../config/slots';
 import type { Controller } from '../game/Controller';
+import type { Tuning } from '../config/tuning';
 import { BAR_KEYS, BAR_NAMES, boatBars, boatCard, type BoatBars, type BoatCard } from '../sim/boatStats';
 import { startingJob } from '../sim/crew';
 import { bonusLabel } from '../sim/levels';
 import { slotById, slotFacing } from '../sim/loadout';
-import { addItem, ashore, buildFor, cargo, encounterSummary, itemOf, setupFor, type CrewMember, type RunState } from '../sim/run';
+import { addItem, ashore, autoEquipAll, buildFor, cargo, encounterSummary, itemOf, setupFor, type CrewMember, type RunState } from '../sim/run';
 import {
   allSpots,
   applyMove,
@@ -51,7 +52,7 @@ import {
   type Spot,
 } from '../sim/stack';
 import { World } from '../sim/world';
-import { fullStats, itemCard, itemIcon, levelBadge, memberFigure } from './cards';
+import { fullStats, itemIcon, jobBars, levelBadge, memberFigure } from './cards';
 import { button, confirmAction, el } from './dom';
 
 type Sel = Pick | { from: 'catalog'; item: string };
@@ -69,6 +70,15 @@ const TABS: [Tab, string][] = [
 ];
 const TAB_OF: Record<ItemCategory, Tab> = { gun: 'guns', attachment: 'guns', station: 'stations', floor: 'deck', rail: 'hull', hull: 'hull', trinket: 'trinkets', treasure: 'treasures' };
 const LAYER_NAMES: Record<Layer, string> = { lee: 'Lee', station: 'Station', floor: 'Floor', rail: 'Rail', hull: 'Hull module', treasure: 'Treasure' };
+/** About how many cargo chips fit without tabs. */
+const CARGO_FITS = 12;
+
+/** Each stat bar's "full" value. */
+function barFull(t: Tuning): Record<keyof BoatBars, number> {
+  const r = t.refit;
+  const f = (v: number) => Math.max(1e-6, v);
+  return { firepower: f(r.barFirepower), toughness: f(r.barToughness), speed: f(r.barSpeed), boarding: f(r.barBoarding), repair: f(r.barRepair) };
+}
 
 /** Card rows behind "Details": [label, value, format]. */
 const CARD_ROWS: [string, (c: BoatCard) => number, (v: number, c: BoatCard) => string][] = [
@@ -101,10 +111,12 @@ function isTrinketSel(run: RunState, s: Sel | null): boolean {
 export class RefitPanel {
   /** Deck cells, cargo and buttons (over the strip). */
   readonly root: HTMLDivElement;
-  /** Next fight, stat bars, warnings (over the ocean). */
+  /** Next fight, warnings, the optional stat panel (over the ocean). */
   readonly top: HTMLDivElement;
   /** What's selected (over the bottom of the ocean). */
   readonly card: HTMLDivElement;
+  /** A Lee's full sheet (over everything). */
+  readonly sheet: HTMLDivElement;
   private ctl: Controller;
   private toast: (text: string) => void;
   private gridEl: HTMLDivElement;
@@ -116,7 +128,8 @@ export class RefitPanel {
   private sel: Sel | null = null;
   private preview: Preview | null = null;
   private tab: Tab = 'all';
-  private details = false;
+  private statsOpen = false;
+  private sheetFor: number | null = null;
   private sandboxOpen = false;
   private builtFor: unknown = null;
   private lastSig = '';
@@ -137,10 +150,18 @@ export class RefitPanel {
     this.root.append(this.gridEl, this.treasureRow, this.cargoEl, this.bar, this.sandboxEl);
     this.top = el('div', 'refit-top hidden');
     this.card = el('div', 'lee-card rf-card hidden');
+    this.sheet = el('div', 'rf-sheet hidden');
+    this.sheet.onclick = (e) => {
+      if (e.target === this.sheet) this.openSheet(null);
+    };
     // Tapping the cargo hold with something on the boat selected stows it.
     this.cargoEl.onclick = (e) => {
       if ((e.target as HTMLElement).closest('.chip, .tab, .hud-btn')) return;
       this.stowSelected();
+    };
+    // Tapping the water around the deck lets go.
+    this.root.onclick = (e) => {
+      if (e.target === this.root || e.target === this.gridEl) this.select(null);
     };
     ctl.onChange(() => this.render());
   }
@@ -162,6 +183,8 @@ export class RefitPanel {
     this.top.classList.toggle('hidden', !on);
     if (!on) {
       this.card.classList.add('hidden');
+      this.sheet.classList.add('hidden');
+      this.sheetFor = null;
       if (this.sel || this.preview) this.clearSel();
       return;
     }
@@ -193,7 +216,10 @@ export class RefitPanel {
       bottom = Math.max(bottom, Math.max(a.y, b.y));
     }
     this.treasureRow.style.top = `${bottom + 4}px`;
-    this.cargoEl.style.top = `${bottom + 4 + (this.treasureRow.childElementCount ? 40 : 0)}px`;
+    const cargoTop = bottom + 4 + (this.treasureRow.childElementCount ? 40 : 0);
+    this.cargoEl.style.top = `${cargoTop}px`;
+    // Down to just above LAUNCH.
+    this.cargoEl.style.maxHeight = `calc(100% - ${cargoTop}px - max(10px, env(safe-area-inset-bottom)) - 64px)`;
     this.render(true);
   }
 
@@ -205,6 +231,7 @@ export class RefitPanel {
     for (const spot of allSpots(run, this.ctl.tuning)) {
       if (spot.kind === 'treasure') continue;
       const d = el('div', 'rf-cell');
+      d.dataset.spot = spotKey(spot);
       d.onclick = (e) => {
         e.stopPropagation();
         this.tapSpot(spot);
@@ -345,7 +372,7 @@ export class RefitPanel {
   private render(cheap = false): void {
     if (!this.on) return;
     const run = this.run!;
-    const sig = JSON.stringify([run.loadout, run.facings, run.crew.map((m) => [m.uid, m.home, m.trinkets, m.level]), run.items.length, run.mustPlace, this.sel, this.preview?.dest, this.tab, this.details, this.sandboxOpen, this.ctl.runId, this.ctl.sandbox?.enemies]);
+    const sig = JSON.stringify([run.loadout, run.facings, run.crew.map((m) => [m.uid, m.home, m.trinkets, m.level]), run.items.length, run.mustPlace, this.sel, this.preview?.dest, this.tab, this.statsOpen, this.sheetFor, this.sandboxOpen, this.ctl.runId, this.ctl.sandbox?.enemies]);
     if (cheap && sig === this.lastSig) return;
     this.lastSig = sig;
     const nowKey = JSON.stringify([run.loadout, run.facings, run.crew.map((m) => [m.uid, m.home, m.trinkets, m.level, m.job]), this.ctl.runId]);
@@ -360,6 +387,7 @@ export class RefitPanel {
     this.renderCargo(run);
     this.renderTop(run);
     this.renderCard(run);
+    this.renderSheet(run);
     this.renderBar(run);
     this.renderSandbox();
   }
@@ -398,6 +426,17 @@ export class RefitPanel {
           d.append(wrap);
         }
         if (lee) d.append(this.token(lee, raised('lee')));
+        // The selected gun can turn: ↻ right on its tile.
+        const turn = mine && selLayer === 'station' && !this.preview ? this.nextFacing(run, spot) : null;
+        if (turn) {
+          const b = el('button', 'rf-rotate', '↻');
+          b.title = `Turn ${FACING_ARROW[turn.way]}`;
+          b.onclick = (e) => {
+            e.stopPropagation();
+            this.ctl.setFacing(turn.slot, turn.way);
+          };
+          d.append(b);
+        }
       } else if (spot.kind === 'edge') {
         const hull = itemOf(run, itemAt(run, spot, 'hull'));
         if (hull) d.append(itemIcon(hull, `rf-hull${raised('hull')}`));
@@ -444,110 +483,128 @@ export class RefitPanel {
     }
   }
 
+  /** The next way a gun on this tile can face, or null if it can't turn. */
+  private nextFacing(run: RunState, spot: Spot): { slot: string; way: Facing } | null {
+    const def = itemOf(run, itemAt(run, spot, 'station'));
+    if (!def || def.category !== 'gun' || spot.kind !== 'tile') return null;
+    if ((this.ctl.tuning.items[def.id]?.arc ?? 360) >= 360) return null;
+    const slotId = slotOf(spot, 'station')!;
+    const slot = slotById(SHIPS[run.ship], slotId);
+    const ways: Facing[] = slot?.type === 'interior' ? ['port', 'bow', 'starboard', 'stern'] : slot?.facings ?? [];
+    if (!slot || ways.length < 2) return null;
+    const f = slotFacing(buildFor(run), slot);
+    return { slot: slotId, way: ways[(ways.indexOf(f) + 1) % ways.length] };
+  }
+
   private renderCargo(run: RunState): void {
     const box = this.cargoEl;
     box.replaceChildren();
-    const ctl = this.ctl;
-    const sandbox = ctl.mode === 'sandbox';
-    const tabs = el('div', 'rf-tabs');
-    for (const [k, label] of TABS) {
-      tabs.append(
-        button(label, `tab${this.tab === k ? ' on' : ''}`, () => {
-          this.tab = k;
-          this.lastSig = '';
-          this.render();
-        }),
-      );
-    }
-    const head = el('div', 'rf-cargo-head');
+    const sandbox = this.ctl.mode === 'sandbox';
     const boatSel = !!this.sel && (this.sel.from === 'boat' || this.sel.from === 'worn');
-    head.append(
-      el('span', 'cargo-head', boatSel ? '⬇ Tap the cargo to stow it' : sandbox ? 'Catalog (sandbox: unlimited)' : `Cargo · ${cargo(run).length} items · ${ashore(run).length} ashore`),
-      button('Auto-equip', 'hud-btn', () => {
-        this.clearSel();
-        ctl.autoEquip();
-      }),
-    );
     box.classList.toggle('stow', boatSel);
-    const list = el('div', 'cargo rf-list');
     const must = run.mustPlace;
-    const chip = (s: Sel, icon: HTMLElement, label: string, mustGlow: boolean) => {
-      const on = !!this.sel && JSON.stringify(this.sel) === JSON.stringify(s);
-      const trinketDest = s.from === 'ashore' && isTrinketSel(run, this.sel);
-      const pv = s.from === 'ashore' && !!this.preview && 'member' in this.preview.dest && this.preview.dest.member === s.member;
-      const c = button('', `chip${on ? ' on' : ''}${mustGlow ? ' must' : ''}${trinketDest ? ' fits' : ''}`, () => this.tapChip(s));
-      c.append(icon, el('span', '', label));
-      if (pv) c.append(el('span', 'rf-ok-small', '✅'));
-      list.append(c);
-    };
-    if (this.tab === 'all' || this.tab === 'lees') {
-      for (const m of ashore(run)) chip({ from: 'ashore', member: m.uid }, memberFigure(m.type, 'chip-figure'), `${m.label}${m.level > 1 ? ` · Lv ${m.level}` : ''}`, must?.kind === 'lee' && must.uid === m.uid);
-    }
-    const show = (d: ItemDef) => this.tab === 'all' || TAB_OF[d.category] === this.tab;
-    if (sandbox) {
-      let last = '';
-      for (const d of Object.values(ITEMS)) {
-        if (!show(d)) continue;
-        if (d.category !== last) {
-          last = d.category;
-          list.append(el('div', 'cargo-cat', CATEGORY_NAMES[d.category]));
-        }
-        chip({ from: 'catalog', item: d.id }, itemIcon(d), d.name, false);
-      }
-    } else {
+    // Every chip with the tab it belongs to; tabs only show when there are too many to scan.
+    const chips: { tab: Tab; make: () => HTMLElement }[] = [];
+    const chip = (tab: Tab, s: Sel, icon: () => HTMLElement, label: string, mustGlow: boolean) =>
+      chips.push({
+        tab,
+        make: () => {
+          const on = !!this.sel && JSON.stringify(this.sel) === JSON.stringify(s);
+          const trinketDest = s.from === 'ashore' && isTrinketSel(run, this.sel);
+          const pv = s.from === 'ashore' && !!this.preview && 'member' in this.preview.dest && this.preview.dest.member === s.member;
+          const c = button('', `chip${on ? ' on' : ''}${mustGlow ? ' must' : ''}${trinketDest ? ' fits' : ''}`, () => this.tapChip(s));
+          c.append(icon(), el('span', '', label));
+          if (pv) c.append(el('span', 'rf-ok-small', '✅'));
+          return c;
+        },
+      });
+    for (const m of ashore(run)) chip('lees', { from: 'ashore', member: m.uid }, () => memberFigure(m.type, 'chip-figure'), `${m.label}${m.level > 1 ? ` · Lv ${m.level}` : ''}`, must?.kind === 'lee' && must.uid === m.uid);
+    if (sandbox) for (const d of Object.values(ITEMS)) chip(TAB_OF[d.category], { from: 'catalog', item: d.id }, () => itemIcon(d), d.name, false);
+    else
       for (const inst of cargo(run)) {
         const d = ITEMS[inst.item];
-        if (!d || !show(d)) continue;
-        chip({ from: 'cargo', uid: inst.uid }, itemIcon(d), d.name, must?.kind === 'item' && must.uid === inst.uid);
+        if (d) chip(TAB_OF[d.category], { from: 'cargo', uid: inst.uid }, () => itemIcon(d), d.name, must?.kind === 'item' && must.uid === inst.uid);
       }
+    const present = TABS.filter(([k]) => k === 'all' || chips.some((c) => c.tab === k));
+    const showTabs = present.length > 2 && chips.length > CARGO_FITS;
+    if (!showTabs || !present.some(([k]) => k === this.tab)) this.tab = 'all';
+    if (showTabs) {
+      const tabs = el('div', 'rf-tabs');
+      for (const [k, label] of present)
+        tabs.append(
+          button(label, `tab${this.tab === k ? ' on' : ''}`, () => {
+            this.tab = k;
+            this.lastSig = '';
+            this.render();
+          }),
+        );
+      box.append(tabs);
     }
-    if (!list.childElementCount) list.append(el('span', 'tray-empty', this.tab === 'all' ? 'Cargo is empty: rewards after a fight land here.' : 'Nothing here.'));
-    box.append(tabs, head, list);
+    const list = el('div', 'cargo rf-list');
+    const leeSel = !!this.sel && this.sel.from === 'boat' && this.sel.layer === 'lee';
+    list.append(el('span', 'rf-row-label', boatSel ? (leeSel ? '⬇ Ashore' : '⬇ Stow') : 'Cargo'));
+    for (const c of chips) if (this.tab === 'all' || c.tab === this.tab) list.append(c.make());
+    if (!chips.length && !boatSel) list.append(el('span', 'tray-empty', 'empty'));
+    box.append(list);
   }
 
-  /** Next fight, the five stat bars (with the preview), details, warnings. */
+  /** Next fight, warnings, and (behind 📊) the five stat bars with every number. */
   private renderTop(run: RunState): void {
     const ctl = this.ctl;
     const t = ctl.tuning;
     const now = this.now!;
     const next = this.preview;
-    const nextFight = el('div', 'next-fight', ctl.mode === 'sandbox' ? `Sandbox · ${this.sandboxSummary()}` : `Fight ${run.fight} · ${encounterSummary(run, t)}`);
-    // The bars are the same elements from render to render, so changes animate.
-    const bars = this.barsEl;
-    const full: Record<keyof BoatBars, number> = { firepower: t.refit.barFirepower, toughness: t.refit.barToughness, speed: t.refit.barSpeed, boarding: t.refit.barBoarding, repair: t.refit.barRepair };
-    const dur = `${Math.max(0, t.refit.barAnimTime)}s`;
-    // Bars can overflow a little past "full" (to 120%).
-    const w = (v: number) => `${(Math.min(1.2, Math.max(0, v)) / 1.2) * 100}%`;
-    for (const k of BAR_KEYS) {
-      let row = this.barRows.get(k);
-      if (!row) {
-        const r = el('div', 'rf-bar-row');
-        const track = el('div', 'rf-track');
-        const fill = el('div', 'rf-fill');
-        const delta = el('div', 'rf-delta');
-        track.append(fill, delta, el('div', 'rf-full'));
-        r.append(el('span', 'rf-bar-k', BAR_NAMES[k]), track);
-        bars.append(r);
-        row = { fill, delta };
-        this.barRows.set(k, row);
-      }
-      const a = now.bars[k] / Math.max(1e-6, full[k]);
-      const b = next ? next.bars[k] / Math.max(1e-6, full[k]) : a;
-      row.delta.className = `rf-delta ${b > a ? 'add' : 'remove'}`;
-      row.fill.style.transitionDuration = dur;
-      row.delta.style.transitionDuration = dur;
-      row.fill.style.width = w(Math.min(a, b));
-      row.delta.style.left = w(Math.min(a, b));
-      row.delta.style.width = `calc(${w(Math.max(a, b))} - ${w(Math.min(a, b))})`;
+    const head = el('div', 'rf-head');
+    const fight = ctl.mode === 'sandbox' ? `Sandbox · ${this.sandboxSummary()}` : `Fight ${run.fight} · ${encounterSummary(run, t).split(':')[0]}`;
+    head.append(
+      el('div', 'next-fight', fight),
+      button('📊', `rf-stats-btn${this.statsOpen ? ' on' : ''}`, () => {
+        this.statsOpen = !this.statsOpen;
+        this.lastSig = '';
+        this.render();
+      }),
+    );
+    const out: HTMLElement[] = [head];
+    const warn = this.warnings(run);
+    if (warn.length) {
+      const box = el('div', 'warnings');
+      for (const x of warn) box.append(el('div', 'warning', x));
+      out.push(box);
     }
-    const toggle = button(this.details ? 'Hide details' : 'Details', 'rf-details-btn', () => {
-      this.details = !this.details;
-      this.lastSig = '';
-      this.render();
-    });
-    const out: HTMLElement[] = [nextFight, bars, toggle];
-    if (this.details) {
+    if (this.statsOpen) {
+      // The bars are the same elements from render to render, so changes animate.
+      const bars = this.barsEl;
+      const full = barFull(t);
+      const dur = `${Math.max(0, t.refit.barAnimTime)}s`;
+      // Bars can overflow a little past "full" (to 120%).
+      const w = (v: number) => `${(Math.min(1.2, Math.max(0, v)) / 1.2) * 100}%`;
+      for (const k of BAR_KEYS) {
+        let row = this.barRows.get(k);
+        if (!row) {
+          const r = el('div', 'rf-bar-row');
+          const track = el('div', 'rf-track');
+          const fill = el('div', 'rf-fill');
+          const delta = el('div', 'rf-delta');
+          track.append(fill, delta, el('div', 'rf-full'));
+          r.append(el('span', 'rf-bar-k', BAR_NAMES[k]), track);
+          bars.append(r);
+          row = { fill, delta };
+          this.barRows.set(k, row);
+        }
+        const a = now.bars[k] / full[k];
+        const b = next ? next.bars[k] / full[k] : a;
+        row.delta.className = `rf-delta ${b > a ? 'add' : 'remove'}`;
+        row.fill.style.transitionDuration = dur;
+        row.delta.style.transitionDuration = dur;
+        row.fill.style.width = w(Math.min(a, b));
+        row.delta.style.left = w(Math.min(a, b));
+        row.delta.style.width = `calc(${w(Math.max(a, b))} - ${w(Math.min(a, b))})`;
+      }
+      const panel = el('div', 'rf-stats');
+      panel.append(bars);
+      // Every number too, while nothing is selected (the card needs the room otherwise).
       const stats = el('div', 'stat-card');
+      if (!this.sel) panel.append(stats);
       for (const [name, get, fmt] of CARD_ROWS) {
         const a = get(now.card);
         const row = el('div', 'sc-row');
@@ -559,22 +616,33 @@ export class RefitPanel {
         } else row.append(el('span', 'sc-v', fmt(a, now.card)));
         stats.append(row);
       }
-      out.push(stats);
+      out.push(panel);
     }
-    const warn = el('div', 'warnings');
-    for (const x of this.warnings(run)) warn.append(el('div', 'warning', x));
-    out.push(warn);
     this.top.replaceChildren(...out);
+  }
+
+  /** "+Firepower −Speed": what a previewed change does, in words, without the bars. */
+  private deltaChips(): HTMLElement | null {
+    const p = this.preview;
+    const now = this.now;
+    if (!p || !now) return null;
+    const full = barFull(this.ctl.tuning);
+    const row = el('div', 'rf-deltas');
+    for (const k of BAR_KEYS) {
+      const d = (p.bars[k] - now.bars[k]) / full[k];
+      if (Math.abs(d) < 0.02) continue;
+      row.append(el('span', `rf-dchip ${d > 0 ? 'up' : 'down'}`, `${d > 0 ? '+' : '−'}${BAR_NAMES[k]}`));
+    }
+    if (!row.childElementCount) row.append(el('span', 'rf-dchip same', 'Same stats'));
+    return row;
   }
 
   private warnings(run: RunState): string[] {
     const ctl = this.ctl;
     const out: string[] = [];
-    if (ctl.mustPlace()) out.push(run.mustPlace?.kind === 'lee' ? 'Place your new recruit before the next fight: tap them in cargo, then a green tile.' : 'Equip your reward before the next fight: tap it in cargo, then a green spot.');
+    if (ctl.mustPlace()) out.push(run.mustPlace?.kind === 'lee' ? 'Place your recruit to launch.' : 'Equip your reward to launch.');
     const boat = ctl.world.player;
-    if (boat.guns.length && !boat.crew.lees.some((l) => l.job === 'fire')) out.push('Nobody starts on the guns: they won’t fire until you send someone (🔫).');
-    const n = ashore(run).length;
-    if (n && !ctl.mustPlace()) out.push(`${n} Lee${n === 1 ? '' : 's'} ashore (in cargo).`);
+    if (boat.guns.length && !boat.crew.lees.some((l) => l.job === 'fire')) out.push('Nobody starts on the guns.');
     return out;
   }
 
@@ -586,6 +654,7 @@ export class RefitPanel {
 
   // ------------------------------------------------------------ the selection card
 
+  /** Small and fixed: one Lee or item, what a previewed move changes. No buttons: tap the boat, the cargo or the water. */
   private renderCard(run: RunState): void {
     const c = this.card;
     c.replaceChildren();
@@ -595,75 +664,104 @@ export class RefitPanel {
       return;
     }
     const ctl = this.ctl;
-    const t = ctl.tuning;
-    const out: HTMLElement[] = [];
-    const buttons = el('div', 'card-buttons');
-    if (this.preview) {
-      // Compact while previewing: the bars and arcs are what matter now.
-      out.push(el('div', 'card-sub rf-hint', 'Tap ✅ (or the same spot again) to confirm, or tap anything else.'));
-      for (const d of this.preview.displaced) out.push(el('div', 'card-sub', d.to === 'swap' ? `${d.name} swaps places` : `${d.name} → ${d.to}`));
-      buttons.append(button('Cancel', 'hud-btn', () => this.select(null)));
-      out.push(buttons);
-      c.append(...out);
-      c.classList.remove('hidden');
-      return;
-    }
     const lee = s.from === 'catalog' ? null : pickedLee(run, s);
     const def = s.from === 'catalog' ? ITEMS[s.item] : pickedItem(run, s);
+    // What tapping the same tile again picks up.
+    let under: string | null = null;
+    if (s.from === 'boat') {
+      const stack = stackAt(run, s.spot);
+      const i = stack.indexOf(s.layer);
+      if (i >= 0 && i + 1 < stack.length) under = LAYER_NAMES[stack[i + 1]];
+    }
+    const head = el('div', 'rf-card-head');
     if (lee) {
-      const ldef = LEE_DEFS[lee.type];
-      const head = el('div', 'card-head');
-      head.append(memberFigure(lee.type));
-      const names = el('div', 'card-names');
       const job = lee.home !== null ? lee.job ?? startingJob(ctl.world.player, lee.home) : null;
-      names.append(el('div', 'card-name', lee.label), el('div', 'card-sub', job ? `Starts as ${JOB_INFO[job].icon} ${JOB_INFO[job].name}` : 'Ashore: stays behind'), el('div', 'card-flavor', ldef.flavor));
-      head.append(names, levelBadge(lee, t));
-      out.push(head);
-      if (ldef.trait) out.push(el('div', 'card-trait', `${ldef.trait.name}: ${ldef.trait.text}`));
-      if (lee.bonuses.length) out.push(el('div', 'card-sub', `Level bonuses: ${lee.bonuses.map((b) => bonusLabel(b, t, STAT_LABELS)).join(', ')}`));
+      const names = el('div', 'rf-card-names');
+      names.append(el('div', 'rf-card-name', `${lee.label}${lee.level > 1 ? ` · Lv ${lee.level}` : ''}`), el('div', 'rf-card-sub', job ? `${JOB_INFO[job].icon} ${JOB_INFO[job].name}` : 'Ashore'));
+      head.append(memberFigure(lee.type, 'rf-card-figure'), names);
+      if (under) head.append(el('span', 'rf-under', `tap again: ${under}`));
+      head.append(button('ⓘ', 'rf-info', () => this.openSheet(lee.uid)));
+      c.append(head, this.jobBars(lee));
       // Trinkets it wears: tap one to pick it up (onto another Lee, or into cargo).
-      const tr = el('div', 'chips');
+      const tr = el('div', 'rf-trinkets');
       lee.trinkets.forEach((u, i) => {
         const d = itemOf(run, u);
-        const chip = button('', 'chip', () => {
+        const chip = button('', `chip small${d ? '' : ' empty'}`, () => {
           if (d) this.select({ from: 'worn', member: lee.uid, index: i });
         });
-        chip.append(d ? itemIcon(d) : el('span', 'slot-glyph', '✧'), el('span', '', d ? d.name : 'empty trinket slot'));
+        chip.append(d ? itemIcon(d) : el('span', 'slot-glyph', '✧'), el('span', '', d ? d.name : 'trinket'));
         tr.append(chip);
       });
-      out.push(tr);
-      const w = ctl.world.player.crew.lees.find((l) => l.uid === lee.uid);
-      out.push(fullStats(ldef, t, w?.mods ?? {}));
-      buttons.append(
-        button('Release', 'hud-btn danger', () => {
-          if (!confirmAction(`Release ${lee.label}? They leave the crew for good; their trinkets go to cargo.`)) return;
-          this.clearSel();
-          ctl.releaseLee(lee.uid);
-        }),
-      );
-      if (lee.home !== null) buttons.append(button('Send ashore', 'hud-btn', () => this.stowSelected()));
+      c.append(tr);
     } else if (def) {
-      const extra: HTMLElement[] = [];
-      if (s.from === 'boat') extra.push(el('div', 'card-sub', `${LAYER_NAMES[s.layer]} · tap the tile again for the layer under it`));
-      out.push(itemCard(def, extra));
-      if (s.from === 'boat' && s.layer === 'station' && def.category === 'gun' && s.spot.kind === 'tile') {
-        const slotId = slotOf(s.spot, 'station')!;
-        const slot = slotById(SHIPS[run.ship], slotId);
-        const ways: Facing[] = slot?.type === 'interior' ? ['port', 'bow', 'starboard', 'stern'] : slot?.facings ?? [];
-        if (slot && ways.length > 1 && (t.items[def.id]?.arc ?? 360) < 360) {
-          const f = slotFacing(buildFor(run), slot);
-          const nextWay = ways[(ways.indexOf(f) + 1) % ways.length];
-          buttons.append(button(`Turn ${FACING_ARROW[nextWay]}`, 'hud-btn', () => ctl.setFacing(slotId, nextWay)));
-        }
-        const att = run.loadout[`att:${slotId}`];
-        if (att !== undefined) buttons.append(button(`Take off ${itemOf(run, att)?.name ?? 'attachment'}`, 'hud-btn', () => ctl.unequip(att)));
+      const names = el('div', 'rf-card-names');
+      names.append(el('div', 'rf-card-name', def.name));
+      if (def.id !== 'ironE') {
+        names.append(el('div', 'rf-card-text', def.description));
+        if (def.tradeoff) names.append(el('div', 'rf-card-cost', def.tradeoff));
       }
-      if (s.from === 'boat' || s.from === 'worn') buttons.append(button('Stow in cargo', 'hud-btn', () => this.stowSelected()));
+      head.append(itemIcon(def, 'rf-card-icon'), names);
+      if (under) head.append(el('span', 'rf-under', `tap again: ${under}`));
+      c.append(head);
+      // A gun's attachment rides with it; take it off here.
+      if (s.from === 'boat' && s.layer === 'station' && s.spot.kind === 'tile' && !this.preview) {
+        const att = run.loadout[`att:${slotOf(s.spot, 'station')}`];
+        const ad = itemOf(run, att);
+        if (att !== undefined && ad) {
+          const off = button('', 'chip small', () => ctl.unequip(att));
+          off.append(itemIcon(ad), el('span', '', `${ad.name} ✕`));
+          c.append(off);
+        }
+      }
     }
-    buttons.append(button('Done', 'hud-btn', () => this.select(null)));
-    out.push(buttons);
-    c.append(...out);
+    if (this.preview) {
+      const d = this.deltaChips();
+      if (d) c.append(d);
+      for (const x of this.preview.displaced) if (x.to !== 'swap') c.append(el('div', 'rf-card-sub', `${x.name} → ${x.to}`));
+    }
     c.classList.remove('hidden');
+  }
+
+  /** The four job bars, with this Lee's levels, trinkets and treasures. */
+  private jobBars(m: CrewMember): HTMLDivElement {
+    const mods = this.ctl.world.player.crew.lees.find((l) => l.uid === m.uid)?.mods ?? {};
+    return jobBars(m.type, this.ctl.tuning, mods);
+  }
+
+  private openSheet(uid: number | null): void {
+    this.sheetFor = uid;
+    this.lastSig = '';
+    this.render();
+  }
+
+  /** A Lee's full sheet: type, trait, level and bonuses, every stat, Release. */
+  private renderSheet(run: RunState): void {
+    const box = this.sheet;
+    const m = this.sheetFor === null ? null : run.crew.find((x) => x.uid === this.sheetFor) ?? null;
+    box.classList.toggle('hidden', !m);
+    if (!m) return;
+    const ctl = this.ctl;
+    const t = ctl.tuning;
+    const def = LEE_DEFS[m.type] ?? LEE_DEFS.basic;
+    const card = el('div', 'rf-sheet-card');
+    const head = el('div', 'card-head');
+    const names = el('div', 'card-names');
+    names.append(el('div', 'card-name', m.label), el('div', 'card-sub', def.role));
+    head.append(memberFigure(m.type), names, levelBadge(m, t), button('✕', 'rf-sheet-x', () => this.openSheet(null)));
+    card.append(head, el('div', 'card-flavor', def.flavor));
+    if (def.trait) card.append(el('div', 'card-trait', `${def.trait.name}: ${def.trait.text}`));
+    if (m.bonuses.length) card.append(el('div', 'card-sub', `Level bonuses: ${m.bonuses.map((b) => bonusLabel(b, t, STAT_LABELS)).join(', ')}`));
+    const w = ctl.world.player.crew.lees.find((l) => l.uid === m.uid);
+    card.append(fullStats(def, t, w?.mods ?? {}));
+    card.append(
+      button('Release', 'hud-btn danger', () => {
+        if (!confirmAction(`Release ${m.label}? They leave the crew for good; their trinkets go to cargo.`)) return;
+        this.openSheet(null);
+        this.clearSel();
+        ctl.releaseLee(m.uid);
+      }),
+    );
+    box.replaceChildren(card);
   }
 
   // ------------------------------------------------------------ buttons
@@ -681,21 +779,36 @@ export class RefitPanel {
         }),
       );
     }
+    // Auto-equip only when it would do something.
+    if (this.autoEquipUseful(run))
+      bar.append(
+        button('Auto-equip', 'hud-btn', () => {
+          this.clearSel();
+          ctl.autoEquip();
+        }),
+      );
     const blocked = ctl.mustPlace();
     const launch = button('LAUNCH', `start-btn${blocked ? ' blocked' : ''}`, () => {
       if (blocked) {
-        this.toast('Equip your reward first: tap it in cargo, then a green spot.');
+        this.toast(run.mustPlace?.kind === 'lee' ? 'Place your recruit first.' : 'Equip your reward first.');
         return;
       }
       if (!run.crew.some((m) => m.home !== null)) {
-        this.toast('Nobody is aboard: place at least one Lee.');
+        this.toast('Nobody is aboard.');
         return;
       }
       this.clearSel();
       ctl.launch();
     });
-    launch.append(el('small', '', blocked ? 'equip your reward' : ctl.mode === 'sandbox' ? 'sandbox' : `fight ${run.fight}`));
+    launch.append(el('small', '', ctl.mode === 'sandbox' ? 'sandbox' : `fight ${run.fight}`));
     bar.append(launch);
+  }
+
+  private autoEquipUseful(run: RunState): boolean {
+    if (!cargo(run).length && !ashore(run).length) return false;
+    const copy = structuredClone(run);
+    autoEquipAll(copy, this.ctl.tuning);
+    return JSON.stringify([copy.loadout, copy.crew.map((m) => [m.home, m.trinkets])]) !== JSON.stringify([run.loadout, run.crew.map((m) => [m.home, m.trinkets])]);
   }
 
   // ------------------------------------------------------------ sandbox

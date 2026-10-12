@@ -170,6 +170,7 @@ const PATH_RANGES: [RegExp, Range][] = [
   [/^layout\.closeViewStart$/, [5, 80, 1]],
   [/^enemyAI\.chasedMaxOffset$/, [30, 120, 1]],
   [/^camera\.(lookAhead|rangeHysteresis)$/, [0, 3, 0.05]],
+  [/^camera\.refitView$/, [1.5, 10, 0.1]],
   [/^input\.(arriveRadius|orbitGrab|boatGrab)$/, [0, 100, 1]],
   [/^attach\.(touchGap|holdPush|alongsideGap|ramCooldown)$/, [0, 10, 0.1]],
   [/^crewAI\.helpThreshold$/, [0, 150, 1]],

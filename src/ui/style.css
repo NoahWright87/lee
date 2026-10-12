@@ -326,11 +326,6 @@ body {
   left: 0;
 }
 
-.gauge.guns {
-  bottom: 0;
-  right: 0;
-}
-
 .gauge {
   display: flex;
   align-items: center;
@@ -401,11 +396,6 @@ body {
   100% {
     transform: rotate(-90deg);
   }
-}
-
-.gauge.crew {
-  bottom: 26px;
-  left: 0;
 }
 
 /* ------------------------------------------------------------ setup mode */
@@ -2661,4 +2651,369 @@ body {
 .rf-hint {
   color: #b9ffbf;
   font-weight: 700;
+}
+
+/* ------------------------------------------------------------ refit, streamlined */
+
+/* One line over the ocean: the next fight, and 📊 for the stat panel. */
+.rf-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rf-head .next-fight {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#hud .rf-stats-btn {
+  font-size: 16px;
+  line-height: 1;
+  padding: 5px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.5);
+  pointer-events: auto;
+}
+
+#hud .rf-stats-btn.on {
+  background: var(--ink);
+}
+
+.rf-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* The selection card: a few lines, never scrolls. */
+.setup-mode .lee-card.rf-card {
+  max-height: none;
+  overflow: visible;
+  padding: 7px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.rf-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rf-card-figure {
+  height: 36px;
+  flex: none;
+}
+
+.rf-card-icon {
+  font-size: 26px;
+  width: 32px;
+  text-align: center;
+  flex: none;
+}
+
+.rf-card-names {
+  flex: 1;
+  min-width: 0;
+}
+
+.rf-card-name {
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.rf-card-sub,
+.rf-card-text {
+  font-size: 12.5px;
+  color: var(--ink-dim);
+}
+
+.rf-card-text {
+  color: var(--ink);
+}
+
+.rf-card-cost {
+  font-size: 12px;
+  color: #ffb58a;
+}
+
+.rf-under {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--ink-dim);
+  align-self: flex-start;
+}
+
+#hud .rf-info {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.4);
+  color: var(--ink);
+  font-size: 16px;
+}
+
+/* Four job bars in two columns: ⏩ 🔫 / ⚔️ 🛠️. */
+.rf-jobbars {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px 12px;
+}
+
+.rf-jobbar {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.rf-jicon {
+  font-size: 13px;
+  width: 18px;
+  text-align: center;
+}
+
+.rf-jtrack {
+  flex: 1;
+  height: 7px;
+  border-radius: 4px;
+  background: #0a1a2a;
+  overflow: hidden;
+}
+
+.rf-jfill {
+  height: 100%;
+  background: var(--ink);
+}
+
+.rf-jfill.up {
+  background: var(--win);
+}
+
+.rf-jfill.down {
+  background: #c9a46a;
+}
+
+.rf-trinkets {
+  display: flex;
+  gap: 5px;
+}
+
+.chip.small {
+  min-height: 28px;
+  padding: 2px 8px;
+  font-size: 12px;
+  align-self: flex-start;
+}
+
+.chip.small .item-icon {
+  font-size: 15px;
+}
+
+.chip.empty {
+  opacity: 0.55;
+}
+
+/* "+Firepower −Speed" while previewing. */
+.rf-deltas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.rf-dchip {
+  font-size: 12px;
+  font-weight: 800;
+  padding: 2px 7px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.rf-dchip.up {
+  color: var(--win);
+  border: 1px solid var(--win);
+}
+
+.rf-dchip.down {
+  color: var(--lose);
+  border: 1px solid var(--lose);
+}
+
+.rf-dchip.same {
+  color: var(--ink-dim);
+  border: 1px solid var(--line);
+}
+
+/* ↻ on the selected gun's tile. */
+.rf-cell > .rf-rotate {
+  position: absolute;
+  right: -8px;
+  top: -8px;
+  z-index: 6;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid #10233a;
+  background: #ffe08a;
+  color: #10233a;
+  font-size: 17px;
+  font-weight: 900;
+  line-height: 1;
+  padding: 0;
+  pointer-events: auto;
+}
+
+/* Cargo: just the chips, as tall as they need. */
+.rf-cargo {
+  bottom: auto;
+}
+
+.rf-list {
+  flex: none;
+  align-items: center;
+}
+
+.rf-list .tray-empty {
+  font-style: italic;
+}
+
+.rf-cargo.stow .rf-list {
+  min-height: 40px;
+  border-color: rgba(123, 224, 138, 0.9);
+}
+
+/* A Lee's full sheet. */
+.rf-sheet {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.55);
+  pointer-events: auto;
+}
+
+.rf-sheet.hidden {
+  display: none;
+}
+
+.rf-sheet-card {
+  width: min(100%, 380px);
+  max-height: 100%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  font-size: 13px;
+}
+
+.rf-sheet-card .card-names {
+  flex: 1;
+}
+
+#hud .rf-sheet-x {
+  align-self: flex-start;
+  border: none;
+  background: none;
+  color: var(--ink);
+  font-size: 18px;
+  padding: 2px 4px;
+}
+
+.rf-sheet-card .hud-btn.danger {
+  align-self: flex-start;
+}
+
+/* ------------------------------------------------------------ streamlined screens */
+
+/* A card that is itself the button (ship choice, rewards). */
+#hud .card.pick {
+  width: 100%;
+  font: inherit;
+  font-size: 14px;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  gap: 6px;
+  padding: 10px 12px;
+}
+
+#hud .card.pick:active {
+  border-color: var(--ink);
+  transform: scale(0.99);
+}
+
+.ship-card.pick .card-row {
+  align-items: baseline;
+  gap: 8px;
+}
+
+.ship-kit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 3px;
+}
+
+.ship-kit .chip-figure {
+  height: 26px;
+}
+
+.ship-kit .loadout-icons {
+  margin-left: 6px;
+}
+
+.item-line .card-names {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+#hud .more-btn {
+  align-self: flex-start;
+  margin-top: 6px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink-dim);
+  background: none;
+  border: none;
+  text-decoration: underline;
+  padding: 2px 0;
+}
+
+/* Cargo chips: small, so a full hold still fits. */
+.rf-list {
+  gap: 4px;
+  padding: 5px;
+}
+
+.rf-list .chip {
+  min-height: 30px;
+  padding: 2px 8px 2px 6px;
+  font-size: 12px;
+  gap: 4px;
+}
+
+.rf-list .chip .item-icon {
+  font-size: 15px;
+}
+
+.rf-list .chip-figure {
+  height: 24px;
 }

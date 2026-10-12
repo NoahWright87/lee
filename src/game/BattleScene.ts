@@ -574,7 +574,9 @@ export class BattleScene extends Phaser.Scene {
       dy = Math.max(dy, Math.abs(m.y - cy));
     }
     const needH = Math.max(2 * (dy + t.padding), 2 * (dx + t.padding) * (H / W));
-    const visH = clamp(needH, t.minVisibleHeight, Math.max(t.minVisibleHeight, t.maxVisibleHeight));
+    const visH = setup
+      ? Math.max(20, world.player.layout.length * Math.max(1, t.refitView))
+      : clamp(needH, t.minVisibleHeight, Math.max(t.minVisibleHeight, t.maxVisibleHeight));
     const zoom = H / visH;
     if (this.snapCamera) {
       this.cam = { x: cx, y: cy, zoom };
@@ -585,8 +587,8 @@ export class BattleScene extends Phaser.Scene {
       this.cam.y += (cy - this.cam.y) * k;
       this.cam.zoom = Math.exp(lerp(Math.log(this.cam.zoom), Math.log(zoom), k * 0.6));
     }
-    // In refit the stat card covers the top of the ocean: sit the boat a little low.
-    const shiftY = inset / 2 / this.cam.zoom - (setup ? (0.04 * H) / this.cam.zoom : 0);
+    // Refit: the boat sits a little high, clear of the selection card at the bottom of the ocean.
+    const shiftY = inset / 2 / this.cam.zoom - (setup ? (0.12 * H) / this.cam.zoom : 0);
     this.oceanCam.setZoom(this.cam.zoom);
     this.oceanCam.centerOn(this.cam.x, this.cam.y - shiftY);
     this.coverWithWater(this.waterOcean, this.cam.x, this.cam.y - shiftY, W / this.cam.zoom, this.oceanH / this.cam.zoom);
@@ -718,13 +720,15 @@ export class BattleScene extends Phaser.Scene {
     this.drawTelegraphs(g, world, px);
     this.drawContactWarnings(g, world, px);
 
+    // Refit: no HP pips or enemy arrows; the boat and its arcs are what matter there.
+    const refit = this.ctl.screen === 'refit';
     for (const b of world.boats) {
-      if (b.sinkingSince !== null && world.sinkAnim(b) >= 1) continue;
+      if (refit || (b.sinkingSince !== null && world.sinkAnim(b) >= 1)) continue;
       if (world.tuning.visuals.oceanReloadRings) this.drawReloadRings(g, world, b, px, 3);
       this.drawBoatPips(g, world, b, px);
     }
     this.drawCrewPips(g, world, px);
-    for (const e of world.enemies) this.drawEnemyArrow(g, e);
+    if (!refit) for (const e of world.enemies) this.drawEnemyArrow(g, e);
     // Ship type over each enemy (and DERELICT once its crew is gone).
     for (const e of world.enemies) {
       const label = this.labels.get(e.id);
