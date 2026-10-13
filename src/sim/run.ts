@@ -1,14 +1,13 @@
 // A run: the ship you picked, everything you own (items as instances, so you
 // can carry two of the same), what's equipped where, your crew (persistent
-// identity, levels, bonuses, trinkets, homes), the fallen, and where you are in
-// the encounter list. Pure data and pure functions: serializable, versioned,
-// and nothing here knows about screens.
-//
-// The encounter list is the very temporary stand-in for the sea map: a run's
-// flow (what comes after a fight) lives in the Controller, so a sea map can
-// replace it without touching any of this.
+// identity, levels, bonuses, trinkets, homes, wounds), the fallen, your gold,
+// the hull's damage, the fight being set up and what the last one left to
+// resolve. Ports (sim/port.ts) and the sea map (sim/seaMap.ts) live in it too.
+// Pure data and pure functions: serializable, versioned, and nothing here
+// knows about screens. Which screen comes next lives in the Controller.
 
-import { ENCOUNTERS, type EncounterDef } from '../config/encounters';
+import { difficulty } from '../config/difficulty';
+import type { EnemySpec } from '../config/encounters';
 import { ITEMS, type ItemDef } from '../config/items';
 import { LEE_DEFS, STAT_LABELS } from '../config/lees';
 import { SHIPS } from '../config/ships';
@@ -17,13 +16,15 @@ import type { Tuning } from '../config/tuning';
 import type { Lee } from './crew';
 import { allSlots, fits, presetBuild, slotById, trinketMods, type BoatBuild } from './loadout';
 import { autoBonuses, bonusLabel, bonusMods, bonusOffers, combineMods, xpToNext, type BonusKey } from './levels';
-import { Rng } from './math';
+import { drawDistinct, rngFor as seededRng, type Rng } from './math';
 import { autoArrange, enemySetup, fitFor, postsFor, type BoatSetup, type CrewSpec } from './setup';
+import type { PortState } from './port';
+import type { SeaMap } from './seaMap';
 import { buildGrid, tileAtCell } from './grid';
 import type { Job } from '../config/lees';
 
 /** Bump whenever a change makes older saves unreadable. Older saves are then offered a reset, never loaded. */
-export const SAVE_VERSION = 2;
+export const SAVE_VERSION = 3;
 
 export interface ItemInstance {
   uid: number;
@@ -51,6 +52,8 @@ export interface CrewMember {
   /** Lifetime numbers (for cards and the memorial). */
   fights: number;
   kills: number;
+  /** HP carried between fights, as a share of max (1 = unhurt). */
+  hp: number;
 }
 
 export interface Fallen {
@@ -72,16 +75,83 @@ export interface XpGain {
   levelAfter: number;
 }
 
-/** What a fight left to resolve: XP shown, level-ups to pick, and a reward to choose. */
+/** How a beaten enemy ship went out, and what it was worth. */
+export interface EnemyOutcome {
+  ship: string;
+  how: 'sunk' | 'captured';
+  /** Points it was built with (what it pays). */
+  budget: number;
+  /** Items on tiles that weren't blown out (what a capture can take). */
+  intact: string[];
+}
+
+/** What a finished fight hands the run. */
+export interface FightReport {
+  won: boolean;
+  /** Your Lees after the fight. */
+  lees: Lee[];
+  /** Each enemy ship (only those that were beaten). */
+  enemies: EnemyOutcome[];
+  /** The last enemy Lee to fall (not by sinking): who might surrender. */
+  lastEnemy: { type: string; level: number } | null;
+  /** Your hull after the fight: structure share per part. */
+  hull: number[];
+}
+
+/** A stop that isn't a fight, after you arrive: what happened. */
+export interface StopEvent {
+  type: string;
+  text: string;
+}
+
+/** What a fight (or a stop) left to resolve: XP shown, level-ups to pick, spoils, a surrender, a reward to choose. */
 export interface PostFight {
+  /** Unique per post screen (an event and the fight after it share a fight number). */
+  id: number;
   fight: number;
   won: boolean;
   xp: XpGain[];
   lost: Fallen[];
   /** One entry per level gained (a Lee can gain two in one fight), in order. */
   levelUps: { uid: number; level: number; offers: BonusKey[] }[];
+  /** Gold earned. */
+  gold: number;
+  /** How each enemy ship went out. */
+  outcomes: { ship: string; how: 'sunk' | 'captured' }[];
+  /** Items taken (already in cargo). */
+  spoils: string[];
+  /** The last enemy Lee offers to join (null = nobody). */
+  surrender: { type: string; level: number } | null;
+  surrenderDone: boolean;
+  /** A pick (special rewards, wrecks, castaways); empty = none. */
   reward: RewardCard[];
   rewardTaken: boolean;
+  /** Free repair and healing just applied (shares of what was missing). */
+  repaired: number;
+  healed: number;
+  /** A stop that wasn't a fight. */
+  event: StopEvent | null;
+}
+
+/** The fight being set up: where, what it's worth, and who. */
+export interface Encounter {
+  /** Map stop it's at (null = none). */
+  stop: number | null;
+  /** Stop type id ('fight', 'hard'). */
+  type: string;
+  budget: number;
+  enemies: EnemySpec[];
+  /** × gold paid (map style). */
+  gold: number;
+  /** Offers a special reward when won. */
+  special: boolean;
+}
+
+export interface RunTotals {
+  goldEarned: number;
+  ports: number;
+  sunk: number;
+  captured: number;
 }
 
 export interface RunState {
@@ -103,60 +173,48 @@ export interface RunState {
   /** Per-type counters for crew labels. */
   counters: Record<string, number>;
   nextUid: number;
-  stage: 'refit' | 'post' | 'over';
+  /** Where the run is: in port, on the sea map, setting up a fight, after one, or over. */
+  stage: RunStage;
   pending: PostFight | null;
-  /**
-   * The first fight's reward must be equipped (or the recruit placed) before
-   * the next fight: what it is, until it's placed.
-   */
-  mustPlace: { kind: 'item' | 'lee'; uid: number } | null;
+  /** Difficulty id (src/config/difficulty.ts). */
+  difficulty: string;
+  gold: number;
+  /** Hull structure share per part (1 = intact), carried between fights. */
+  hull: number[];
+  /** Journeys completed (depth). */
+  journey: number;
+  /** The fight being set up (stage 'refit'), or null. */
+  encounter: Encounter | null;
+  /** The port you're in (stage 'port'), or null. */
+  port: PortState | null;
+  /** The sea between two ports (stage 'map', and fights on it), or null. */
+  map: SeaMap | null;
+  /** Bank interest paid on reaching the next port. */
+  bankOwed: number;
+  /** Custom start: no hull bought yet. */
+  noHull: boolean;
+  totals: RunTotals;
 }
 
-const treasureSlot = (i: number) => `treasure:${i}`;
-const isTreasureSlot = (id: string) => /^treasure:\d+$/.test(id);
+export type RunStage = 'port' | 'map' | 'refit' | 'post' | 'over';
 
-function hash(s: string): number {
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
-  return h >>> 0;
-}
+export const treasureSlot = (i: number) => `treasure:${i}`;
+export const isTreasureSlot = (id: string) => /^treasure:\d+$/.test(id);
 
-function rngFor(run: RunState, what: string): Rng {
-  return new Rng((run.seed ^ hash(what)) >>> 0);
-}
-
-/** Weighted draw of up to n distinct entries. */
-function drawDistinct<T>(rng: Rng, pool: [T, number][], n: number): T[] {
-  const left = pool.filter(([, w]) => w > 0);
-  const out: T[] = [];
-  while (out.length < n && left.length) {
-    const total = left.reduce((a, [, w]) => a + w, 0);
-    let r = rng.next() * total;
-    let pick = left.length - 1;
-    for (let i = 0; i < left.length; i++) {
-      r -= left[i][1];
-      if (r < 0) {
-        pick = i;
-        break;
-      }
-    }
-    out.push(left[pick][0]);
-    left.splice(pick, 1);
-  }
-  return out;
+/** A random stream for one purpose of this run ("spoils:4", "shop:2"...). */
+export function rngFor(run: RunState, what: string): Rng {
+  return seededRng(run.seed, what);
 }
 
 // ------------------------------------------------------------ setup
 
-/**
- * A new run: the ship's preset (loadout, treasures, crew and where they
- * stand). No draft, no starting part: it's ready to sail.
- */
-export function newRun(ship: string, seed: number, t: Tuning): RunState {
-  const run: RunState = {
+/** An empty run (no ship fitted, no crew): the base of a preset or Custom start. */
+export function blankRun(ship: string, seed: number, diff: string): RunState {
+  const id = SHIPS[ship] ? ship : 'basic';
+  return {
     version: SAVE_VERSION,
     seed: seed >>> 0,
-    ship: SHIPS[ship] ? ship : 'basic',
+    ship: id,
     items: [],
     loadout: {},
     facings: {},
@@ -168,8 +226,31 @@ export function newRun(ship: string, seed: number, t: Tuning): RunState {
     nextUid: 1,
     stage: 'refit',
     pending: null,
-    mustPlace: null,
+    difficulty: difficulty(diff).id,
+    gold: 0,
+    hull: freshHull(id),
+    journey: 0,
+    encounter: null,
+    port: null,
+    map: null,
+    bankOwed: 0,
+    noHull: false,
+    totals: { goldEarned: 0, ports: 0, sunk: 0, captured: 0 },
   };
+}
+
+/** An undamaged hull for a ship: every part at full structure. */
+export function freshHull(ship: string): number[] {
+  return (SHIPS[ship] ?? SHIPS.basic).layout.parts.map(() => 1);
+}
+
+/**
+ * A new run: the ship's preset (loadout, treasures, crew and where they
+ * stand) and a little starting gold. It's ready to sail.
+ */
+export function newRun(ship: string, seed: number, t: Tuning, diff = 'normal'): RunState {
+  const run = blankRun(ship, seed, diff);
+  run.gold = Math.round(Math.max(0, t.economy.startGold) * difficulty(diff).gold);
   const build = presetBuild(run.ship);
   for (const [slot, item] of Object.entries(build.loadout)) run.loadout[slot] = addItem(run, item).uid;
   (build.treasures ?? []).slice(0, treasureSlots(run, t)).forEach((item, i) => (run.loadout[treasureSlot(i)] = addItem(run, item).uid));
@@ -212,6 +293,7 @@ export function addCrew(run: RunState, type: string, level: number, t: Tuning): 
     joined: run.fight,
     fights: 0,
     kills: 0,
+    hp: 1,
   };
   // A recruit above level 1 comes with auto-picked bonuses.
   for (const b of autoBonuses(def.id, Math.max(1, level), member.uid, t)) member.bonuses.push(b);
@@ -269,7 +351,7 @@ export function memberMods(run: RunState, m: CrewMember, t: Tuning) {
 }
 
 export function crewSpecs(run: RunState, t: Tuning): CrewSpec[] {
-  return run.crew.map((m) => ({ type: m.type, home: m.home, uid: m.uid, label: m.label, level: m.level, mods: memberMods(run, m, t), job: m.job ?? undefined }));
+  return run.crew.map((m) => ({ type: m.type, home: m.home, uid: m.uid, label: m.label, level: m.level, mods: memberMods(run, m, t), job: m.job ?? undefined, hp: m.hp ?? 1 }));
 }
 
 export function setupFor(run: RunState, t: Tuning): BoatSetup {
@@ -359,7 +441,6 @@ export function equip(run: RunState, uid: number, slot: string): boolean {
   run.loadout[slot] = uid;
   if (prev !== undefined && prev !== uid && from && 'slot' in from && canEquip(run, prev, from.slot)) run.loadout[from.slot] = prev;
   tidy(run);
-  settleMustPlace(run);
   return true;
 }
 
@@ -376,7 +457,6 @@ export function wearTrinket(run: RunState, uid: number, member: number, index: n
   if (!def || def.category !== 'trinket' || !m || index < 0 || index >= m.trinkets.length) return false;
   unplace(run, uid);
   m.trinkets[index] = uid;
-  settleMustPlace(run);
   return true;
 }
 
@@ -424,7 +504,6 @@ export function setHome(run: RunState, member: number, tile: number | null): voi
   }
   m.home = tile;
   m.job = null;
-  settleMustPlace(run);
 }
 
 /**
@@ -454,25 +533,6 @@ export function autoEquipAll(run: RunState, t: Tuning): void {
       taken.add(p.post);
     }
   }
-  settleMustPlace(run);
-}
-
-/** Is the first reward still waiting to be equipped (or placed)? */
-export function mustPlaceOpen(run: RunState): boolean {
-  settleMustPlace(run);
-  return run.mustPlace !== null;
-}
-
-/** Clear the must-place once it's placed (or gone). */
-export function settleMustPlace(run: RunState): void {
-  const m = run.mustPlace;
-  if (!m) return;
-  if (m.kind === 'item') {
-    if (!run.items.some((x) => x.uid === m.uid) || whereIs(run, m.uid)) run.mustPlace = null;
-  } else {
-    const c = run.crew.find((x) => x.uid === m.uid);
-    if (!c || c.home !== null) run.mustPlace = null;
-  }
 }
 
 /** Auto-arrange the whole crew (stat-matched posts). */
@@ -493,37 +553,84 @@ export function fixHomes(run: RunState): void {
   }
 }
 
+// ------------------------------------------------------------ cargo, hull, wounds
+
+/** Most items the hold carries (Lees ashore don't count). */
+export function cargoLimit(run: RunState, t: Tuning): number {
+  return Math.max(0, Math.round(t.ships[run.ship]?.cargo ?? 6));
+}
+
+/** Items over the hold's limit (0 = fine). You can't sail with any. */
+export function cargoOver(run: RunState, t: Tuning): number {
+  return Math.max(0, cargo(run).length - cargoLimit(run, t));
+}
+
+/** Throw an item away for good (it must be in cargo). */
+export function discard(run: RunState, uid: number): void {
+  if (whereIs(run, uid)) return;
+  run.items = run.items.filter((x) => x.uid !== uid);
+}
+
+/** Hull integrity: structure share weighted by each part's HP (1 = intact). */
+export function hullShare(run: RunState, t: Tuning): number {
+  const parts = (SHIPS[run.ship] ?? SHIPS.basic).layout.parts;
+  let have = 0;
+  let total = 0;
+  parts.forEach((p, i) => {
+    const hp = Math.max(1, t.boat.parts[p.stats]?.hp ?? 1);
+    have += hp * Math.min(1, Math.max(0, run.hull[i] ?? 1));
+    total += hp;
+  });
+  return total > 0 ? have / total : 1;
+}
+
+/** Repair a share of what's missing from every part (1 = good as new). */
+export function repairHull(run: RunState, share: number): void {
+  const s = Math.min(1, Math.max(0, share));
+  run.hull = run.hull.map((f) => f + (1 - f) * s);
+}
+
+/** Heal every Lee a share of what it's missing. */
+export function healCrew(run: RunState, share: number): void {
+  const s = Math.min(1, Math.max(0, share));
+  for (const m of run.crew) m.hp = (m.hp ?? 1) + (1 - (m.hp ?? 1)) * s;
+}
+
+/** Equipped treasures (item ids), for between-fight effects. */
+export function treasuresOf(run: RunState): string[] {
+  return buildFor(run).treasures ?? [];
+}
+
+/** The best number a treasure param gives (0 = none of that treasure equipped). */
+export function treasureParam(run: RunState, item: string, param: string, t: Tuning): number {
+  if (!treasuresOf(run).includes(item)) return 0;
+  const v = t.items[item]?.[param];
+  return typeof v === 'number' ? v : ITEMS[item]?.params[param] ?? 0;
+}
+
+/** Free repair and healing after a fight or event: tuning × difficulty, plus Handy Lees and treasures. */
+export function freeFix(run: RunState, t: Tuning): { repair: number; heal: number } {
+  const d = difficulty(run.difficulty);
+  const handy = run.crew.filter((m) => m.type === 'handy' && m.home !== null).length;
+  const repair = Math.max(0, t.run.autoRepair) * d.freeFix + handy * Math.max(0, t.run.handyRepair) + treasureParam(run, 'carpenterChest', 'repair', t);
+  const heal = Math.max(0, t.run.autoHeal) * d.freeFix + treasureParam(run, 'surgeonKit', 'heal', t);
+  return { repair: Math.min(1, repair), heal: Math.min(1, heal) };
+}
+
 // ------------------------------------------------------------ encounters
 
-/** The encounter for a fight number: the temporary list, then the last entry repeated with escalation. */
-export function encounterFor(fight: number, t: Tuning): { def: EncounterDef; repeat: number; levelBonus: number; extraCrew: number } {
-  const list = ENCOUNTERS;
-  const i = Math.max(0, fight - 1);
-  if (i < list.length) return { def: list[i], repeat: 0, levelBonus: 0, extraCrew: 0 };
-  const repeat = i - list.length + 1;
-  const every = Math.round(t.escalation.extraCrewEvery);
-  return {
-    def: list[list.length - 1],
-    repeat,
-    levelBonus: Math.round(repeat * Math.max(0, t.escalation.levelsPerRepeat)),
-    extraCrew: every > 0 ? Math.floor(repeat / every) : 0,
-  };
-}
-
+/** The fight being set up, as boats (built from its enemy specs, the same every time). */
 export function enemySetups(run: RunState, t: Tuning): BoatSetup[] {
-  const enc = encounterFor(run.fight, t);
-  return enc.def.enemies.map((spec, i) => enemySetup(spec, t, { levelBonus: enc.levelBonus, extraCrew: enc.extraCrew, salt: run.seed + run.fight * 101 + i }));
+  const enc = run.encounter;
+  if (!enc) return [];
+  return enc.enemies.map((spec, i) => enemySetup(spec, t, { salt: run.seed + run.fight * 101 + i }));
 }
 
-/** One line about the next fight: ships, crew and levels. */
-export function encounterSummary(run: RunState, t: Tuning): string {
-  const enc = encounterFor(run.fight, t);
-  const setups = enemySetups(run, t);
-  const parts = setups.map((s) => {
-    const lv = s.crew.length ? Math.round(s.crew.reduce((a, c) => a + (c.level ?? 1), 0) / s.crew.length) : 1;
-    return `${SHIPS[s.build.ship]?.name ?? s.build.ship} (${s.crew.length} ${s.crew.length === 1 ? 'Lee' : 'Lees'}, lv ${lv})`;
-  });
-  return `${enc.def.name}${enc.repeat ? ` · again ×${enc.repeat + 1}` : ''}: ${parts.join(' + ')}`;
+/** "Basic Ship + Friend Ship". */
+export function encounterSummary(run: RunState): string {
+  const enc = run.encounter;
+  if (!enc || !enc.enemies.length) return 'Nobody';
+  return enc.enemies.map((s) => SHIPS[s.ship]?.name ?? s.ship).join(' + ');
 }
 
 // ------------------------------------------------------------ after a fight
@@ -555,14 +662,57 @@ export function fightXp(l: Lee, t: Tuning): number {
   );
 }
 
+/** An empty post-fight record. */
+export function emptyPost(run: RunState, won: boolean): PostFight {
+  return {
+    id: run.nextUid++,
+    fight: run.fight,
+    won,
+    xp: [],
+    lost: [],
+    levelUps: [],
+    gold: 0,
+    outcomes: [],
+    spoils: [],
+    surrender: null,
+    surrenderDone: false,
+    reward: [],
+    rewardTaken: false,
+    repaired: 0,
+    healed: 0,
+    event: null,
+  };
+}
+
+/** Add gold earned at sea (counts toward the run's total). */
+export function earn(run: RunState, gold: number): number {
+  const g = Math.max(0, Math.round(gold));
+  run.gold += g;
+  run.totals.goldEarned += g;
+  return g;
+}
+
+/** After a fight or an event: the free share of repair and healing. */
+export function applyFreeFix(run: RunState, post: PostFight, t: Tuning): void {
+  const fix = freeFix(run, t);
+  repairHull(run, fix.repair);
+  healCrew(run, fix.heal);
+  post.repaired = fix.repair;
+  post.healed = fix.heal;
+}
+
 /**
  * Apply a finished fight to the run: the dead are gone for good (their
- * trinkets return to cargo), survivors earn XP and maybe levels, and a reward
- * is offered. A loss (sunk, or the whole crew lost) ends the run.
+ * trinkets return to cargo), survivors earn XP and maybe levels and keep
+ * their wounds, the hull keeps its damage (minus the free repair), and a win
+ * pays: gold for every ship beaten, a part from each one captured, maybe a
+ * surrender, and a special pick after a hard fight. A loss (sunk, or the whole
+ * crew lost) ends the run.
  */
-export function applyFight(run: RunState, lees: Lee[], won: boolean, t: Tuning): PostFight {
-  const post: PostFight = { fight: run.fight, won, xp: [], lost: [], levelUps: [], reward: [], rewardTaken: false };
-  const byUid = new Map(lees.filter((l) => l.uid).map((l) => [l.uid, l]));
+export function applyFight(run: RunState, report: FightReport, t: Tuning): PostFight {
+  const won = report.won;
+  const post = emptyPost(run, won);
+  const byUid = new Map(report.lees.filter((l) => l.uid).map((l) => [l.uid, l]));
   for (const m of [...run.crew]) {
     const l = byUid.get(m.uid);
     if (!l) continue; // stayed ashore
@@ -576,6 +726,7 @@ export function applyFight(run: RunState, lees: Lee[], won: boolean, t: Tuning):
       release(run, m.uid);
       continue;
     }
+    m.hp = Math.min(1, Math.max(0.05, l.hp / Math.max(1, l.maxHp)));
     const gained = fightXp(l, t);
     const before = m.level;
     m.xp += gained;
@@ -588,17 +739,59 @@ export function applyFight(run: RunState, lees: Lee[], won: boolean, t: Tuning):
     if (m.level >= cap) m.xp = 0;
     post.xp.push({ uid: m.uid, gained, levelBefore: before, levelAfter: m.level });
   }
+  if (report.hull.length) run.hull = run.hull.map((f, i) => Math.min(1, Math.max(0, report.hull[i] ?? f)));
   const crewGone = !run.crew.length;
   if (!won || crewGone) {
     run.stage = 'over';
   } else {
     run.won++;
-    post.reward = rewardOffer(run, t);
+    const enc = run.encounter;
+    const rng = rngFor(run, `spoils:${run.fight}`);
+    const goldMul = Math.max(0, enc?.gold ?? 1);
+    for (const e of report.enemies) {
+      post.outcomes.push({ ship: e.ship, how: e.how });
+      post.gold += earn(run, e.budget * Math.max(0, t.spoils.goldPerBudget) * goldMul);
+      if (e.how === 'sunk') run.totals.sunk++;
+      else {
+        run.totals.captured++;
+        // A capture: parts from tiles that weren't blown out.
+        const pool = e.intact.map((id, i) => [i, ITEMS[id] ? 1 : 0] as [number, number]);
+        for (const i of drawDistinct(rng, pool, Math.max(0, Math.round(t.spoils.captureParts)))) {
+          addItem(run, e.intact[i]);
+          post.spoils.push(e.intact[i]);
+        }
+      }
+    }
+    // Sometimes the last enemy Lee standing surrenders.
+    const chance = Math.max(0, t.spoils.surrender) * difficulty(run.difficulty).surrender;
+    if (report.lastEnemy && LEE_DEFS[report.lastEnemy.type] && rng.next() < chance) post.surrender = { ...report.lastEnemy };
+    if (enc?.special) post.reward = specialReward(run, t);
+    if (enc && enc.stop !== null && run.map?.stops[enc.stop]) run.map.stops[enc.stop].cleared = true;
+    applyFreeFix(run, post, t);
     run.stage = 'post';
   }
+  run.encounter = null;
   run.fight++;
   run.pending = post;
   return post;
+}
+
+/** Take (or refuse) the surrendering Lee. If the crew is full, `releaseFirst` must name someone to let go. */
+export function answerSurrender(run: RunState, accept: boolean, t: Tuning, releaseFirst?: number): boolean {
+  const post = run.pending;
+  const s = post?.surrender;
+  if (!post || !s || post.surrenderDone) return false;
+  if (accept) {
+    if (run.crew.length >= crewMax(run, t)) {
+      if (releaseFirst === undefined || !run.crew.some((m) => m.uid === releaseFirst)) return false;
+      release(run, releaseFirst);
+    }
+    // They join ashore, a bit battered.
+    const m = addCrew(run, s.type, s.level, t);
+    m.hp = 0.5;
+  }
+  post.surrenderDone = true;
+  return true;
 }
 
 /** Pick a level-up bonus for the next pending level-up of a Lee. */
@@ -620,63 +813,78 @@ export function autoPickAll(run: RunState): void {
   }
 }
 
-/** Three reward cards: parts, Treasures, Trinkets, and sometimes a recruit (never only recruits). */
-export function rewardOffer(run: RunState, t: Tuning): RewardCard[] {
-  const R = t.run;
-  const rng = rngFor(run, `reward:${run.fight}`);
-  const n = Math.max(1, Math.round(R.rewardChoices));
-  const cards: RewardCard[] = [];
-  const every = Math.round(R.recruitEvery);
-  const recruit = n > 1 && ((every > 0 && run.won % every === 0) || rng.next() < R.recruitChance);
-  if (recruit) {
-    const pool = Object.values(LEE_DEFS).map((d) => [d.id, d.draftWeight] as [string, number]);
-    const [type] = drawDistinct(rng, pool, 1);
-    if (type) cards.push({ kind: 'recruit', type, level: Math.max(1, 1 + Math.floor(Math.max(0, R.recruitLevelPerFight) * run.won)) });
-  }
-  // Each kind (part, Treasure, Trinket) weighs its tuning weight in total, split between its items by their reward weights.
-  const kindOf = (d: ItemDef) => (d.category === 'treasure' || d.category === 'trinket' ? d.category : 'part');
-  const kindWeight = { part: R.weightPart, treasure: R.weightTreasure, trinket: R.weightTrinket };
-  const offerable = Object.values(ITEMS).filter((d) => d.rewardWeight > 0 && usable(run.ship, d));
-  const kindTotal: Record<string, number> = {};
-  for (const d of offerable) kindTotal[kindOf(d)] = (kindTotal[kindOf(d)] ?? 0) + d.rewardWeight;
-  const pool = offerable.map((d) => [d.id, (kindWeight[kindOf(d)] * d.rewardWeight) / kindTotal[kindOf(d)]] as [string, number]);
-  for (const item of drawDistinct(rng, pool, n - cards.length)) cards.push({ kind: 'item', item });
-  return cards;
+/** Items a ship of this run can use somewhere. */
+export function usableItem(run: RunState, d: ItemDef): boolean {
+  return usable(run.ship, d);
 }
 
 /**
- * Take a reward card. Items go to cargo (and are equipped right away if a slot
- * is free). A recruit joins at its level; if the crew is full, `releaseFirst`
- * must name a Lee to let go. Returns false if it can't be taken as asked.
+ * A special reward (hard fights): something rarer. A rare trinket or
+ * treasure, a Lee a level above your best, and parts.
+ */
+export function specialReward(run: RunState, t: Tuning): RewardCard[] {
+  const rng = rngFor(run, `special:${run.fight}`);
+  const n = Math.max(1, Math.round(t.run.rewardChoices));
+  const cards: RewardCard[] = [];
+  const rare = Object.values(ITEMS).filter((d) => d.rare && usable(run.ship, d));
+  const trinkets = Object.values(ITEMS).filter((d) => (d.category === 'trinket' || d.category === 'treasure') && d.rewardWeight > 0);
+  const pool = (rare.length ? rare : trinkets).map((d) => [d.id, d.rewardWeight || 1] as [string, number]);
+  for (const id of drawDistinct(rng, pool, 1)) cards.push({ kind: 'item', item: id });
+  const types = Object.values(LEE_DEFS)
+    .filter((d) => d.draftWeight > 0)
+    .map((d) => [d.id, d.draftWeight] as [string, number]);
+  const [type] = drawDistinct(rng, types, 1);
+  const best = run.crew.reduce((a, m) => Math.max(a, m.level), 1);
+  if (type && n > 1) cards.push({ kind: 'recruit', type, level: Math.min(Math.round(t.leveling.levelCap), best + 1) });
+  const parts = Object.values(ITEMS).filter(
+    (d) => d.category !== 'trinket' && d.category !== 'treasure' && d.rewardWeight > 0 && usable(run.ship, d) && !cards.some((c) => c.kind === 'item' && c.item === d.id),
+  );
+  const pool2 = parts.map((d) => [d.id, d.rewardWeight * (d.category === 'gun' ? 1.5 : 1)] as [string, number]);
+  for (const id of drawDistinct(rng, pool2, n - cards.length)) cards.push({ kind: 'item', item: id });
+  return cards;
+}
+
+/** A pick of parts floating in a wreck (no trinkets or treasures). */
+export function wreckReward(run: RunState, t: Tuning, salt: string): RewardCard[] {
+  const rng = rngFor(run, `wreck:${salt}`);
+  const n = Math.max(1, Math.round(t.run.rewardChoices));
+  const pool = Object.values(ITEMS)
+    .filter((d) => d.rewardWeight > 0 && !d.rare && d.category !== 'trinket' && d.category !== 'treasure' && usable(run.ship, d))
+    .map((d) => [d.id, d.rewardWeight] as [string, number]);
+  return drawDistinct(rng, pool, n).map((item) => ({ kind: 'item', item }));
+}
+
+/**
+ * Take a reward card. Items go to cargo. A recruit joins at its level; if the
+ * crew is full, `releaseFirst` must name a Lee to let go. Returns false if it
+ * can't be taken as asked.
  */
 export function takeReward(run: RunState, index: number, t: Tuning, releaseFirst?: number): boolean {
   const post = run.pending;
   const card = post?.reward[index];
   if (!post || !card || post.rewardTaken) return false;
-  // The first fight's reward must be placed before the next fight (it teaches the refit).
-  const first = run.won === 1;
   if (card.kind === 'recruit') {
     if (run.crew.length >= crewMax(run, t)) {
       if (releaseFirst === undefined || !run.crew.some((m) => m.uid === releaseFirst)) return false;
       release(run, releaseFirst);
     }
     // Recruits wait ashore (in cargo) until placed.
-    const m = addCrew(run, card.type, card.level, t);
-    if (first) run.mustPlace = { kind: 'lee', uid: m.uid };
-  } else {
-    // Items go to cargo: nothing gets equipped (or moved) by itself.
-    const inst = addItem(run, card.item);
-    if (first) run.mustPlace = { kind: 'item', uid: inst.uid };
-  }
+    addCrew(run, card.type, card.level, t);
+  } else addItem(run, card.item);
   post.rewardTaken = true;
   return true;
 }
 
-/** Done with the post-fight screens: back to refit for the next fight. */
+/** Skip the pick. */
+export function skipReward(run: RunState): void {
+  if (run.pending) run.pending.rewardTaken = true;
+}
+
+/** Done with the post-fight screens: back to the sea map (or wherever the run goes next). */
 export function finishPost(run: RunState): void {
   if (run.stage === 'over') return;
   run.pending = null;
-  run.stage = 'refit';
+  run.stage = run.map ? 'map' : run.port ? 'port' : 'refit';
 }
 
 /** "+8% Load speed". */
@@ -708,7 +916,8 @@ function validRun(r: RunState): boolean {
   try {
     if (!SHIPS[r.ship] || !Array.isArray(r.items) || !Array.isArray(r.crew) || !Array.isArray(r.fallen)) return false;
     if (typeof r.fight !== 'number' || typeof r.seed !== 'number' || typeof r.nextUid !== 'number') return false;
-    if (!['refit', 'post', 'over'].includes(r.stage)) return false;
+    if (!['port', 'map', 'refit', 'post', 'over'].includes(r.stage)) return false;
+    if (typeof r.gold !== 'number' || !Array.isArray(r.hull) || !r.totals) return false;
     const uids = new Set(r.items.map((i) => i.uid));
     for (const i of r.items) if (!ITEMS[i.item] || typeof i.uid !== 'number') return false;
     for (const [slot, uid] of Object.entries(r.loadout ?? {})) {

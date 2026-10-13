@@ -43,7 +43,7 @@ applyLayout();
 window.addEventListener('resize', applyLayout);
 window.addEventListener('orientationchange', () => setTimeout(applyLayout, 100));
 // Block page scroll/zoom gestures on mobile, except inside panels that scroll.
-const SCROLLERS = '.screen, .tune-body, .result-card, .lee-card, .setup-below, .refit-top';
+const SCROLLERS = '.screen, .map-sea, .tune-body, .result-card, .lee-card, .refit-top';
 document.addEventListener(
   'touchmove',
   (e) => {

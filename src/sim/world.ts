@@ -28,8 +28,9 @@ import { updateEngagement, stepMelee, stepPistols, type CombatEvent } from './co
 import { createLee, damageCrewAt, hurtLee, inArc, jobCounts, leeStat, loseLee, orderJob, stepCrew, tilesWithin, updateMobility, wetFactor, workerAt, type CrewContext, type Lee, type LossCause } from './crew';
 import type { Job } from '../config/lees';
 import { boardOrRam, nearSide, steer, type Helm, type HelmWorld, type ManeuverKind } from './helm';
-import { tileAt } from './grid';
-import { defaultBuild, itemParam } from './loadout';
+import { tileAt, tileAtCell } from './grid';
+import { defaultBuild, itemParam, slotById } from './loadout';
+import type { EnemyOutcome } from './run';
 import { combineMods } from './levels';
 import { DEG, dist, NORTH, Rng, rotate, toLocal, toWorld, wrapAngle, type Vec } from './math';
 import { archetypeSetup, autoArrange, basicCrew, type BoatSetup, type CrewSpec } from './setup';
@@ -195,7 +196,7 @@ export interface WorldOptions {
   enemyCount?: number;
   /** Shorthand for the player: Basic Lees on these home tiles of the standard Basic Ship. */
   crew?: CrewPlacement;
-  /** Player damage from the previous fight; repaired by run.repairBetweenFights. */
+  /** Player damage carried from earlier (structure share and water per part), applied as is. */
   carry?: PlayerCarry;
   /**
    * Sandbox assists (playerAdvantage, playerCrewStats, pack scaling) apply. Off
@@ -247,6 +248,9 @@ export class World {
   result: Result | null = null;
   /** Fight time at which the result screen should appear. */
   resultAt: number | null = null;
+  /** Points each enemy was built with (by enemy index), from its setup. */
+  readonly enemyBudgets: number[] = [];
+  private lastEnemyLost: Lee | null = null;
   private nextShellId = 1;
   private nextGroup = 1;
   private nextLeeId = 1;
@@ -293,6 +297,7 @@ export class World {
         }
       }
       this.enemies.push(e);
+      this.enemyBudgets.push(setup.budget ?? 0);
       this.boardCrew(e, setup.crew);
       const jitter = tuning.enemyAI.rangeJitter;
       this.brains.set(e.id, { orbitDir: 0, range: ai.preferredRange + this.rng.range(-jitter, jitter), seek: null, mode: 'orbit', side: 0, nextOrder: 0 });
@@ -315,7 +320,10 @@ export class World {
       used.add(home);
       const def = LEE_DEFS[c.type] ?? LEE_DEFS.basic;
       const mods = combineMods(c.mods, boat.mods.crew, assistMods);
-      boat.crew.lees.push(createLee(this.nextLeeId++, slot + 1, def, boat.side, boat, home, this.tuning, { uid: c.uid, label: c.label, level: c.level, mods, job: c.job }));
+      const lee = createLee(this.nextLeeId++, slot + 1, def, boat.side, boat, home, this.tuning, { uid: c.uid, label: c.label, level: c.level, mods, job: c.job });
+      // Wounds carried from earlier fights.
+      if (c.hp !== undefined && c.hp < 1) lee.hp = Math.max(1, lee.maxHp * Math.max(0, c.hp));
+      boat.crew.lees.push(lee);
     });
     updateMobility(boat, this.tuning);
   }
@@ -537,13 +545,41 @@ export class World {
 
   /** Restore the player's damage from the last fight, minus the between-fight repair. */
   private applyCarry(carry: PlayerCarry): void {
-    const repair = Math.min(1, Math.max(0, this.tuning.run.repairBetweenFights));
     this.player.parts.forEach((part, i) => {
       const s = part.layers[part.layers.length - 1];
-      const frac = carry.hp[i] ?? 1;
-      s.hp = s.maxHp * (frac + (1 - frac) * repair);
-      part.water = Math.min(part.capacity, (carry.water[i] ?? 0) * (1 - repair));
+      const frac = Math.min(1, Math.max(0, carry.hp[i] ?? 1));
+      s.hp = s.maxHp * frac;
+      part.water = Math.min(part.capacity, Math.max(0, carry.water[i] ?? 0));
     });
+  }
+
+  /**
+   * How each beaten enemy went out (sunk, or captured: crew gone, still
+   * afloat), what it was worth, and the items on tiles that weren't blown out.
+   */
+  enemyOutcomes(): EnemyOutcome[] {
+    const out: EnemyOutcome[] = [];
+    this.enemies.forEach((e, i) => {
+      const how = this.isSinking(e) ? 'sunk' : isDerelict(e) ? 'captured' : null;
+      if (!how) return;
+      const intact: string[] = [];
+      for (const [slotId, item] of Object.entries(e.build.loadout)) {
+        const gun = /^att:(.+)$/.exec(slotId)?.[1];
+        const slot = slotById(e.ship, gun ?? slotId);
+        const tile = slot?.tile ? tileAtCell(e.grid, slot.tile[0], slot.tile[1]) : null;
+        if (!tile || tile.blown || tile.fixture?.destroyed && (slot!.type === 'edge' || slot!.type === 'interior')) continue;
+        if (slot!.type === 'rail' && tile.rails.some((r) => r.slot === slotId && r.destroyed)) continue;
+        intact.push(item);
+      }
+      out.push({ ship: e.type, how, budget: this.enemyBudgets[i] ?? 0, intact });
+    });
+    return out;
+  }
+
+  /** The last enemy Lee to fall other than by sinking (who might surrender), or null. */
+  lastEnemyStanding(): { type: string; level: number } | null {
+    const l = this.lastEnemyLost;
+    return l ? { type: l.def.id, level: l.level } : null;
   }
 
   /** Snapshot of the player's damage, to carry into the next fight. */
@@ -672,6 +708,7 @@ export class World {
 
   /** Count a lost Lee and tell the renderer. */
   private noteLost(lee: Lee): void {
+    if (lee.side === 'enemy' && lee.lostCause !== 'sank') this.lastEnemyLost = lee;
     const s = this.stats[lee.side];
     s.leesLost++;
     if (lee.lostCause) s.lostBy[lee.lostCause]++;

@@ -24,6 +24,8 @@ export interface CrewSpec {
   mods?: StatMods;
   /** Starting job (default: from its tile's station). */
   job?: Job;
+  /** HP share carried from earlier fights (default 1). */
+  hp?: number;
 }
 
 export interface BoatSetup {
@@ -31,6 +33,8 @@ export interface BoatSetup {
   crew: CrewSpec[];
   /** Enemy AI profile (omit for the player). */
   ai?: AiProfile | null;
+  /** Points it was built with (generated enemies): what it pays when beaten. */
+  budget?: number;
 }
 
 /**
@@ -132,7 +136,7 @@ export function enemySetup(spec: EnemySpec, t: Tuning, opts: { levelBonus?: numb
   });
   const homes = autoArrange(build, crew, t);
   crew.forEach((c, i) => (c.home = homes[i]));
-  return { build, crew, ai: { ...(t.ai[spec.ai] ?? t.ai.standard) } };
+  return { build, crew, ai: { ...(t.ai[spec.ai] ?? t.ai.standard) }, budget: spec.budget ?? 0 };
 }
 
 /** One enemy boat of a Phase 3 archetype ('standard', 'boarder', 'heavy'), level 1. */

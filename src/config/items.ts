@@ -65,8 +65,10 @@ export interface ItemDef {
   rail?: RailKind;
   /** Explodes when its tile is blown out (tuning.explosion, × params.blast). */
   volatile?: boolean;
-  /** Relative chance of showing up as a reward or starting part (0 = never). */
+  /** Relative chance of showing up in a shop, a wreck or a reward (0 = never). */
   rewardWeight: number;
+  /** Rare: only the trinket dealer and special rewards offer it, never ordinary shops or enemies. */
+  rare?: boolean;
 }
 
 const fx = (scope: EffectScope, stat: string, op: 'mul' | 'add', param = stat): EffectDef => ({ scope, stat, op, param });
@@ -265,6 +267,21 @@ const list: ItemDef[] = [
     volatile: true,
     rewardWeight: 1.5,
   },
+  {
+    id: 'crowsNest',
+    name: "Crow's Nest",
+    icon: '🪺',
+    description: 'While manned: see enemy parts on the sea map, and gunners aim a little better.',
+    tradeoff: 'Less aim than a Lookout; its Lee is an easy pistol target.',
+    category: 'station',
+    fits: ['interior'],
+    tags: ['barrage'],
+    // Works like a Lookout in a fight (a weaker one), and reveals parts on the map.
+    params: { accuracy: 0.15, exposure: 1.3 },
+    effects: [],
+    station: 'lookout',
+    rewardWeight: 1.2,
+  },
 
   // ------------------------------------------------------------ rail items
   {
@@ -446,6 +463,7 @@ const list: ItemDef[] = [
     params: { hpFlat: 10 },
     effects: [fx('allParts', 'hpFlat', 'add')],
     rewardWeight: 1,
+    rare: true,
   },
   {
     id: 'sextant',
@@ -499,6 +517,61 @@ const list: ItemDef[] = [
     params: { reach: 1.5, swing: 0.7 },
     effects: [fx('boat', 'boardRange', 'mul', 'reach'), fx('boat', 'swing', 'mul')],
     rewardWeight: 1,
+  },
+  // Between-fight treasures: they do nothing in a fight (the run reads them).
+  {
+    id: 'ledger',
+    name: "Haggler's Ledger",
+    icon: '📒',
+    description: 'Shop rerolls cost 40% less.',
+    tradeoff: 'Nothing in a fight.',
+    category: 'treasure',
+    fits: ['treasure'],
+    tags: [],
+    params: { rerollCost: 0.6 },
+    effects: [],
+    rewardWeight: 0.8,
+    rare: true,
+  },
+  {
+    id: 'luckyCoin',
+    name: 'Lucky Coin',
+    icon: '🪙',
+    description: 'Reroll costs climb slower.',
+    tradeoff: 'Nothing in a fight.',
+    category: 'treasure',
+    fits: ['treasure'],
+    tags: [],
+    params: { rerollRamp: 1.2 },
+    effects: [],
+    rewardWeight: 0.8,
+    rare: true,
+  },
+  {
+    id: 'surgeonKit',
+    name: "Ship's Surgeon's Kit",
+    icon: '🩹',
+    description: 'Lees heal 25% more of their wounds after every fight.',
+    tradeoff: 'Nothing in a fight.',
+    category: 'treasure',
+    fits: ['treasure'],
+    tags: ['bulwark'],
+    params: { heal: 0.25 },
+    effects: [],
+    rewardWeight: 0.8,
+  },
+  {
+    id: 'carpenterChest',
+    name: "Carpenter's Chest",
+    icon: '🪚',
+    description: 'The hull repairs 25% more of its damage after every fight.',
+    tradeoff: 'Nothing in a fight.',
+    category: 'treasure',
+    fits: ['treasure'],
+    tags: ['bulwark'],
+    params: { repair: 0.25 },
+    effects: [],
+    rewardWeight: 0.8,
   },
 
   // ------------------------------------------------------------ trinkets
@@ -558,7 +631,7 @@ const list: ItemDef[] = [
     id: 'spyglassTrinket',
     name: 'Spyglass',
     icon: '🧿',
-    description: 'Spotting +30%.',
+    description: 'Spotting +30%. On the sea map: see enemy crews.',
     tradeoff: 'Sword damage −10%.',
     category: 'trinket',
     fits: ['trinket'],

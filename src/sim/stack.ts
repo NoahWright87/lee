@@ -15,7 +15,7 @@ import { SHIPS } from '../config/ships';
 import { attachmentSlotId, type Facing } from '../config/slots';
 import { buildGrid, tileAtCell, type Grid } from './grid';
 import { slotById } from './loadout';
-import { canEquip, itemOf, settleMustPlace, treasureSlots, unequip, wearTrinket, type CrewMember, type RunState } from './run';
+import { canEquip, itemOf, treasureSlots, unequip, wearTrinket, type CrewMember, type RunState } from './run';
 import type { Tuning } from '../config/tuning';
 
 export type TileLayer = 'lee' | 'station' | 'floor';
@@ -294,7 +294,6 @@ export function applyMove(run: RunState, p: Pick, d: Dest, _t?: Tuning): Displac
     liftStations(run, [p.spot, to]);
     for (const l of layers) swapLayer(run, p.spot, to, l, out, l === p.layer);
     lifted.clear();
-    settleMustPlace(run);
     return out;
   }
   // A Lee from ashore: whoever stands there goes ashore.
@@ -309,7 +308,6 @@ export function applyMove(run: RunState, p: Pick, d: Dest, _t?: Tuning): Displac
     }
     m.home = tileIndex(run, to.col, to.row);
     m.job = null;
-    settleMustPlace(run);
     return out;
   }
   // An item from cargo (or a trinket off a Lee onto the boat: not allowed).
@@ -332,7 +330,6 @@ export function applyMove(run: RunState, p: Pick, d: Dest, _t?: Tuning): Displac
     }
     run.loadout[slot] = p.uid;
   }
-  settleMustPlace(run);
   return out;
 }
 

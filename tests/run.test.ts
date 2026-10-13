@@ -1,9 +1,8 @@
 // The run model: starting from a ship's preset (Phase 5), equipment, crew,
-// permadeath, XP and levels, rewards (and the forced first equip), Auto-equip,
-// the temporary encounter list and its escalation, and the save.
+// permadeath, XP and levels, gold and spoils (Phase 6), wounds and hull damage
+// carried with a free share fixed, special picks, Auto-equip, and the save.
 
 import { describe, expect, test } from 'vitest';
-import { ENCOUNTERS } from '../src/config/encounters';
 import { defaultTuning } from '../src/config/tuning';
 import { createLee } from '../src/sim/crew';
 import { createBoat } from '../src/sim/boat';
@@ -19,19 +18,20 @@ import {
   canEquip,
   cargo,
   chooseBonus,
-  encounterFor,
+  answerSurrender,
   enemySetups,
+  hullShare,
+  type FightReport,
   equip,
   loadRun,
   newRun,
-  rewardOffer,
+  specialReward,
   saveRun,
   SAVE_VERSION,
   setupFor,
   takeReward,
   unequip,
   autoEquipAll,
-  mustPlaceOpen,
   whereIs,
   wearTrinket,
   type RunState,
@@ -42,6 +42,11 @@ const t = defaultTuning();
 
 function drafted(ship = 'basic', seed = 7): RunState {
   return newRun(ship, seed, t);
+}
+
+/** A fight report from fake Lees (no enemies beaten unless given). */
+function report(run: RunState, won: boolean, ls: ReturnType<typeof lees>, extra: Partial<FightReport> = {}): FightReport {
+  return { won, lees: ls, enemies: [], lastEnemy: null, hull: run.hull, ...extra };
 }
 
 /** Fake Lees for a fight result: one per crew member, alive unless listed. */
@@ -117,7 +122,7 @@ describe('equipment', () => {
     const m = run.crew[0];
     expect(wearTrinket(run, leg.uid, m.uid, 0)).toBe(true);
     expect(setupFor(run, t).crew[0].mods?.hp).toBeCloseTo(1.25);
-    applyFight(run, lees(run, [m.uid]), true, t);
+    applyFight(run, report(run, true, lees(run, [m.uid])), t);
     expect(run.crew.some((x) => x.uid === m.uid)).toBe(false);
     expect(cargo(run).some((x) => x.uid === leg.uid)).toBe(true);
   });
@@ -127,9 +132,17 @@ describe('after a fight', () => {
   test('the dead are gone for good with a memorial line; survivors earn XP and level up', () => {
     const run = drafted();
     const [dead, worker] = run.crew;
-    const post = applyFight(run, lees(run, [dead.uid], (l) => {
-      if (l.uid === worker.uid) l.stats.damageDealt = 400;
-    }), true, t);
+    const post = applyFight(
+      run,
+      report(
+        run,
+        true,
+        lees(run, [dead.uid], (l) => {
+          if (l.uid === worker.uid) l.stats.damageDealt = 400;
+        }),
+      ),
+      t,
+    );
     expect(post.lost).toHaveLength(1);
     expect(post.lost[0].line).toContain(dead.label);
     expect(post.lost[0].line).toContain(LEE_DEFS[dead.type].adverb);
@@ -156,49 +169,91 @@ describe('after a fight', () => {
 
   test('a loss, or losing every Lee, ends the run', () => {
     const lost = drafted();
-    applyFight(lost, lees(lost), false, t);
+    applyFight(lost, report(lost, false, lees(lost)), t);
     expect(lost.stage).toBe('over');
     const wiped = drafted();
-    applyFight(wiped, lees(wiped, wiped.crew.map((m) => m.uid)), true, t);
+    applyFight(wiped, report(wiped, true, lees(wiped, wiped.crew.map((m) => m.uid))), t);
     expect(wiped.stage).toBe('over');
     expect(wiped.fallen).toHaveLength(SHIPS.basic.preset.crew.length);
   });
 
-  test('rewards: three cards, never all recruits; a recruit into a full crew needs someone released first', () => {
+  test('a win pays gold for every ship beaten; a capture also takes a part from an intact tile; sinking takes none', () => {
     const run = drafted();
-    for (let f = 0; f < 12; f++) {
-      run.won = f;
-      run.fight = f + 2;
-      const cards = rewardOffer(run, t);
-      expect(cards).toHaveLength(3);
-      expect(cards.some((c) => c.kind === 'item')).toBe(true);
-    }
+    const gold = run.gold;
+    const post = applyFight(
+      run,
+      report(run, true, lees(run), {
+        enemies: [
+          { ship: 'basic', how: 'sunk', budget: 300, intact: ['cannon'] },
+          { ship: 'friend', how: 'captured', budget: 500, intact: ['gatling'] },
+        ],
+      }),
+      t,
+    );
+    expect(post.gold).toBe(Math.round(300 * t.spoils.goldPerBudget) + Math.round(500 * t.spoils.goldPerBudget));
+    expect(run.gold).toBe(gold + post.gold);
+    expect(run.totals.goldEarned).toBe(post.gold);
+    expect(post.spoils).toEqual(['gatling']);
+    expect(cargo(run).some((x) => x.item === 'gatling')).toBe(true);
+    expect(cargo(run).some((x) => x.item === 'cannon')).toBe(false);
+    expect(post.outcomes.map((o) => o.how)).toEqual(['sunk', 'captured']);
+    expect(post.reward).toEqual([]); // no 1-of-3 after an ordinary fight
+  });
+
+  test('the last enemy Lee may surrender; taking him into a full crew needs someone released first', () => {
+    const t2 = defaultTuning();
+    t2.spoils.surrender = 1;
+    const run = drafted();
+    while (run.crew.length < t2.ships.basic.crewMax) addCrew(run, 'basic', 1, t2);
+    const post = applyFight(run, report(run, true, lees(run), { lastEnemy: { type: 'hard', level: 3 } }), t2);
+    expect(post.surrender).toEqual({ type: 'hard', level: 3 });
+    expect(answerSurrender(run, true, t2)).toBe(false);
+    const gone = run.crew[0].uid;
+    expect(answerSurrender(run, true, t2, gone)).toBe(true);
+    const hard = run.crew.at(-1)!;
+    expect(hard.type).toBe('hard');
+    expect(hard.level).toBe(3);
+    expect(hard.home).toBeNull();
+    expect(run.crew.some((m) => m.uid === gone)).toBe(false);
+    // Never on a zero chance.
+    const t3 = defaultTuning();
+    t3.spoils.surrender = 0;
+    const run2 = drafted();
+    expect(applyFight(run2, report(run2, true, lees(run2), { lastEnemy: { type: 'hard', level: 1 } }), t3).surrender).toBeNull();
+  });
+
+  test('damage and wounds carry; after a fight a free share of what is missing is fixed', () => {
+    const run = drafted();
+    const ls = lees(run);
+    ls[0].hp = ls[0].maxHp * 0.4;
+    applyFight(run, report(run, true, ls, { hull: run.hull.map(() => 0.5) }), t);
+    const r = t.run.autoRepair;
+    expect(run.hull[0]).toBeCloseTo(0.5 + 0.5 * Math.min(1, r + t.run.handyRepair * run.crew.filter((m) => m.type === 'handy' && m.home !== null).length));
+    expect(hullShare(run, t)).toBeLessThan(1);
+    expect(run.crew[0].hp).toBeCloseTo(0.4 + 0.6 * t.run.autoHeal);
+    // The wounds go into the next fight.
+    const w = new World(t, 1, { player: setupFor(run, t), enemies: [], assists: false, carry: { hp: run.hull, water: run.hull.map(() => 0) } });
+    const l = w.player.crew.lees.find((x) => x.uid === run.crew[0].uid)!;
+    expect(l.hp / l.maxHp).toBeCloseTo(run.crew[0].hp);
+    expect(w.player.parts[0].layers.at(-1)!.hp / w.player.parts[0].layers.at(-1)!.maxHp).toBeCloseTo(run.hull[0]);
+  });
+
+  test('hard fights offer a special pick; a recruit into a full crew needs someone released first', () => {
+    const run = drafted();
+    const cards = specialReward(run, t);
+    expect(cards).toHaveLength(t.run.rewardChoices);
+    expect(cards.some((c) => c.kind === 'recruit')).toBe(true);
     while (run.crew.length < t.ships.basic.crewMax) addCrew(run, 'basic', 1, t);
-    run.pending = { fight: 1, won: true, xp: [], lost: [], levelUps: [], reward: [{ kind: 'recruit', type: 'deft', level: 1 }], rewardTaken: false };
+    run.encounter = { stop: null, type: 'hard', budget: 400, enemies: [], gold: 1, special: true };
+    const post = applyFight(run, report(run, true, lees(run)), t);
+    expect(post.reward.length).toBe(t.run.rewardChoices);
+    post.reward = [{ kind: 'recruit', type: 'deft', level: 2 }];
     expect(takeReward(run, 0, t)).toBe(false);
     const gone = run.crew[0].uid;
     expect(takeReward(run, 0, t, gone)).toBe(true);
     expect(run.crew.some((m) => m.uid === gone)).toBe(false);
     expect(run.crew.at(-1)!.type).toBe('deft');
     expect(run.crew.at(-1)!.home).toBeNull(); // recruits wait ashore
-  });
-
-  test('the first fight\'s reward goes to cargo and must be equipped before the next fight; later ones needn\'t', () => {
-    const run = drafted();
-    applyFight(run, lees(run), true, t);
-    run.pending!.reward = [{ kind: 'item', item: 'spikes' }];
-    expect(takeReward(run, 0, t)).toBe(true);
-    const spikes = cargo(run).find((x) => x.item === 'spikes')!;
-    expect(spikes).toBeDefined();
-    expect(whereIs(run, spikes.uid)).toBeNull(); // nothing equips itself
-    expect(mustPlaceOpen(run)).toBe(true);
-    expect(equip(run, spikes.uid, 'rail:4,1:bow')).toBe(true);
-    expect(mustPlaceOpen(run)).toBe(false);
-    // The second reward is free to sit in cargo.
-    applyFight(run, lees(run), true, t);
-    run.pending!.reward = [{ kind: 'item', item: 'fence' }];
-    takeReward(run, 0, t);
-    expect(mustPlaceOpen(run)).toBe(false);
   });
 
   test('Auto-equip fills empty spots from cargo and places Lees ashore, without moving anything already placed', () => {
@@ -221,36 +276,32 @@ describe('after a fight', () => {
 });
 
 describe('encounters', () => {
-  test('the temporary list, then the last entry again with higher levels and eventually more crew', () => {
-    const n = ENCOUNTERS.length;
-    expect(encounterFor(1, t).def).toBe(ENCOUNTERS[0]);
-    expect(encounterFor(n, t).repeat).toBe(0);
-    const a = encounterFor(n + 1, t);
-    const b = encounterFor(n + 4, t);
-    expect(a.def).toBe(ENCOUNTERS[n - 1]);
-    expect(b.levelBonus).toBeGreaterThan(a.levelBonus);
-    expect(b.extraCrew).toBeGreaterThanOrEqual(a.extraCrew);
+  test('the fight being set up is built from its enemy specs, with levels explained by auto-picked bonuses', () => {
     const run = drafted();
-    run.fight = n + 6;
-    const late = enemySetups(run, t);
-    run.fight = n;
-    const base = enemySetups(run, t);
-    expect(late[0].crew[0].level).toBeGreaterThan(base[0].crew[0].level!);
-    expect(late[0].crew.length).toBeGreaterThan(base[0].crew.length);
-  });
-
-  test('enemies are built from the same content, with their levels explained by auto-picked bonuses', () => {
-    const run = drafted();
-    run.fight = 5;
-    for (const s of enemySetups(run, t)) {
+    run.encounter = {
+      stop: null,
+      type: 'fight',
+      budget: 0,
+      gold: 1,
+      special: false,
+      enemies: [
+        { ship: 'basic', ai: 'standard', crew: [{ type: 'quick', level: 3 }, { type: 'basic', count: 2 }] },
+        { ship: 'friend', ai: 'boarder', crew: [{ type: 'hard', count: 3 }] },
+      ],
+    };
+    const setups = enemySetups(run, t);
+    expect(setups).toHaveLength(2);
+    for (const s of setups) {
       for (const c of s.crew) {
         expect(LEE_DEFS[c.type]).toBeDefined();
         if ((c.level ?? 1) > 1) expect(Object.keys(c.mods ?? {}).length).toBeGreaterThan(0);
       }
     }
+    // Stable: the same specs build the same boats.
+    expect(JSON.stringify(enemySetups(run, t))).toBe(JSON.stringify(setups));
     // And they fight in a real world.
-    const w = new World(t, 1, { player: setupFor(run, t), enemies: enemySetups(run, t), assists: false });
-    expect(w.enemies.length).toBe(ENCOUNTERS[4].enemies.length);
+    const w = new World(t, 1, { player: setupFor(run, t), enemies: setups, assists: false });
+    expect(w.enemies.length).toBe(2);
   });
 });
 

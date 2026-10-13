@@ -1,10 +1,11 @@
 import { defaultAiProfiles, type AiProfile } from './encounters';
 import { defaultItemParams } from './items';
 import { defaultTraits, LEE_DEFS, type LeeStats } from './lees';
+import { defaultStopTuning } from './sea';
 import { defaultShipStats, type ShipStats } from './ships';
 
 /** Bump when the tuning shape changes incompatibly (saved tuning from another version is dropped). */
-export const TUNING_VERSION = 5;
+export const TUNING_VERSION = 6;
 
 // Every gameplay number lives here. The sim reads from a live Tuning object, so
 // most changes apply the next frame. Values marked "next run" in the tuning
@@ -372,32 +373,116 @@ export function defaultTuning() {
       /** Extra points within a tier by severity (lowest HP, most water...). */
       severitySpan: 10,
     },
-    /** The run between fights (the temporary loop; the sea map replaces it later). */
+    /** The run between fights: trinkets, rewards at special stops, automatic repair and healing. */
     run: {
-      /** Lee cards per draft round. */
-      draftChoices: 3,
-      /** Parts offered after the draft (pick one). */
-      startPartChoices: 3,
-      /** Cards offered after a fight (pick one). */
-      rewardChoices: 3,
-      /** Chance one of the reward cards is a recruit... */
-      recruitChance: 0.45,
-      /** ...guaranteed after every Nth fight (0 = never guaranteed). */
-      recruitEvery: 3,
-      /** Level of a new recruit: 1 + this × fights won (0 = always level 1). */
-      recruitLevelPerFight: 0,
-      /** Fraction of hull damage and water repaired between fights (1 = fresh boat). */
-      repairBetweenFights: 1,
-      /** Fraction of lost HP surviving Lees heal between fights (1 = full). */
-      healBetweenFights: 1,
-      /** Most items in the cargo hold (0 = unlimited). */
-      cargoLimit: 0,
       /** Trinket slots per Lee. */
       trinketSlots: 2,
-      /** Reward card weights by kind (a recruit is decided first, by recruitChance). */
-      weightPart: 5,
-      weightTreasure: 1.5,
-      weightTrinket: 2.5,
+      /** Cards offered by a special reward (hard fights) or a wreck. */
+      rewardChoices: 3,
+      /** Share of the missing hull HP repaired for free after every fight or event (× difficulty). */
+      autoRepair: 0.3,
+      /** Share of their missing HP Lees heal for free after every fight or event (× difficulty). */
+      autoHeal: 0.3,
+      /** Each Handy Lee aboard adds this to the free repair share. */
+      handyRepair: 0.05,
+      /** A Cove heals and repairs this share of what's missing. */
+      coveHeal: 0.5,
+    },
+    /** Enemies built from a budget (src/sim/budget.ts; point costs in src/config/economy.ts). */
+    budget: {
+      /** Budget of a normal fight at depth 0, points (a crewed Basic Ship with two guns is ~230). */
+      base: 230,
+      /** Budget × this per depth (one journey = one depth). */
+      growth: 1.4,
+      /** Each stop's budget is randomly ± this share. */
+      randomness: 0.12,
+      /** Least budget per enemy ship (a crewed Basic Ship). */
+      minShip: 230,
+      /** Most enemy ships in one fight. */
+      maxShips: 3,
+      /** Chance of one more ship each time the budget can afford it. */
+      extraShip: 0.4,
+      /** A chassis is only picked if it costs at most this share of the ship's budget. */
+      chassisShare: 0.6,
+      /** Starting weight on the chassis's own tags (others start at 1). */
+      chassisTag: 4,
+      /** Each pick adds this to the weight of the tags it carries (a ship piles into its style). */
+      tagNudge: 0.6,
+      /** Weight of untagged things (cannons, Basic Lees) against tagged ones. */
+      neutral: 2,
+      /** Danger rating: one skull per this ratio of the stop's budget to your ship's value (1–5 skulls). */
+      dangerPerSkull: 0.3,
+    },
+    /** The sea map between two ports (src/sim/seaMap.ts). Map units: the map is 100 wide. */
+    map: {
+      /** Travel radius: any stop this close can be reached in one hop. */
+      radius: 30,
+      /** The guaranteed route hops this share of the radius toward the destination. */
+      routeHop: 0.9,
+      /** The guaranteed route bends up to this many degrees off the straight line. */
+      routeWiggle: 35,
+      /** Distance between the two ports on the first journey... */
+      length: 110,
+      /** ...growing by this share per journey. */
+      lengthGrowth: 0.15,
+      /** Stops on the first journey (ports not counted)... */
+      stops: 8,
+      /** ...growing by this share per journey. */
+      stopGrowth: 0.2,
+      /** Stops are at least this far apart. */
+      spacing: 11,
+      /** Destination ports offered when you leave port. */
+      destinations: 3,
+      /** Chance a destination's sea has a second style on top of its first. */
+      secondStyle: 0.25,
+      /** Seconds the boat takes to sail one hop on the map. */
+      hopTime: 0.6,
+    },
+    /** Stop types on the sea map (src/config/sea.ts): budget multiplier and how often each appears. */
+    stops: defaultStopTuning(),
+    /** What fights pay. */
+    spoils: {
+      /** Gold per point of a beaten ship's budget. */
+      goldPerBudget: 0.1,
+      /** Parts taken from a captured ship (its crew gone, still afloat), from tiles that weren't blown out. */
+      captureParts: 1,
+      /** Chance the last enemy Lee standing surrenders and offers to join (× difficulty). */
+      surrender: 0.2,
+      /** An abandoned ship is salvaged for this many gold per point of its stop's budget. */
+      salvage: 0.12,
+    },
+    /** Gold, prices, the bank (src/sim/port.ts). */
+    economy: {
+      /** Gold per point of an item's cost (buy price). */
+      goldRate: 1,
+      /** Prices × (1 + this) per journey. */
+      inflation: 0.05,
+      /** Sell price as a share of the buy price... */
+      sellShare: 0.4,
+      /** ...or at a port that specializes in it. */
+      sellShareSpecialty: 0.6,
+      /** Buy price × this for things with a port's specialty tag. */
+      specialtyBuy: 0.8,
+      /** A recruit costs its Lee point cost × this (× gold rate). */
+      recruitPrice: 1.5,
+      /** First shop reroll in a port, gold (× inflation)... */
+      rerollBase: 12,
+      /** ...× this for each reroll after it in the same port. */
+      rerollRamp: 1.5,
+      /** Gold a full hull repair costs, per point of the chassis's cost (× missing share, × difficulty). */
+      repairCost: 0.35,
+      /** Gold a full heal of one Lee costs, per point of its cost (× missing share, × difficulty). */
+      healCost: 0.5,
+      /** An old hull trades in for this share of its price. */
+      tradeIn: 0.5,
+      /** Bank interest on gold carried out of a port with a bank... */
+      bankRate: 0.1,
+      /** ...at most this much (× inflation). */
+      bankCap: 60,
+      /** Starting gold with a preset ship (× difficulty)... */
+      startGold: 60,
+      /** ...and for a Custom start. */
+      customGold: 900,
     },
     /** XP and level-ups (the same for enemy Lees, picked automatically). */
     leveling: {
@@ -425,13 +510,6 @@ export function defaultTuning() {
       hpBonusSize: 0.1,
       /** Bonuses offered per level-up. */
       choices: 3,
-    },
-    /** After the temporary encounter list runs out: repeat the last one, harder. */
-    escalation: {
-      /** Crew levels added per repeat. */
-      levelsPerRepeat: 1,
-      /** Every Nth repeat adds one more Lee to each enemy boat (up to its ship's max). 0 = never. */
-      extraCrewEvery: 2,
     },
     /** The refit's stat bars: the value that fills each bar (bars can overflow past full). */
     refit: {
