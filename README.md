@@ -10,7 +10,7 @@ Phase 4 turns the test bench into the start of a run: **do ship, crew and equipm
 
 Phase 5 is about operating and reading the game: **can a player with zero naval knowledge understand a fight and steer it with a few taps, without it becoming less of an autobattler?** ([`docs/PRD_PHASE5.md`](docs/PRD_PHASE5.md))
 
-Phase 6 (next, not built yet) is the run between fights: **does choosing where to sail, what to fight, and what to buy make each run feel like your own story, while keeping the fights the heart of the game?** ([`docs/PRD_PHASE6.md`](docs/PRD_PHASE6.md)) What's still open from Phase 5: [`docs/TODO.md`](docs/TODO.md).
+Phase 6 is the run between fights: **does choosing where to sail, what to fight, and what to buy make each run feel like your own story, while keeping the fights the heart of the game?** ([`docs/PRD_PHASE6.md`](docs/PRD_PHASE6.md)) What's still open: [`docs/TODO.md`](docs/TODO.md).
 
 The earlier grid autobattler lives in [`legacy/`](legacy/). It is not part of the build.
 
@@ -21,15 +21,34 @@ npm install
 npm run dev        # http://localhost:5173 (--host is on, so your phone on the same Wi-Fi can open it)
 npm test           # simulation unit tests (vitest)
 npm run build      # typecheck + production build to dist/ (what Netlify deploys)
-npm run sweep      # tuning tool: a scripted captain sails each ship through the encounter list (slow)
+npm run sweep      # tuning tool: a scripted captain sails each ship port to port through generated maps (slow)
 ```
 
 Stack: TypeScript, [Phaser 3](https://phaser.io), Vite, lil-gui for the tuning panel, and Vitest.
 
+## Ports and the sea map (Phase 6)
+
+**Menu → choose a ship and a difficulty → PORT → SAIL: pick a destination → SEA MAP → tap stops (fights, events) → the destination's PORT → …** endless, until your boat sinks or every Lee is dead. The temporary encounter list and the 1-of-3 reward after every fight are gone.
+
+- **Gold** is the one currency, shown on the map, in port and in refit. Every won fight pays ~10% of each beaten ship's budget (`spoils.goldPerBudget`). **Sunk**: gold only. **Captured** (its crew all dead, still afloat): gold plus a part from a tile that wasn't blown out (`spoils.captureParts`). Sometimes the **last enemy Lee standing surrenders** and asks to join (`spoils.surrender` × difficulty; take him, or send him off).
+- **Budget-built enemies** (`sim/budget.ts`, point costs in `config/economy.ts`). A stop's budget is `budget.base × growth^depth × stop multiplier × map style`, ±`randomness`. A ship picks a chassis it can afford (`budget.chassisShare`), then spends the rest on Lees (by type and level) and parts, weighted toward its tags (`chassisTag`, and each pick nudges by `tagNudge`, so it piles into its style). Its first gun is one of the chassis's **signature guns** (long guns on a Long Distance Relation Ship...), and a styled chassis rarely buys guns that can't reach its AI's range. The chassis sets the AI (Friend → boarder, Long Distance → skirmisher, Hard → heavy; a Basic Ship goes by its parts). Big budgets split into **packs** (`minShip`, `maxShips`, `extraShip`). The sandbox's encounter builder has **Generate** (a budget, optionally a chassis).
+- **The sea map** (`sim/seaMap.ts`). A sea 100 units wide between the port you left (bottom) and your destination (top); it scrolls when it's taller than the screen. Any stop inside the **travel radius** (`map.radius`) is one hop: tap it to see it, tap again (or *Sail here*) to go. Generation lays a **guaranteed route** first (hops of `routeHop` × the radius toward the destination, bending up to `routeWiggle`), then fills in stops that are each within reach of another, so there's always a way through and the map branches. Stops per journey and the map's length grow with depth. You can backtrack freely; cleared stops do nothing.
+- **Stops** (`config/sea.ts`, numbers in `tuning.stops`): **Fight**, **Hard fight** (×1.5 budget, plus a rare pick: a rare treasure, a Lee a level above your best, parts), **Abandoned ship** (salvage gold), **Wreck** (pick a part), **Cove** (free partial heal and repair), **Castaway** (a Lee joins), **Port** (the destination). **Fog** hides a stop until you arrive. Each stop shows its icon and a **danger rating** (1–5 💀: its budget against your ship's value, `budget.dangerPerSkull`).
+- **Intel is levels**: you always see the enemy's ship type; a worn **Spyglass** adds its crew (size, types, levels); a manned **Crow's Nest** (new station; a weaker Lookout in a fight) adds its parts.
+- **Map styles** (chosen with the destination; they combine): Open water, Crowded lanes (more, weaker fights), Wide sea (few stops, longer hops), Foggy, Dangerous (more hard fights, better pay), Salvage grounds.
+- **Ports** (`sim/port.ts`, `config/ports.ts`, the screen in `ui/port.ts`). A name, 1–2 **specialties** (a tag, or a Lee type), and services: the **Shipwright** (repair) and **Tavern** (heal, hire) always; a **Shop**, a **Specialty shop**, a rare **Trinket dealer**, a **Shipyard**, a **Bank** sometimes. Prices: point cost × `economy.goldRate` × depth inflation × −20% for the port's specialty tags; selling pays 40% (60% at a matching port). Each shop **rerolls** for gold, ×1.5 each time in that port (the Haggler's Ledger and the Lucky Coin soften it). Destinations show their name, specialties, services and the kind of sea, and lean toward your build's tags.
+- **Repair and healing**: damage and wounds now carry between fights. After every fight or event a free share is fixed (`run.autoRepair`, `autoHeal` × difficulty; +5% repair per Handy Lee aboard; the Carpenter's Chest and the Surgeon's Kit add more). The rest is paid in port, or free at a Cove.
+- **Cargo**: the hold has a limit per ship (`tuning.ships.<id>.cargo`; Lees ashore don't count). You can't sail (or leave a stop) over it: sell, equip, leave it on the dock, or throw it overboard. **Refit** is open from the map and the port (DONE goes back); buying and selling happen in port.
+- **The bank**: leave a port that has one and the gold you carry earns interest (`economy.bankRate`, capped by `bankCap`), paid at the next port.
+- **Leaving port** with cargo that fits an empty slot, or a Lee ashore, warns: **Auto-equip, then sail** or **Leave anyway** (this replaces Phase 5's forced first equip).
+- **The Shipyard** sells hulls. Buying one puts your crew and gear into storage (everything off, everyone ashore) to place in refit, and trades the old hull in (`economy.tradeIn` × its hull share).
+- **Difficulty** (`config/difficulty.ts`): Easy / Normal / Hard move free fixing, repair and heal prices, budget growth, the surrender chance and starting gold. **Custom start**: no ship, `economy.customGold`, and a port with every service and a double stock: buy a hull, hire a crew, fit it, sail.
+- **Run Over** shows depth, ports visited, gold earned, fights won, ships sunk and captured, and the memorial.
+
 ## Commands and clarity (Phase 5)
 
 - **Ships are presets.** **Basic Ship** (all-rounder), **Long Distance Relation Ship** (long guns, fast), **Friend Ship** (the boarder: bow gatling, spikes, Swinging Ropes, a big crew) and **Hard Ship** (cannons, carronade, powder store, plating). Each starts with its crew placed and its parts fitted: pick one and you're at the refit, ready to launch. No draft, no starting part.
-- **First reward must go on.** Fight 1 is easy and gives the usual reward choice, but the reward isn't auto-equipped: LAUNCH stays locked (and the item glows in cargo) until it's fitted or the recruit is placed. Only the run's first reward is forced.
+- ~~**First reward must go on.**~~ Removed in Phase 6: leaving port with something unused warns instead.
 - **Jobs and the action buttons.** Every Lee has a job: **⏩ SAIL** (oars, sails), **🔫 FIRE** (hull guns first, then anti-crew guns), **⚔️ BOARD** (cross to the target, repel boarders) or **🛠️ FIX** (repair, bail, pump). The four buttons sit on the seam above the close-up. Tap one and the best-fit Lee moves into that job (the biggest gain in skill for the new job over its current one); hold to repeat. A full job shakes. Your placement in refit sets each Lee's starting job.
 - **Lees never idle.** A Lee with nothing useful in its own job falls back to repairs, bailing, or its pistol (melee Lees go and repel). A destroyed station doesn't change anyone's job. A Lee sharing a tile with a boarder fights; everyone else keeps working.
 - **Pips.** Under each button, one pip per Lee in that job: color = Lee type, fill = HP, number = level, ring = progress on its current action; hollow pips are empty seats (guns, oars, sails). Pips slide between buttons over the time the Lee takes to walk. When a melee approach starts, the **enemy's pips** fade in above the buttons, grouped the same way. HP bars, level pips, progress bars and ghosts are gone from the field; each Lee just has a team ring.
@@ -41,7 +60,7 @@ Stack: TypeScript, [Phaser 3](https://phaser.io), Vite, lil-gui for the tuning p
 
 ## The run (Phase 4)
 
-**Menu → choose a ship → REFIT → FIGHT → results → level-ups → reward → REFIT → …** until your boat sinks or every Lee is dead (**Run Over**: fights survived, final loadout, survivors, and a memorial of the fallen). There's no victory screen: after the temporary encounter list runs out, the last encounter repeats with higher levels and, every other repeat, more crew (`escalation.*`).
+*(Phase 6 replaced the flow below with ports and the sea map; see above.)* **Menu → choose a ship → REFIT → FIGHT → results → level-ups → reward → REFIT → …** until your boat sinks or every Lee is dead (**Run Over**: fights survived, final loadout, survivors, and a memorial of the fallen).
 
 - **⚙️** (top left, every screen) opens the system menu: Resume, Restart Run, Main menu, Reset All Saved Data (both destructive ones confirm), and the save and build versions. It pauses a fight while open.
 - **Ships** (`config/ships.ts`, numbers in `tuning.ships`): **Basic Ship** (all-rounder, 5 × 3), **Long Distance Relation Ship** (skirmisher, 4 × 3, fast and fragile), **Friend Ship** (the boarder's longship, 7 × 2, 6–12 crew), **Hard Ship** (the gunnery galleon, 6 × 4, slow and tough). Slots are generated from the deck layout (Phase 5): every tile has a **fixture** slot (an edge tile's faces its side; a corner can face either) and a **floor** slot, every gun an **attachment** slot, and every edge a **rail** and a **hull** slot, plus treasure slots. Each ship has a standard fit (enemies, sandbox) and a player preset.
@@ -82,7 +101,7 @@ Stack: TypeScript, [Phaser 3](https://phaser.io), Vite, lil-gui for the tuning p
 - *Crew lost = out.* A boat whose whole crew is dead is out of the fight for all intents and purposes: nobody fires at it, it drifts, and boarders on it come home. Kill or sink every enemy and you win; lose your whole crew and you lose ("Crew lost"), just as if you'd sunk. (This replaces the PRD's §10.1 "derelict must still be sunk" rule.)
 - *Enemies* are built from the same content as you (Phase 4): a ship, a loadout, a crew with levels, and an AI profile (`tuning.ai`: **standard** orbits at cannon range, **boarder** comes alongside or rams when it has a clean line onto your hull, and sends `boardShare` of its crew to ⚔️ once it's within `boardAt`, **heavy** holds its broadside at range, **skirmisher** keeps far out).
 
-**Fights.** Fights come from the temporary encounter list (`config/encounters.ts`), then escalate. After a fight, **Continue** goes to results, level-ups and the reward. The pill at the top shows the fight number and how many ships are left. By default you start every fight with a fully repaired boat and a healed crew (`run.repairBetweenFights`, `run.healBetweenFights`).
+**Fights.** Fights come from stops on the sea map, built to a budget (Phase 6). After a fight, **Continue** goes to results (gold, spoils), level-ups, a surrender and, after a hard fight, a rare pick. The pill at the top shows the fight number and how many ships are left. Hull damage and wounds carry into the next fight, minus the free share fixed after each one.
 
 **Crew.** A gun only loads and fires with a gunner standing at its station; each manned set of oars adds speed and each manned sail adds turning on top of a baseline (`crew.oarBaseline` / `sailBaseline`, 60%); a manned lookout tightens every gun's spread; plain deck is damage control (repair and bail). Where you place a Lee sets its *preferred* role. During the fight nobody takes orders: each Lee goes where it's needed most (an open gun facing the enemy, a part that was just hit, rising water) and drifts home when that passes. Shells that land on Lees hurt them; a Lee at 0 HP goes overboard and isn't replaced this fight. The enemy's crew runs on the same AI. The result screen adds Lees lost and a per-Lee breakdown (time by task, time away from home, task switches); your arrangement carries into the next refit.
 
@@ -100,7 +119,11 @@ src/
     items.ts       guns, stations, rail items, hull modules, attachments, floors, Treasures, Trinkets
     lees.ts        Lee types: stats, traits (generic abilities), tags, level-up weights, colors
     tags.ts        tags (data only: shown and counted, no bonuses yet)
-    encounters.ts  AI profiles, archetypes, the temporary encounter list
+    encounters.ts  AI profiles, hand-made archetypes (tests, sandbox), the enemy spec shape
+    economy.ts     the one point-cost table: chassis, Lees by type and level, items
+    sea.ts         stop types, modifiers (Fog), map styles, intel levels
+    ports.ts       port services, specialties, stock sizes, port names
+    difficulty.ts  Easy / Normal / Hard levers
     art.ts         art manifest (all null = placeholder art drawn in code)
   sim/             pure TypeScript game rules, no Phaser imports, deterministic
     steering.ts    "seek this point" + orbit; shared by player, enemy and path preview
@@ -117,8 +140,13 @@ src/
                    explosions, spikes, sinking, stats
     setup.ts       boat setups (build + crew), Auto-arrange, enemies built from encounter data
     levels.ts      XP thresholds, level-up offers and bonuses (player and enemy)
-    run.ts         the run: items as instances, equip/cargo, crew, presets, rewards (the first must be
-                   placed), Auto-equip, permadeath, encounter escalation, the versioned save
+    run.ts         the run: items as instances, equip/cargo and the hold limit, crew, presets, gold,
+                   hull damage and wounds, applying a fight (spoils, surrender, special picks),
+                   Auto-equip, permadeath, the versioned save
+    budget.ts      enemies built from a budget, danger ratings
+    port.ts        ports: generation, stock, prices, buying, selling, rerolls, repair, healing,
+                   the shipyard, the bank, leaving
+    seaMap.ts      the sea map: generation (guaranteed route), reach, intel, sailing, stops, arriving
     boatStats.ts   the refit stat bars and Details card, from a real boat
   game/
     BattleScene.ts one Phaser scene, two cameras (ocean + strip) reading the same world
@@ -127,10 +155,10 @@ src/
     textures.ts    placeholder art + trimming crack art to each part's outline
     Controller.ts  screens and the run/sandbox, the world, saving, live tuning, speed/debug/pause
   ui/              DOM: HUD, action buttons and pips (actionBar.ts), ⚙️ menu and run screens
-                   (screens.ts), refit (refit.ts), cards,
+                   (screens.ts), refit (refit.ts), the port (port.ts), the sea map (seaMap.ts), cards,
                    ship previews, crew debug, result screen, tuning panel, code-drawn crew art
 tests/             steering, damage, world rules, crew and jobs, close combat, helm, equipment,
-                   refit stacks, the run
+                   refit stacks, the run, the voyage (budgets, ports, the sea map, difficulty)
 tools/sweep.test.ts  the quick run simulation (npm run sweep)
 ```
 
@@ -168,6 +196,16 @@ How Phase 4 meets its design-for-later constraints (§13):
 - **The run flow is replaceable.** `sim/run.ts` holds state and pure steps (draft, equip, apply a fight, rewards); which screen comes next lives in the Controller. A sea map replaces `encounterFor` and adds reward sources without touching ships, items, Lees or refit.
 - **Everything is data.** Ships, slots, items, Lee types, traits, tags, AI profiles and encounters are entries in `config/`; their numbers are mirrored into tuning (`ships`, `items`, `lees`, `traits`, `ai`), so they're live-editable on the phone. Adding an item of an existing kind is one entry. Slot types are a table; a new layer is a new slot type plus whatever reads it.
 - **Player and enemy share content.** `createBoat` takes a build for either side; enemies come from `enemySetup` (encounter data, auto-picked level bonuses). In a run nothing else differs: the old hidden multipliers are sandbox-only assists, and `World` ignores them unless `assists` is on.
+
+How Phase 6 meets its design-for-later constraints (§17):
+
+- **The PUNishers plug in.** The map has a clock (`SeaMap.hops`, one per hop) and positions (`Stop.x/y`); a chaser is state on the map that moves on each hop.
+- **Stops, modifiers, map styles, port services, specialties and difficulties are data** (`config/sea.ts`, `config/ports.ts`, `config/difficulty.ts`). A stop type is an icon, a weight, a budget multiplier and an effect; a new effect is one branch in `sailTo`.
+- **Intel is levels** (`INTEL` in `config/sea.ts`): each level names what grants it (always, a worn trinket, a manned station).
+- **One point-cost table** (`config/economy.ts`) prices enemies, shops, recruits, repairs, healing, trade-ins and danger.
+- **The economy can grow.** Gold is a number on the run with `earn` / `pay` paths; wages, loans or a second currency are more fields and steps, not a restructure.
+- **Player and enemy still share content.** The generator buys from the same items and Lees the shops sell (rare items aside), and the Crow's Nest is a Lookout-kind station either side can use.
+- **Run state stays serializable and versioned** (`SAVE_VERSION` 3), including the map, the port, shop stock, the bank and the encounter being set up. It saves at every port, stop and fight.
 - **Guns can grow.** A gun is an item with a mode (shell, lob, stream, burst) and numbers; recoil or special ammo are more numbers on the same item, read in `gunSpec`.
 - **Parts can grow; Treasures and Trinkets can get weird.** Effects are generic (`{ scope, stat, op, param }` over boat, part, tile, occupant, gun, crew, wearer); stations, rails and volatile parts are behavior kinds. Active abilities or conditions are new kinds, not rewrites.
 - **Tags are general.** Every item, ship and Lee type has tags; `countTags` counts them (debug panel, Run Over).
@@ -245,3 +283,21 @@ Edit `src/config/art.ts` and drop files into `public/art/`. Each slot is optiona
 - **Balance** (`SWEEP_SEEDS=2 SWEEP_FIGHTS=4 npm run sweep`): Basic, Friend and Hard Ships win every fight through fight 4. The Long Distance Relation Ship (the sweep captain just orbits at long-gun range) lost fight 2 on both seeds by timeout and fight 3 once: it probably needs a person kiting, but it's the first thing to look at in playtest.
 
 
+
+## Phase 6 notes
+
+- **Built in one pass**, in the PRD's four slices' scope: gold and budget-built enemies, ports, the sea map, and the shipyard / difficulty / Custom start.
+- **Decisions made where the PRD left room** (all tunable or data; see [`docs/TODO.md`](docs/TODO.md) to revisit):
+  - Travel radius is fixed (`map.radius`); a map style scales it (Wide sea ×1.3, Crowded lanes ×0.8). Ship speed doesn't extend it yet.
+  - Capture takes **one random part** from an intact tile (no pick), undamaged.
+  - Lees can't be sold, only released (wages would make this matter).
+  - Treasures and trinkets in the hold count against the cargo limit like parts; Lees ashore don't. Basic 6, Long Distance 4, Friend 6, Hard 9.
+  - Recruit prices are their point cost × `economy.recruitPrice`, −20% at a port specializing in their type or tags.
+  - Danger is 1–5 skulls, relative to your ship's point value.
+  - Depth = journeys completed + progress across the current map (the stop's height between the two ports).
+  - Arriving at a fight stop commits you to the fight (refit, then LAUNCH; there's no backing out), so Fog can't be peeked.
+  - Paid repair and healing go as far as your gold does (partial when short). Water never carries between fights; hull structure does.
+  - The surrendering Lee joins ashore at half HP.
+  - Early fights are mostly Basic Ships: a styled chassis needs `budget.chassisShare` (0.6) of the ship's budget, so a lone long gun on a Long Distance hull doesn't show up at depth 0.
+  - The Custom start's port has every service and twice the stock; you can shop before buying a hull (it all waits on the dock).
+- **Balance** (`npm run sweep`, a scripted captain that follows each map's guaranteed route, repairs and heals in port and buys what fits): over 3 journeys the Friend Ship gets furthest (~2.8 journeys); Basic and Hard reach the middle of journey 2; the Long Distance Relation Ship still loses early, mostly on 400 s timeouts against ships it never catches. A person picks fights, visits Coves and chases, so this is a floor.

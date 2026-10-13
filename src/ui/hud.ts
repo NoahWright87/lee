@@ -14,6 +14,8 @@ import { CrewDebug } from './crewDebug';
 import { el, fmtTime } from './dom';
 import { RefitPanel } from './refit';
 import { Screens } from './screens';
+import { PortScreen } from './port';
+import { MapScreen } from './seaMap';
 import { TuningPanel } from './tuningPanel';
 
 const ACTIVITY_LABEL: Record<ActivityKind, string> = {
@@ -121,7 +123,9 @@ export class Hud {
 
     this.panel = new TuningPanel(ctl);
     ocean.append(this.refit.top, this.crewDebug.root, this.refit.card, this.toast, this.result);
-    root.append(this.refit.root, this.screens.root, top, this.refit.sheet, this.panel.root, this.screens.menuRoot);
+    const port = new PortScreen(ctl);
+    const map = new MapScreen(ctl);
+    root.append(this.refit.root, this.screens.root, port.root, map.root, top, this.refit.sheet, this.panel.root, this.screens.menuRoot);
 
     // Strip gauges.
     const gauges = el('div', 'strip-gauges');

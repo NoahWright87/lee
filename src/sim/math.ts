@@ -164,3 +164,41 @@ export class Rng {
     return { x: Math.cos(a) * r, y: Math.sin(a) * r };
   }
 }
+
+/** FNV-1a hash of a string (seeding per-purpose random streams). */
+export function hashString(s: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
+  return h >>> 0;
+}
+
+/** A random stream for one purpose of one seed ("map:3", "shop:2:1"...). */
+export function rngFor(seed: number, what: string): Rng {
+  return new Rng((seed ^ hashString(what)) >>> 0);
+}
+
+/** One weighted pick (null if nothing has weight). */
+export function pickWeighted<T>(rng: Rng, pool: readonly (readonly [T, number])[]): T | null {
+  const total = pool.reduce((a, [, w]) => a + Math.max(0, w), 0);
+  if (total <= 0) return null;
+  let r = rng.next() * total;
+  for (const [v, w] of pool) {
+    r -= Math.max(0, w);
+    if (r < 0) return v;
+  }
+  for (let i = pool.length - 1; i >= 0; i--) if (pool[i][1] > 0) return pool[i][0];
+  return null;
+}
+
+/** Weighted draw of up to n distinct entries. */
+export function drawDistinct<T>(rng: Rng, pool: readonly (readonly [T, number])[], n: number): T[] {
+  const left = pool.filter(([, w]) => w > 0).map(([v, w]) => [v, w] as [T, number]);
+  const out: T[] = [];
+  while (out.length < n && left.length) {
+    const pick = pickWeighted(rng, left);
+    const i = left.findIndex(([v]) => v === pick);
+    out.push(left[i][0]);
+    left.splice(i, 1);
+  }
+  return out;
+}
