@@ -9,20 +9,21 @@
 // replace it without touching any of this.
 
 import { ENCOUNTERS, type EncounterDef } from '../config/encounters';
-import { ITEMS, type ItemCategory, type ItemDef } from '../config/items';
+import { ITEMS, type ItemDef } from '../config/items';
 import { LEE_DEFS, STAT_LABELS } from '../config/lees';
 import { SHIPS } from '../config/ships';
 import type { Facing, SlotType } from '../config/slots';
 import type { Tuning } from '../config/tuning';
 import type { Lee } from './crew';
-import { allSlots, defaultBuild, fits, slotById, trinketMods, type BoatBuild } from './loadout';
+import { allSlots, fits, presetBuild, slotById, trinketMods, type BoatBuild } from './loadout';
 import { autoBonuses, bonusLabel, bonusMods, bonusOffers, combineMods, xpToNext, type BonusKey } from './levels';
 import { Rng } from './math';
-import { autoArrange, enemySetup, type BoatSetup, type CrewSpec } from './setup';
-import { buildGrid } from './grid';
+import { autoArrange, enemySetup, fitFor, postsFor, type BoatSetup, type CrewSpec } from './setup';
+import { buildGrid, tileAtCell } from './grid';
+import type { Job } from '../config/lees';
 
 /** Bump whenever a change makes older saves unreadable. Older saves are then offered a reset, never loaded. */
-export const SAVE_VERSION = 1;
+export const SAVE_VERSION = 2;
 
 export interface ItemInstance {
   uid: number;
@@ -41,8 +42,10 @@ export interface CrewMember {
   bonuses: BonusKey[];
   /** Worn trinket instance uids, one per trinket slot (null = empty). */
   trinkets: (number | null)[];
-  /** Home tile (null = not placed: stays ashore). */
+  /** Starting tile (null = not placed: stays ashore). Its station sets the starting job. */
   home: number | null;
+  /** A starting job other than its tile's (ship presets), cleared when it's moved. */
+  job?: Job | null;
   /** Fight number they joined in. */
   joined: number;
   /** Lifetime numbers (for cards and the memorial). */
@@ -100,11 +103,13 @@ export interface RunState {
   /** Per-type counters for crew labels. */
   counters: Record<string, number>;
   nextUid: number;
-  /** Draft progress (before the first fight). */
-  stage: 'draft' | 'startPart' | 'refit' | 'post' | 'over';
-  draftRound: number;
-  startOffer: string[];
+  stage: 'refit' | 'post' | 'over';
   pending: PostFight | null;
+  /**
+   * The first fight's reward must be equipped (or the recruit placed) before
+   * the next fight: what it is, until it's placed.
+   */
+  mustPlace: { kind: 'item' | 'lee'; uid: number } | null;
 }
 
 const treasureSlot = (i: number) => `treasure:${i}`;
@@ -143,11 +148,15 @@ function drawDistinct<T>(rng: Rng, pool: [T, number][], n: number): T[] {
 
 // ------------------------------------------------------------ setup
 
-export function newRun(ship: string, seed: number): RunState {
+/**
+ * A new run: the ship's preset (loadout, treasures, crew and where they
+ * stand). No draft, no starting part: it's ready to sail.
+ */
+export function newRun(ship: string, seed: number, t: Tuning): RunState {
   const run: RunState = {
     version: SAVE_VERSION,
     seed: seed >>> 0,
-    ship: SHIPS[ship] ? ship : 'sloop',
+    ship: SHIPS[ship] ? ship : 'basic',
     items: [],
     loadout: {},
     facings: {},
@@ -157,14 +166,21 @@ export function newRun(ship: string, seed: number): RunState {
     won: 0,
     counters: {},
     nextUid: 1,
-    stage: 'draft',
-    draftRound: 0,
-    startOffer: [],
+    stage: 'refit',
     pending: null,
+    mustPlace: null,
   };
-  for (const [slot, item] of Object.entries(defaultBuild(run.ship).loadout)) {
-    run.loadout[slot] = addItem(run, item).uid;
+  const build = presetBuild(run.ship);
+  for (const [slot, item] of Object.entries(build.loadout)) run.loadout[slot] = addItem(run, item).uid;
+  (build.treasures ?? []).slice(0, treasureSlots(run, t)).forEach((item, i) => (run.loadout[treasureSlot(i)] = addItem(run, item).uid));
+  run.facings = { ...(build.facings ?? {}) };
+  const grid = buildGrid(SHIPS[run.ship].layout);
+  for (const p of SHIPS[run.ship].preset.crew) {
+    const m = addCrew(run, p.type, 1, t);
+    m.home = tileAtCell(grid, p.tile[0], p.tile[1])?.index ?? null;
+    if (p.job) m.job = p.job;
   }
+  fixHomes(run);
   return run;
 }
 
@@ -204,22 +220,6 @@ export function addCrew(run: RunState, type: string, level: number, t: Tuning): 
   return member;
 }
 
-/** Three distinct Lee types to draft from (seeded by run and round). */
-export function draftOffer(run: RunState, t: Tuning): string[] {
-  const pool = Object.values(LEE_DEFS).map((d) => [d.id, d.draftWeight] as [string, number]);
-  return drawDistinct(rngFor(run, `draft:${run.draftRound}`), pool, Math.max(1, Math.round(t.run.draftChoices)));
-}
-
-/** Draft one Lee; once the crew reaches the ship's minimum, move on to the starting part. */
-export function draftPick(run: RunState, type: string, t: Tuning): void {
-  addCrew(run, type, 1, t);
-  run.draftRound++;
-  if (run.crew.length >= crewMin(run, t)) {
-    run.stage = 'startPart';
-    run.startOffer = partOffer(run, 'start', Math.max(1, Math.round(t.run.startPartChoices)));
-  }
-}
-
 export function crewMin(run: RunState, t: Tuning): number {
   return Math.max(1, Math.round(t.ships[run.ship]?.crewMin ?? 1));
 }
@@ -231,8 +231,6 @@ export function crewMax(run: RunState, t: Tuning): number {
 export function treasureSlots(run: RunState, t: Tuning): number {
   return Math.max(0, Math.round(t.ships[run.ship]?.treasures ?? 0));
 }
-
-const PART_CATEGORIES: ItemCategory[] = ['gun', 'station', 'rail', 'hull', 'attachment', 'floor'];
 
 /** Slot types this ship has (floors always; attachments if it can carry a gun). */
 function shipSlotTypes(ship: string): Set<SlotType> {
@@ -247,24 +245,6 @@ function shipSlotTypes(ship: string): Set<SlotType> {
 function usable(ship: string, def: ItemDef): boolean {
   const types = shipSlotTypes(ship);
   return def.fits.some((f) => types.has(f));
-}
-
-function partOffer(run: RunState, salt: string, n: number): string[] {
-  const pool = Object.values(ITEMS)
-    .filter((d) => PART_CATEGORIES.includes(d.category) && usable(run.ship, d))
-    .map((d) => [d.id, d.rewardWeight] as [string, number]);
-  return drawDistinct(rngFor(run, salt), pool, n);
-}
-
-/** Take the starting part: into cargo (equip it on the refit screen), then refit. */
-export function takeStartPart(run: RunState, item: string, t: Tuning): void {
-  if (ITEMS[item]) {
-    const inst = addItem(run, item);
-    autoEquip(run, inst.uid, t);
-  }
-  run.stage = 'refit';
-  run.startOffer = [];
-  autoArrangeRun(run, t);
 }
 
 // ------------------------------------------------------------ equipment
@@ -289,7 +269,7 @@ export function memberMods(run: RunState, m: CrewMember, t: Tuning) {
 }
 
 export function crewSpecs(run: RunState, t: Tuning): CrewSpec[] {
-  return run.crew.map((m) => ({ type: m.type, home: m.home, uid: m.uid, label: m.label, level: m.level, mods: memberMods(run, m, t) }));
+  return run.crew.map((m) => ({ type: m.type, home: m.home, uid: m.uid, label: m.label, level: m.level, mods: memberMods(run, m, t), job: m.job ?? undefined }));
 }
 
 export function setupFor(run: RunState, t: Tuning): BoatSetup {
@@ -317,11 +297,16 @@ function worn(run: RunState): Set<number> {
   return out;
 }
 
-/** Items not equipped, worn or held: the cargo hold. */
+/** Items not equipped, worn or held: the cargo hold (Lees ashore are in it too, see ashore()). */
 export function cargo(run: RunState): ItemInstance[] {
   const used = new Set<number>(Object.values(run.loadout));
   for (const u of worn(run)) used.add(u);
   return run.items.filter((x) => !used.has(x.uid));
+}
+
+/** Crew members ashore: in the cargo hold with the items. */
+export function ashore(run: RunState): CrewMember[] {
+  return run.crew.filter((m) => m.home === null);
 }
 
 /** Where an item instance is right now. */
@@ -374,6 +359,7 @@ export function equip(run: RunState, uid: number, slot: string): boolean {
   run.loadout[slot] = uid;
   if (prev !== undefined && prev !== uid && from && 'slot' in from && canEquip(run, prev, from.slot)) run.loadout[from.slot] = prev;
   tidy(run);
+  settleMustPlace(run);
   return true;
 }
 
@@ -390,10 +376,11 @@ export function wearTrinket(run: RunState, uid: number, member: number, index: n
   if (!def || def.category !== 'trinket' || !m || index < 0 || index >= m.trinkets.length) return false;
   unplace(run, uid);
   m.trinkets[index] = uid;
+  settleMustPlace(run);
   return true;
 }
 
-/** Put an item where it fits best right away: the first empty compatible slot (trinkets: the first free Lee slot). */
+/** Put an item in the first empty spot it fits (trinkets: the first free Lee slot). Never moves anything already placed. */
 export function autoEquip(run: RunState, uid: number, t: Tuning): boolean {
   const def = itemOf(run, uid);
   if (!def) return false;
@@ -430,9 +417,62 @@ export function setHome(run: RunState, member: number, tile: number | null): voi
   if (!m) return;
   if (tile !== null) {
     const other = run.crew.find((x) => x !== m && x.home === tile);
-    if (other) other.home = m.home;
+    if (other) {
+      other.home = m.home;
+      other.job = null;
+    }
   }
   m.home = tile;
+  m.job = null;
+  settleMustPlace(run);
+}
+
+/**
+ * The "I got new stuff and I'm lazy" button: every item in cargo goes into the
+ * first empty spot it fits, trinkets onto Lees with a free trinket slot, and
+ * Lees ashore onto free tiles (the best post for each). Nothing already placed moves.
+ */
+export function autoEquipAll(run: RunState, t: Tuning): void {
+  for (const inst of cargo(run)) autoEquip(run, inst.uid, t);
+  const ashore = run.crew.filter((m) => m.home === null);
+  if (ashore.length) {
+    const used = new Set(run.crew.map((m) => m.home).filter((h): h is number => h !== null));
+    const posts = postsFor(buildFor(run), t).filter((p) => !used.has(p.tile));
+    const specs = crewSpecs(run, t);
+    const pairs: { post: number; rank: number; m: CrewMember; v: number }[] = [];
+    posts.forEach((post, rank) => {
+      for (const m of ashore) {
+        const spec = specs.find((s) => s.uid === m.uid)!;
+        pairs.push({ post: post.tile, rank, m, v: fitFor(post.station, spec, t) });
+      }
+    });
+    pairs.sort((a, b) => b.v - a.v || a.rank - b.rank || a.m.uid - b.m.uid);
+    const taken = new Set<number>();
+    for (const p of pairs) {
+      if (p.m.home !== null || taken.has(p.post)) continue;
+      p.m.home = p.post;
+      taken.add(p.post);
+    }
+  }
+  settleMustPlace(run);
+}
+
+/** Is the first reward still waiting to be equipped (or placed)? */
+export function mustPlaceOpen(run: RunState): boolean {
+  settleMustPlace(run);
+  return run.mustPlace !== null;
+}
+
+/** Clear the must-place once it's placed (or gone). */
+export function settleMustPlace(run: RunState): void {
+  const m = run.mustPlace;
+  if (!m) return;
+  if (m.kind === 'item') {
+    if (!run.items.some((x) => x.uid === m.uid) || whereIs(run, m.uid)) run.mustPlace = null;
+  } else {
+    const c = run.crew.find((x) => x.uid === m.uid);
+    if (!c || c.home !== null) run.mustPlace = null;
+  }
 }
 
 /** Auto-arrange the whole crew (stat-matched posts). */
@@ -481,7 +521,7 @@ export function encounterSummary(run: RunState, t: Tuning): string {
   const setups = enemySetups(run, t);
   const parts = setups.map((s) => {
     const lv = s.crew.length ? Math.round(s.crew.reduce((a, c) => a + (c.level ?? 1), 0) / s.crew.length) : 1;
-    return `${SHIPS[s.build.ship]?.name ?? s.build.ship} (${s.crew.length} Lees, lv ${lv})`;
+    return `${SHIPS[s.build.ship]?.name ?? s.build.ship} (${s.crew.length} ${s.crew.length === 1 ? 'Lee' : 'Lees'}, lv ${lv})`;
   });
   return `${enc.def.name}${enc.repeat ? ` · again ×${enc.repeat + 1}` : ''}: ${parts.join(' + ')}`;
 }
@@ -509,7 +549,7 @@ export function memorialLine(label: string, type: string, cause: string): string
 export function fightXp(l: Lee, t: Tuning): number {
   const L = t.leveling;
   const s = l.stats;
-  const work = s.time.gun + s.time.row + s.time.sail + s.time.lookout + s.time.pump + s.time.hooks + s.time.powder + s.time.repair + s.time.bail;
+  const work = s.time.gun + s.time.row + s.time.sail + s.time.lookout + s.time.pump + s.time.powder + s.time.repair + s.time.bail;
   return Math.round(
     L.survivalXp + s.damageDealt * L.xpPerDamage + s.hpRepaired * L.xpPerRepair + s.waterBailed * L.xpPerBail + s.leeDamage * L.xpPerLeeDamage + s.meleeKills * L.xpPerKill + work * L.xpPerWorkSecond,
   );
@@ -613,22 +653,20 @@ export function takeReward(run: RunState, index: number, t: Tuning, releaseFirst
   const post = run.pending;
   const card = post?.reward[index];
   if (!post || !card || post.rewardTaken) return false;
+  // The first fight's reward must be placed before the next fight (it teaches the refit).
+  const first = run.won === 1;
   if (card.kind === 'recruit') {
     if (run.crew.length >= crewMax(run, t)) {
       if (releaseFirst === undefined || !run.crew.some((m) => m.uid === releaseFirst)) return false;
       release(run, releaseFirst);
     }
+    // Recruits wait ashore (in cargo) until placed.
     const m = addCrew(run, card.type, card.level, t);
-    // Placed on a free tile if there is one.
-    const n = buildGrid(SHIPS[run.ship].layout).tiles.length;
-    const used = new Set(run.crew.map((x) => x.home).filter((h): h is number => h !== null));
-    for (let i = 0; i < n; i++) if (!used.has(i)) {
-      m.home = i;
-      break;
-    }
+    if (first) run.mustPlace = { kind: 'lee', uid: m.uid };
   } else {
+    // Items go to cargo: nothing gets equipped (or moved) by itself.
     const inst = addItem(run, card.item);
-    autoEquip(run, inst.uid, t);
+    if (first) run.mustPlace = { kind: 'item', uid: inst.uid };
   }
   post.rewardTaken = true;
   return true;
@@ -670,7 +708,7 @@ function validRun(r: RunState): boolean {
   try {
     if (!SHIPS[r.ship] || !Array.isArray(r.items) || !Array.isArray(r.crew) || !Array.isArray(r.fallen)) return false;
     if (typeof r.fight !== 'number' || typeof r.seed !== 'number' || typeof r.nextUid !== 'number') return false;
-    if (!['draft', 'startPart', 'refit', 'post', 'over'].includes(r.stage)) return false;
+    if (!['refit', 'post', 'over'].includes(r.stage)) return false;
     const uids = new Set(r.items.map((i) => i.uid));
     for (const i of r.items) if (!ITEMS[i.item] || typeof i.uid !== 'number') return false;
     for (const [slot, uid] of Object.entries(r.loadout ?? {})) {

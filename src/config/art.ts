@@ -5,7 +5,7 @@
 // PART SPRITES
 //   Top-down, bow pointing RIGHT, transparent background. The image is stretched
 //   to the part's bounding box in the boat layout (src/config/boats.ts), so draw
-//   at the same aspect ratio. Sloop part boxes (length × width, meters):
+//   at the same aspect ratio. Basic Ship part boxes (length × width, meters):
 //     bow      7 × 10      midship 12 × 3.33
 //     cannon  12 × 3.33    stern    9 × 10
 //   Suggested resolution: 24 px per meter (e.g. midship 288 × 80 px).

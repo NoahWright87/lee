@@ -19,7 +19,7 @@ import { defaultBuild, type BoatBuild } from '../src/sim/loadout';
 import { DEG, NORTH } from '../src/sim/math';
 import { FIXED_DT } from '../src/sim/steering';
 
-const make = (side: 'player' | 'enemy' = 'enemy', tune = defaultTuning(), build: BoatBuild = defaultBuild('sloop'), advantage = 1): Boat =>
+const make = (side: 'player' | 'enemy' = 'enemy', tune = defaultTuning(), build: BoatBuild = defaultBuild('basic'), advantage = 1): Boat =>
   createBoat(1, side, build, tune, { x: 0, y: 0 }, NORTH, { advantage });
 const part = (b: Boat, id: string) => b.parts.find((p) => p.def.id === id)!;
 
@@ -45,7 +45,7 @@ describe('layered damage', () => {
 
   test('the advantage assist scales HP', () => {
     const t = defaultTuning();
-    expect(part(make('player', t, defaultBuild('sloop'), 2), 'midship').layers[0].maxHp).toBe(200);
+    expect(part(make('player', t, defaultBuild('basic'), 2), 'midship').layers[0].maxHp).toBe(200);
     expect(part(make('enemy', t), 'midship').layers[0].maxHp).toBe(100);
   });
 });
@@ -132,15 +132,15 @@ describe('ships and loadouts', () => {
   test('ship numbers scale the baseline hull and movement', () => {
     const t = defaultTuning();
     const sloop = make('enemy', t);
-    const hard = make('enemy', t, defaultBuild('hardship'));
-    expect(part(hard, 'midship').layers[0].maxHp).toBeCloseTo(100 * t.ships.hardship.hullHp);
+    const hard = make('enemy', t, defaultBuild('hard'));
+    expect(part(hard, 'midship').layers[0].maxHp).toBeCloseTo(100 * t.ships.hard.hullHp);
     // Same crew effects (none aboard), so the ratio is the ships' speed ratio.
-    expect(motionParams(hard, t).cruiseSpeed / motionParams(sloop, t).cruiseSpeed).toBeCloseTo(t.ships.hardship.speed / t.ships.sloop.speed);
+    expect(motionParams(hard, t).cruiseSpeed / motionParams(sloop, t).cruiseSpeed).toBeCloseTo(t.ships.hard.speed / t.ships.basic.speed);
   });
 
   test('a gun points the way its slot faces, and its arc comes from the gun', () => {
     const t = defaultTuning();
-    const b = make('enemy', t, { ship: 'sloop', loadout: { 'fix:1,0': 'cannon', 'fix:4,1': 'longGun', 'fix:0,1': 'cannon' } });
+    const b = make('enemy', t, { ship: 'basic', loadout: { 'fix:1,0': 'cannon', 'fix:4,1': 'longGun', 'fix:0,1': 'cannon' } });
     const port = b.guns.find((g) => g.slot === 'fix:1,0')!;
     const bow = b.guns.find((g) => g.slot === 'fix:4,1')!;
     const stern = b.guns.find((g) => g.slot === 'fix:0,1')!;
@@ -159,24 +159,25 @@ describe('ships and loadouts', () => {
   test('a slot only takes items that fit it', () => {
     const t = defaultTuning();
     // A sail is interior-only; a mortar too; a cannon is edge-only.
-    const b = make('enemy', t, { ship: 'sloop', loadout: { 'fix:1,0': 'sail', 'fix:2,1': 'cannon', 'fix:1,1': 'mortar' } });
+    const b = make('enemy', t, { ship: 'basic', loadout: { 'fix:1,0': 'sail', 'fix:2,1': 'cannon', 'fix:1,1': 'mortar' } });
     expect(b.build.loadout).toEqual({ 'fix:1,1': 'mortar' });
   });
 
   test('attachments change their gun; plating adds an armor layer; treasures and floors apply', () => {
     const t = defaultTuning();
     const b = make('enemy', t, {
-      ship: 'sloop',
-      loadout: { 'fix:1,0': 'cannon', 'att:fix:1,0': 'gunShield', 'fix:3,0': 'cannon', 'hull:midship': 'ironPlating', 'floor:2,1': 'reinforcedPlanks' },
+      ship: 'basic',
+      loadout: { 'fix:1,0': 'cannon', 'att:fix:1,0': 'gunShield', 'fix:3,0': 'cannon', 'hull:2,0:port': 'ironPlating', 'floor:2,1': 'reinforcedPlanks' },
       treasures: ['ironE', 'sextant'],
     });
     const shielded = b.guns.find((g) => g.slot === 'fix:1,0')!;
     const plain = b.guns.find((g) => g.slot === 'fix:3,0')!;
     expect(gunSpec(b, shielded, t).arcHalf).toBeCloseTo(gunSpec(b, plain, t).arcHalf * 0.7);
     expect(gunSpec(b, plain, t).range).toBeCloseTo(t.guns.range * 1.1);
-    const mid = part(b, 'midship');
-    expect(mid.layers.map((l) => l.kind)).toEqual(['armor', 'structure']);
-    expect(mid.layers[1].maxHp).toBeCloseTo(100 + 10);
+    // Plating on a port edge armors the port part; the Iron E adds HP to every part.
+    expect(part(b, 'port').layers.map((l) => l.kind)).toEqual(['armor', 'structure']);
+    expect(part(b, 'midship').layers.map((l) => l.kind)).toEqual(['structure']);
+    expect(part(b, 'midship').layers[0].maxHp).toBeCloseTo(100 + 10);
     const tile = b.grid.tiles.find((x) => x.col === 2 && x.row === 1)!;
     expect(tile.maxHp).toBeCloseTo(t.tiles.durability * 2);
     expect(b.mods.occupant[tile.index].impactTaken).toBeCloseTo(0.75);
@@ -184,7 +185,7 @@ describe('ships and loadouts', () => {
 
   test('every ship has the slot counts and default loadout its data says, on its own grid', () => {
     const t = defaultTuning();
-    for (const id of ['sloop', 'skiff', 'friendship', 'hardship']) {
+    for (const id of ['basic', 'longdistance', 'friend', 'hard']) {
       const b = make('enemy', t, defaultBuild(id));
       expect(Object.keys(b.build.loadout).length).toBe(Object.keys(defaultBuild(id).loadout).length);
       expect(t.ships[id].crewMax).toBeLessThanOrEqual(b.grid.tiles.length);

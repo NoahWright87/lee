@@ -1,14 +1,14 @@
 // A top-down drawing of a ship on a plain canvas (bow right): its hull, deck
-// tiles, typed slots (edge slots with a facing arrow) and what's equipped. The
+// tiles and what's fitted (guns with an arrow for the way they face). The
 // Choose Ship cards and the Run Over summary use it.
 
 import { ITEMS } from '../config/items';
 import type { ShipDef } from '../config/ships';
-import { FACING_ANGLE } from '../config/slots';
+import { FACING_ANGLE, type Facing } from '../config/slots';
 import { buildGrid, tileAtCell } from '../sim/grid';
 import { polygonBounds } from '../sim/math';
 
-export function shipPreview(ship: ShipDef, loadout: Record<string, string>, cssWidth = 260): HTMLCanvasElement {
+export function shipPreview(ship: ShipDef, loadout: Record<string, string>, cssWidth = 260, facings: Record<string, Facing> = {}): HTMLCanvasElement {
   const L = ship.layout;
   let minX = Infinity;
   let maxX = -Infinity;
@@ -53,33 +53,27 @@ export function shipPreview(ship: ShipDef, loadout: Record<string, string>, cssW
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   for (const s of ship.slots) {
-    if (!s.tile) continue;
+    if (!s.tile || s.type === 'floor') continue;
+    const item = loadout[s.id];
+    if (!item || !ITEMS[item]) continue;
     const t = tileAtCell(grid, s.tile[0], s.tile[1]);
     if (!t) continue;
     const cx = X(t.center.x);
     const cy = Y(t.center.y);
-    if (s.type === 'rail') {
+    if (s.type === 'rail' || s.type === 'hull') {
+      // Outside the hull, along its edge.
       const a = FACING_ANGLE[s.facing!];
-      const ex = cx + Math.cos(a) * ((t.x1 - t.x0) / 2) * scale * 0.95;
-      const ey = cy + Math.sin(a) * ((t.y1 - t.y0) / 2) * scale * 0.95;
-      ctx.fillStyle = loadout[s.id] ? '#e8dcc0' : 'rgba(232,220,192,0.35)';
-      ctx.beginPath();
-      ctx.arc(ex, ey, size * 0.1, 0, Math.PI * 2);
-      ctx.fill();
+      const ex = cx + Math.cos(a) * ((t.x1 - t.x0) / 2 + (s.type === 'rail' ? 0.9 : 0.2)) * scale;
+      const ey = cy + Math.sin(a) * ((t.y1 - t.y0) / 2 + (s.type === 'rail' ? 0.9 : 0.2)) * scale;
+      ctx.font = `${Math.round(size * 0.32)}px system-ui, sans-serif`;
+      ctx.fillText(ITEMS[item].icon, ex, ey);
       continue;
     }
-    const item = loadout[s.id];
-    if (item && ITEMS[item]) {
-      ctx.font = `${Math.round(size * 0.48)}px system-ui, sans-serif`;
-      ctx.fillText(ITEMS[item].icon, cx, cy);
-    } else {
-      ctx.strokeStyle = 'rgba(16,35,58,0.7)';
-      ctx.setLineDash([3, 2]);
-      ctx.strokeRect(cx - size * 0.22, cy - size * 0.22, size * 0.44, size * 0.44);
-      ctx.setLineDash([]);
-    }
-    if (s.type === 'edge' && s.facing) {
-      const a = FACING_ANGLE[s.facing];
+    ctx.font = `${Math.round(size * 0.48)}px system-ui, sans-serif`;
+    ctx.fillText(ITEMS[item].icon, cx, cy);
+    if (ITEMS[item].category === 'gun') {
+      const f = s.type === 'interior' ? facings[s.id] ?? s.facing ?? 'bow' : s.facings?.includes(facings[s.id]) ? facings[s.id] : s.facing ?? 'port';
+      const a = FACING_ANGLE[f];
       const r = size * 0.38;
       ctx.fillStyle = '#10233a';
       ctx.beginPath();

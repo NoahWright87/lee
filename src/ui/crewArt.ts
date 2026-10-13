@@ -343,24 +343,6 @@ export function drawIcon(ctx: CanvasRenderingContext2D, kind: IconKind, size: nu
       ctx.arc(55, 44, 5, 0, Math.PI * 2);
       ctx.fill();
       break;
-    case 'hooks':
-      // A grappling hook.
-      both(() => {
-        ctx.beginPath();
-        ctx.moveTo(32, 6);
-        ctx.lineTo(32, 46);
-      }, 4);
-      for (const flip of [1, -1]) {
-        both(() => {
-          ctx.beginPath();
-          ctx.arc(32 + 10 * flip, 46, 10, flip > 0 ? Math.PI : 0, flip > 0 ? Math.PI * 1.8 : -Math.PI * 0.8, flip < 0);
-        }, 4);
-      }
-      both(() => {
-        ctx.beginPath();
-        ctx.arc(32, 8, 4, 0, Math.PI * 2);
-      }, 3);
-      break;
     case 'powder':
       // A powder keg with a fuse.
       both(() => {
@@ -429,7 +411,7 @@ export function leeUrl(art: string | null, shirt = '#c0392b', band?: string): st
 }
 
 /** Station icon by station kind (guns: by gun item, see gunIcon). */
-export const STATION_ICON: Record<string, IconKind> = { gun: 'cannon', cannon: 'cannon', gatling: 'gatling', oars: 'oars', sails: 'sails', lookout: 'spyglass', pump: 'pump', hooks: 'hooks', powder: 'powder' };
+export const STATION_ICON: Record<string, IconKind> = { gun: 'cannon', cannon: 'cannon', gatling: 'gatling', oars: 'oars', sails: 'sails', lookout: 'spyglass', pump: 'pump', powder: 'powder' };
 
 /** Icon for a gun station: the gatling has its own, every other gun the cannon. */
 export function gunIcon(item: string | undefined): IconKind {

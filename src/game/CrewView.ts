@@ -1,9 +1,10 @@
 // Draws crews and stations in the close-up strip, for every deck it's shown
-// (your boat, plus any boat attached to it): station icons (dim when empty),
-// Lees of both sides (enemies in a different shirt), a task icon and a
-// progress bar over their heads, a ghost on the home tile of any of yours who
-// are away, a line to where a walking Lee is headed, swings as an arc across
-// the gap, and sword fights as a shared wiggle. Reads world state; never writes it.
+// (your boat, plus any enemy closing in): station icons (dim when empty),
+// Lees of both sides (shirt = Lee type, a colored ring under the feet = team,
+// enemies also wear a bandana), a task icon over their heads (the action), a
+// line to where a walking Lee is headed, swings as an arc across the gap, and
+// sword fights as a shared wiggle. Health, level and progress live in the
+// pips at the action buttons, not over the field. Reads world state; never writes it.
 
 import Phaser from 'phaser';
 import { gunOnline, isWrecked, type Boat } from '../sim/boat';
@@ -30,12 +31,14 @@ const COLOR = {
   claim: 0xf6e7c1,
   offline: 0x8a8580,
   wet: 0x3a9cf0,
+  /** Team rings under the feet. */
+  teamPlayer: 0xf6e7c1,
+  teamEnemy: 0xe2402c,
 };
 
 interface LeeSprites {
   fig: Phaser.GameObjects.Image;
   icon: Phaser.GameObjects.Image;
-  ghost: Phaser.GameObjects.Image;
   splashed: boolean;
 }
 
@@ -73,10 +76,9 @@ export class CrewView {
   private sprites(lee: Lee): LeeSprites {
     let s = this.lees.get(lee.id);
     if (!s) {
-      const ghost = this.add(this.scene.add.image(0, 0, 'lee:ghost').setDepth(13).setDisplaySize(FIG_W, FIG_H).setAlpha(0.4));
       const fig = this.add(this.scene.add.image(0, 0, leeTextureKey(this.scene, lee.def.id, lee.side)).setDepth(16).setDisplaySize(FIG_W, FIG_H));
       const icon = this.add(this.scene.add.image(0, 0, 'icon:idle').setDepth(17).setDisplaySize(1.1, 1.1));
-      s = { fig, icon, ghost, splashed: false };
+      s = { fig, icon, splashed: false };
       this.lees.set(lee.id, s);
     }
     return s;
@@ -118,7 +120,6 @@ export class CrewView {
     const along = { x: Math.cos(facing), y: Math.sin(facing) };
     // Screen-aligned offset (dx right, dy down on screen) from a world point.
     const S = (p: Vec, dx: number, dy: number) => ({ x: p.x + along.x * dx - up.x * dy, y: p.y + along.y * dx - up.y * dy });
-    const sq = (p: Vec, x0: number, y0: number, x1: number, y1: number) => [S(p, x0, y0), S(p, x1, y0), S(p, x1, y1), S(p, x0, y1)];
 
     for (const boat of decks) {
       const alpha = deckAlpha(boat);
@@ -199,16 +200,6 @@ export class CrewView {
       const act = activity(lee);
       const friend = lee.side === 'player';
 
-      // Ghost marker on the home tile while away (yours only).
-      if (friend && shown.has(lee.boat)) {
-        const home = lee.boat.grid.tiles[lee.home].center;
-        const away = lee.swing || deck !== lee.boat || Math.hypot(lee.pos.x - home.x, lee.pos.y - home.y) > 0.6;
-        if (away) {
-          const gh = W(lee.boat, home);
-          s.ghost.setVisible(true).setPosition(gh.x, gh.y).setRotation(facing).setAlpha(0.38 * deckAlpha(lee.boat));
-        }
-      }
-
       // Where the figure stands (world), and a hop arc while swinging.
       let base: Vec;
       let lift = 0;
@@ -241,6 +232,11 @@ export class CrewView {
       }
 
       const feet = S(base, 0, FIG_H * 0.45 - lift);
+      // Team: a ring under the feet (cream for yours, red for theirs).
+      if (!lee.swing) {
+        g.lineStyle(px(2), friend ? COLOR.teamPlayer : COLOR.teamEnemy, 0.7 * alpha);
+        g.strokeEllipse(feet.x, feet.y, 1.0, 0.42);
+      }
 
       // Wading.
       if (!lee.swing && isWet(lee, deck, t)) {
@@ -265,58 +261,10 @@ export class CrewView {
       if (world.time - lee.hurtAt < 0.25) s.fig.setTintFill(0xff5040);
       else s.fig.clearTint();
 
-      // Task icon over its head, and a bar only where the work has real progress.
-      let bar: { frac: number; color: number } | null = null;
-      if (lee.working && !lee.engaged && deck === lee.boat) {
-        if (act === 'gun') {
-          const c = deck.guns.find((x) => x.station === lee.task.target);
-          if (c) bar = { frac: c.load, color: COLOR.barGun };
-        } else if (act === 'repair') {
-          const part = deck.parts[lee.task.target];
-          const st = part.layers[part.layers.length - 1];
-          bar = { frac: st.hp / Math.max(1e-6, st.maxHp * t.crew.repairCeiling), color: COLOR.barRepair };
-        } else if (act === 'bail') {
-          const part = deck.parts[lee.task.target];
-          bar = { frac: part.capacity > 0 ? part.water / part.capacity : 0, color: COLOR.wet };
-        }
-      }
+      // The action over its head (progress, HP and level are in the pips).
       const iconKind = lee.swing?.back ? 'recall' : !lee.engaged && world.time - lee.firedAt < PISTOL_ICON ? 'pistol' : act;
-      const ip = S(base, bar ? -0.85 : 0, -1.4 - lift);
+      const ip = S(base, 0, -1.4 - lift);
       s.icon.setVisible(true).setTexture(`icon:${iconKind}`).setPosition(ip.x, ip.y).setRotation(facing).setAlpha(alpha);
-      const x0 = -0.32;
-      const x1 = 0.95;
-      const y0 = -1.55 - lift;
-      const y1 = y0 + 0.3;
-      if (bar) {
-        g.fillStyle(COLOR.barBg, 0.85 * alpha);
-        g.fillPoints(sq(base, x0, y0, x1, y1), true);
-        const f = clamp(bar.frac, 0, 1);
-        if (f > 0) {
-          g.fillStyle(bar.color, alpha);
-          g.fillPoints(sq(base, x0, y0, x0 + (x1 - x0) * f, y1), true);
-        }
-      }
-      // Level: small pips under the feet (a bigger one per five levels).
-      if (lee.level > 1) {
-        const five = Math.floor((lee.level - 1) / 5);
-        const ones = (lee.level - 1) % 5;
-        const n = five + ones;
-        for (let k = 0; k < n; k++) {
-          const p = S(base, (k - (n - 1) / 2) * 0.32, FIG_H * 0.5 + 0.18 - lift);
-          g.fillStyle(0x000000, 0.7 * alpha);
-          g.fillCircle(p.x, p.y, k < five ? 0.17 : 0.12);
-          g.fillStyle(friend ? 0xffe08a : 0xffa060, alpha);
-          g.fillCircle(p.x, p.y, k < five ? 0.12 : 0.08);
-        }
-      }
-      // HP pip under the bar once hurt.
-      if (lee.hp < lee.maxHp) {
-        const f = clamp(lee.hp / lee.maxHp, 0, 1);
-        g.fillStyle(0x000000, 0.7 * alpha);
-        g.fillPoints(sq(base, x0, y1 + 0.04, x1, y1 + 0.16), true);
-        g.fillStyle(f > 0.5 ? 0x5fd068 : f > 0.25 ? 0xf2c14e : 0xe8613c, alpha);
-        g.fillPoints(sq(base, x0, y1 + 0.04, x0 + (x1 - x0) * f, y1 + 0.16), true);
-      }
 
       if (debug && lee.path.length && !lee.swing) {
         g.lineStyle(px(1.5), friend ? 0x40e0ff : 0xff9040, 0.9);

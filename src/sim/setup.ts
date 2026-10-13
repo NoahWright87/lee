@@ -4,7 +4,8 @@
 // by the best-qualified Lee for it.
 
 import { ARCHETYPES, type AiProfile, type EnemySpec } from '../config/encounters';
-import { LEE_DEFS, WORK_STAT } from '../config/lees';
+import type { StationKind } from '../config/items';
+import { LEE_DEFS, WORK_STAT, type Job } from '../config/lees';
 import type { Tuning } from '../config/tuning';
 import { createBoat } from './boat';
 import { baseStat, STATION_WORK } from './crew';
@@ -21,6 +22,8 @@ export interface CrewSpec {
   level?: number;
   /** Level bonuses, trinkets and the like, already folded. */
   mods?: StatMods;
+  /** Starting job (default: from its tile's station). */
+  job?: Job;
 }
 
 export interface BoatSetup {
@@ -31,13 +34,11 @@ export interface BoatSetup {
 }
 
 /**
- * Auto-arrange: a home tile for each Lee. Posts in priority order (a gun on
- * each side, oars, one damage-control post, a sail, crew guns, the other guns,
- * more oars and sails, hooks, powder, lookout, pump, then more damage
- * control), and each post goes to the unplaced Lee best at its work (ties by
- * crew order).
+ * Posts in priority order: a gun on each side, oars, one damage-control post,
+ * a sail, crew guns, the other guns, more oars and sails, powder, lookout,
+ * pump, then more damage control. Each with its station (null = plain deck).
  */
-export function autoArrange(build: BoatBuild, crew: { type: string; mods?: StatMods }[], t: Tuning): (number | null)[] {
+export function postsFor(build: BoatBuild, t: Tuning): { tile: number; station: StationKind | null }[] {
   const boat = createBoat(0, 'player', build, t, { x: 0, y: 0 }, 0);
   const tiles = boat.grid.tiles;
   const center = tiles.reduce((a, x) => ({ x: a.x + x.center.x / tiles.length, y: a.y + x.center.y / tiles.length }), { x: 0, y: 0 });
@@ -63,21 +64,32 @@ export function autoArrange(build: BoatBuild, crew: { type: string; mods?: StatM
     ...moreGuns,
     ...oars.slice(1),
     ...sails.slice(1),
-    ...of('hooks').map((x) => x.index),
     ...of('powder').map((x) => x.index),
     ...of('lookout').map((x) => x.index),
     ...of('pump').map((x) => x.index),
     ...plain.slice(1).map((x) => x.index),
   ];
-  // The posts this crew can fill, then the best fits first: each (post, Lee) pair by how good the Lee is at
-  // that post's work, ties by post priority and crew order. A Handy Lee ends up repairing, a Quick Lee on a gun.
+  return posts.map((tile) => ({ tile, station: tiles[tile].station }));
+}
+
+/** How good a Lee is at a post's work (plain deck: repairs). */
+export function fitFor(station: StationKind | null, c: { type: string; mods?: StatMods }, t: Tuning): number {
+  const stat = station ? WORK_STAT[STATION_WORK[station]] : 'repairRate';
+  return baseStat(LEE_DEFS[c.type] ?? LEE_DEFS.basic, stat, t, c.mods);
+}
+
+/**
+ * Auto-arrange: a home tile for each Lee. The posts this crew can fill (in
+ * priority order), then the best fits first: each (post, Lee) pair by how good
+ * the Lee is at that post's work, ties by post priority and crew order. A
+ * Handy Lee ends up repairing, a Quick Lee on a gun.
+ */
+export function autoArrange(build: BoatBuild, crew: { type: string; mods?: StatMods }[], t: Tuning): (number | null)[] {
   const homes: (number | null)[] = crew.map(() => null);
-  const open = posts.slice(0, crew.length);
+  const open = postsFor(build, t).slice(0, crew.length);
   const pairs: { post: number; rank: number; lee: number; v: number }[] = [];
   open.forEach((post, rank) => {
-    const st = tiles[post].station;
-    const stat = st ? WORK_STAT[STATION_WORK[st]] : 'repairRate';
-    crew.forEach((c, lee) => pairs.push({ post, rank, lee, v: baseStat(LEE_DEFS[c.type] ?? LEE_DEFS.basic, stat, t, c.mods) }));
+    crew.forEach((c, lee) => pairs.push({ post: post.tile, rank, lee, v: fitFor(post.station, c, t) }));
   });
   pairs.sort((a, b) => b.v - a.v || a.rank - b.rank || a.lee - b.lee);
   const taken = new Set<number>();
@@ -92,11 +104,12 @@ export function autoArrange(build: BoatBuild, crew: { type: string; mods?: StatM
 /** Build an enemy boat from encounter data: its loadout, its crew at their levels (auto-picked bonuses), auto-arranged. */
 export function enemySetup(spec: EnemySpec, t: Tuning, opts: { levelBonus?: number; extraCrew?: number; salt?: number } = {}): BoatSetup {
   const base = defaultBuild(spec.ship);
+  if (spec.fullLoadout) base.loadout = { ...spec.fullLoadout };
   for (const [slot, item] of Object.entries(spec.loadout ?? {})) {
     if (item) base.loadout[slot] = item;
     else delete base.loadout[slot];
   }
-  base.treasures = [...(spec.treasures ?? [])];
+  if (spec.treasures) base.treasures = [...spec.treasures];
   const build = cleanBuild(base, t);
   const entries = spec.crew.flatMap((c) => Array(Math.max(0, c.count ?? 1)).fill(c) as typeof spec.crew);
   const max = Math.max(0, Math.round(t.ships[build.ship]?.crewMax ?? 99));

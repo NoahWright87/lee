@@ -1,11 +1,13 @@
-// Phase 4 run model: drafting, equipment, crew, permadeath, XP and levels,
-// rewards, the temporary encounter list and its escalation, and the save.
+// The run model: starting from a ship's preset (Phase 5), equipment, crew,
+// permadeath, XP and levels, rewards (and the forced first equip), Auto-equip,
+// the temporary encounter list and its escalation, and the save.
 
 import { describe, expect, test } from 'vitest';
 import { ENCOUNTERS } from '../src/config/encounters';
 import { defaultTuning } from '../src/config/tuning';
 import { createLee } from '../src/sim/crew';
 import { createBoat } from '../src/sim/boat';
+import { SHIPS } from '../src/config/ships';
 import { LEE_DEFS } from '../src/config/lees';
 import { xpToNext } from '../src/sim/levels';
 import {
@@ -17,8 +19,6 @@ import {
   canEquip,
   cargo,
   chooseBonus,
-  draftOffer,
-  draftPick,
   encounterFor,
   enemySetups,
   equip,
@@ -29,8 +29,10 @@ import {
   SAVE_VERSION,
   setupFor,
   takeReward,
-  takeStartPart,
   unequip,
+  autoEquipAll,
+  mustPlaceOpen,
+  whereIs,
   wearTrinket,
   type RunState,
 } from '../src/sim/run';
@@ -38,11 +40,8 @@ import { World } from '../src/sim/world';
 
 const t = defaultTuning();
 
-function drafted(ship = 'sloop', seed = 7): RunState {
-  const run = newRun(ship, seed);
-  while (run.stage === 'draft') draftPick(run, draftOffer(run, t)[0], t);
-  takeStartPart(run, run.startOffer[0], t);
-  return run;
+function drafted(ship = 'basic', seed = 7): RunState {
+  return newRun(ship, seed, t);
 }
 
 /** Fake Lees for a fight result: one per crew member, alive unless listed. */
@@ -60,25 +59,32 @@ function lees(run: RunState, dead: number[] = [], did: (l: ReturnType<typeof cre
 }
 
 describe('starting a run', () => {
-  test('a new run starts with the ship\'s default loadout, then drafts to the minimum crew, then picks a part', () => {
-    const run = newRun('hardship', 1);
-    expect(Object.keys(buildFor(run).loadout).sort()).toEqual(Object.keys(createBoat(1, 'player', { ship: 'hardship', loadout: {} }, t, { x: 0, y: 0 }, 0).ship.defaults).sort());
-    expect(run.stage).toBe('draft');
-    const offer = draftOffer(run, t);
-    expect(new Set(offer).size).toBe(3);
-    expect(offer).not.toContain('basic');
-    expect(draftOffer(run, t)).toEqual(offer); // seeded
-    while (run.stage === 'draft') draftPick(run, draftOffer(run, t)[1], t);
-    expect(run.crew).toHaveLength(t.ships.hardship.crewMin);
-    expect(run.stage).toBe('startPart');
-    expect(new Set(run.startOffer).size).toBe(3);
-    takeStartPart(run, run.startOffer[0], t);
-    expect(run.stage).toBe('refit');
-    expect(run.crew.every((m) => m.home !== null)).toBe(true);
+  test('a new run starts from the ship\'s preset (loadout, treasures, crew where they stand), ready to sail: no draft', () => {
+    for (const id of Object.keys(SHIPS)) {
+      const run = newRun(id, 1, t);
+      const preset = SHIPS[id].preset;
+      expect(run.stage).toBe('refit');
+      expect(buildFor(run).loadout).toEqual(preset.loadout);
+      expect(buildFor(run).treasures).toEqual(preset.treasures ?? []);
+      expect(run.crew.map((m) => m.type)).toEqual(preset.crew.map((c) => c.type));
+      expect(run.crew.every((m) => m.home !== null)).toBe(true);
+      expect(new Set(run.crew.map((m) => m.home)).size).toBe(run.crew.length);
+      // Somebody mans a gun, somebody sails.
+      const w = new World(t, 1, { player: setupFor(run, t), enemies: [], assists: false });
+      expect(w.player.crew.lees.some((l) => l.job === 'fire')).toBe(true);
+      expect(w.player.crew.lees.some((l) => l.job === 'sail')).toBe(true);
+      // Guns mostly on one side.
+      const sides = w.player.guns.filter((g) => g.targets === 'hull').map((g) => Math.sign(Math.round(Math.sin(g.face))));
+      const port = sides.filter((x) => x < 0).length;
+      const star = sides.filter((x) => x > 0).length;
+      expect(Math.max(port, star)).toBeGreaterThan(Math.min(port, star));
+    }
   });
 
   test('Lees of the same type are numbered apart', () => {
-    const run = newRun('sloop', 2);
+    const run = newRun('basic', 2, t);
+    run.crew = [];
+    run.counters = {};
     addCrew(run, 'quick', 1, t);
     addCrew(run, 'quick', 1, t);
     addCrew(run, 'hard', 1, t);
@@ -91,13 +97,13 @@ describe('equipment', () => {
     const run = drafted();
     const gun = addItem(run, 'carronade');
     expect(canEquip(run, gun.uid, 'fix:2,1')).toBe(false); // interior
-    expect(equip(run, gun.uid, 'fix:1,0')).toBe(true);
+    expect(equip(run, gun.uid, 'fix:2,0')).toBe(true);
     expect(cargo(run).map((x) => x.item)).toContain('cannon');
     const shield = addItem(run, 'gunShield');
-    expect(equip(run, shield.uid, 'att:fix:1,0')).toBe(true);
-    expect(buildFor(run).loadout['att:fix:1,0']).toBe('gunShield');
+    expect(equip(run, shield.uid, 'att:fix:2,0')).toBe(true);
+    expect(buildFor(run).loadout['att:fix:2,0']).toBe('gunShield');
     unequip(run, gun.uid);
-    expect(buildFor(run).loadout['att:fix:1,0']).toBeUndefined();
+    expect(buildFor(run).loadout['att:fix:2,0']).toBeUndefined();
     expect(cargo(run).some((x) => x.uid === shield.uid)).toBe(true);
     // Treasures sit in the ship's treasure slots.
     const cat = addItem(run, 'cat');
@@ -155,7 +161,7 @@ describe('after a fight', () => {
     const wiped = drafted();
     applyFight(wiped, lees(wiped, wiped.crew.map((m) => m.uid)), true, t);
     expect(wiped.stage).toBe('over');
-    expect(wiped.fallen).toHaveLength(t.ships.sloop.crewMin);
+    expect(wiped.fallen).toHaveLength(SHIPS.basic.preset.crew.length);
   });
 
   test('rewards: three cards, never all recruits; a recruit into a full crew needs someone released first', () => {
@@ -167,13 +173,50 @@ describe('after a fight', () => {
       expect(cards).toHaveLength(3);
       expect(cards.some((c) => c.kind === 'item')).toBe(true);
     }
-    while (run.crew.length < t.ships.sloop.crewMax) addCrew(run, 'basic', 1, t);
+    while (run.crew.length < t.ships.basic.crewMax) addCrew(run, 'basic', 1, t);
     run.pending = { fight: 1, won: true, xp: [], lost: [], levelUps: [], reward: [{ kind: 'recruit', type: 'deft', level: 1 }], rewardTaken: false };
     expect(takeReward(run, 0, t)).toBe(false);
     const gone = run.crew[0].uid;
     expect(takeReward(run, 0, t, gone)).toBe(true);
     expect(run.crew.some((m) => m.uid === gone)).toBe(false);
     expect(run.crew.at(-1)!.type).toBe('deft');
+    expect(run.crew.at(-1)!.home).toBeNull(); // recruits wait ashore
+  });
+
+  test('the first fight\'s reward goes to cargo and must be equipped before the next fight; later ones needn\'t', () => {
+    const run = drafted();
+    applyFight(run, lees(run), true, t);
+    run.pending!.reward = [{ kind: 'item', item: 'spikes' }];
+    expect(takeReward(run, 0, t)).toBe(true);
+    const spikes = cargo(run).find((x) => x.item === 'spikes')!;
+    expect(spikes).toBeDefined();
+    expect(whereIs(run, spikes.uid)).toBeNull(); // nothing equips itself
+    expect(mustPlaceOpen(run)).toBe(true);
+    expect(equip(run, spikes.uid, 'rail:4,1:bow')).toBe(true);
+    expect(mustPlaceOpen(run)).toBe(false);
+    // The second reward is free to sit in cargo.
+    applyFight(run, lees(run), true, t);
+    run.pending!.reward = [{ kind: 'item', item: 'fence' }];
+    takeReward(run, 0, t);
+    expect(mustPlaceOpen(run)).toBe(false);
+  });
+
+  test('Auto-equip fills empty spots from cargo and places Lees ashore, without moving anything already placed', () => {
+    const run = drafted();
+    const before = { ...run.loadout };
+    const homes = run.crew.map((m) => m.home);
+    const gun = addItem(run, 'cannon');
+    const plate = addItem(run, 'ironPlating');
+    const cat = addItem(run, 'cat');
+    const leg = addItem(run, 'woodenLeg');
+    const recruit = addCrew(run, 'quick', 1, t);
+    autoEquipAll(run, t);
+    for (const [slot, uid] of Object.entries(before)) expect(run.loadout[slot]).toBe(uid);
+    run.crew.slice(0, homes.length).forEach((m, i) => expect(m.home).toBe(homes[i]));
+    for (const x of [gun, plate, cat, leg]) expect(whereIs(run, x.uid)).not.toBeNull();
+    expect(recruit.home).not.toBeNull();
+    expect(new Set(run.crew.map((m) => m.home)).size).toBe(run.crew.length);
+    expect(cargo(run)).toHaveLength(0);
   });
 });
 

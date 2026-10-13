@@ -1,14 +1,14 @@
 // DOM HUD over the canvas: the ⚙️ menu, the run screens, the refit screen,
-// speed toggle, tune/debug toggles, the result screen, strip gauges, crew
-// debug, and the rotate-your-phone overlay. Reads the Controller; the canvas
+// the action buttons and pips, the speed button, tune/debug toggles, the
+// result screen, strip gauges, crew debug, and the rotate-your-phone overlay. Reads the Controller; the canvas
 // never draws UI chrome.
 
 import { ACTIVITY_KINDS, type ActivityKind } from '../config/lees';
-import { shipName } from '../config/ships';
-import { gunOnline, motionParams, shipStats, sinkProgress, type Boat } from '../sim/boat';
+import { motionParams, shipStats, sinkProgress } from '../sim/boat';
 import { DEG } from '../sim/math';
-import { roleName } from '../sim/crew';
+import { JOB_INFO } from '../config/lees';
 import type { Controller } from '../game/Controller';
+import { ActionBar } from './actionBar';
 import type { SideStats } from '../sim/world';
 import { CrewDebug } from './crewDebug';
 import { el, fmtTime } from './dom';
@@ -22,7 +22,6 @@ const ACTIVITY_LABEL: Record<ActivityKind, string> = {
   sail: 'Sailing',
   lookout: 'Lookout',
   pump: 'Pumping',
-  hooks: 'Hooks',
   powder: 'Powder',
   repair: 'Repairing',
   bail: 'Bailing',
@@ -43,12 +42,14 @@ export class Hud {
   private toast: HTMLDivElement;
   private toastTimer = 0;
   private gauges: HTMLDivElement;
-  private crewText: HTMLSpanElement;
   private moveText: HTMLSpanElement;
-  private speedBtns: HTMLButtonElement[];
+  private speedBtn: HTMLButtonElement;
+  private actions: ActionBar;
   private debugBtn: HTMLButtonElement;
   private result: HTMLDivElement;
   private resultBody: HTMLDivElement;
+  private resultMore: HTMLDivElement;
+  private moreBtn: HTMLButtonElement;
   private resultTitle: HTMLHeadingElement;
   private resultSub: HTMLDivElement;
   private primaryBtn: HTMLButtonElement;
@@ -56,12 +57,9 @@ export class Hud {
   private fightPill: HTMLDivElement;
   private waterFill: HTMLDivElement;
   private waterText: HTMLSpanElement;
-  private gunsText: HTMLSpanElement;
   private sinkBanner: HTMLDivElement;
   private panel: TuningPanel;
   private shownResultFor = -1;
-  /** One Disengage button per boat attached to yours, keyed by boat id. */
-  private disengage = new Map<number, HTMLButtonElement>();
 
   constructor(root: HTMLElement, ctl: Controller) {
     this.ctl = ctl;
@@ -79,13 +77,11 @@ export class Hud {
     this.debugBtn = el('button', 'hud-btn', 'Debug');
     this.debugBtn.onclick = () => ctl.toggleDebug();
     left.append(this.screens.gear, tuneBtn, this.debugBtn);
-    const right = el('div', 'hud-group seg');
-    this.speedBtns = ([1, 2] as const).map((s) => {
-      const b = el('button', 'hud-btn', `${s}x`);
-      b.onclick = () => ctl.setSpeed(s);
-      right.append(b);
-      return b;
-    });
+    const right = el('div', 'hud-group');
+    // One button cycling Pause → 0.5× → 1× → 3× (remembered separately for sailing and close combat).
+    this.speedBtn = el('button', 'hud-btn speed-btn', '1×');
+    this.speedBtn.onclick = () => ctl.cycleSpeed();
+    right.append(this.speedBtn);
     this.fightPill = el('div', 'fight-pill');
     top.append(left, this.fightPill, right);
 
@@ -99,6 +95,13 @@ export class Hud {
     this.resultTitle = el('h1', 'result-title');
     this.resultSub = el('div', 'result-sub');
     this.resultBody = el('div', 'result-stats');
+    // Everything else behind "More".
+    this.resultMore = el('div', 'result-stats hidden');
+    this.moreBtn = el('button', 'more-btn', 'More');
+    this.moreBtn.onclick = () => {
+      const open = this.resultMore.classList.toggle('hidden');
+      this.moreBtn.textContent = open ? 'More' : 'Less';
+    };
     const buttons = el('div', 'result-buttons');
     this.primaryBtn = el('button', 'big-btn primary', 'Continue');
     this.primaryBtn.onclick = () => {
@@ -112,15 +115,13 @@ export class Hud {
       ctl.finishFight();
       ctl.launch();
     };
-    const tune = el('button', 'big-btn', 'Tune');
-    tune.onclick = () => this.panel.open();
-    buttons.append(this.primaryBtn, this.secondaryBtn, tune);
-    card.append(this.resultTitle, this.resultSub, this.resultBody, buttons);
+    buttons.append(this.primaryBtn, this.secondaryBtn);
+    card.append(this.resultTitle, this.resultSub, this.resultBody, this.moreBtn, this.resultMore, buttons);
     this.result.append(card);
 
     this.panel = new TuningPanel(ctl);
     ocean.append(this.refit.top, this.crewDebug.root, this.refit.card, this.toast, this.result);
-    root.append(this.refit.root, this.screens.root, top, this.panel.root, this.screens.menuRoot);
+    root.append(this.refit.root, this.screens.root, top, this.refit.sheet, this.panel.root, this.screens.menuRoot);
 
     // Strip gauges.
     const gauges = el('div', 'strip-gauges');
@@ -131,82 +132,31 @@ export class Hud {
     bar.append(this.waterFill);
     this.waterText = el('span', 'gauge-value');
     water.append(wl, bar, this.waterText);
-    const guns = el('div', 'gauge guns');
-    guns.append(el('span', 'gauge-label', 'GUNS'));
-    this.gunsText = el('span', 'gauge-value');
-    guns.append(this.gunsText);
-    const crew = el('div', 'gauge crew');
-    crew.append(el('span', 'gauge-label', 'CREW'));
-    this.crewText = el('span', 'gauge-value');
-    crew.append(this.crewText);
     const move = el('div', 'gauge move');
     move.append(el('span', 'gauge-label', 'SPEED'));
     this.moveText = el('span', 'gauge-value');
     move.append(this.moveText);
-    gauges.append(water, guns, crew, move);
+    // Guns and crew are in the pips; water and speed aren't.
+    gauges.append(water, move);
     this.gauges = gauges;
     this.sinkBanner = el('div', 'sink-banner hidden', 'SINKING');
     strip.append(gauges, this.sinkBanner);
-    this.root.append(this.disengageLayer);
+    this.actions = new ActionBar(ctl);
+    this.root.append(this.actions.root);
 
     ctl.onChange(() => this.sync());
     ctl.onFrame(() => this.frame());
     this.sync();
   }
 
-  private disengageLayer = el('div', 'disengage-layer');
-
-  /**
-   * Disengage buttons: one per attached boat, beside its deck in the strip,
-   * kept out of the bottom of the screen where a resting thumb sits.
-   */
-  private syncDisengage(): void {
-    const w = this.ctl.world;
-    const proj = this.ctl.stripProjection;
-    const attached = w.phase === 'running' && !w.result ? w.attachedTo(w.player) : [];
-    const keep = new Set(attached.map((b) => b.id));
-    for (const [id, btn] of this.disengage) {
-      if (keep.has(id)) continue;
-      btn.remove();
-      this.disengage.delete(id);
-    }
-    if (!proj) return;
-    const W = this.root.clientWidth || window.innerWidth;
-    // At the seam between the ocean and the close-up, centered: never over the fight itself.
-    const bw = 150;
-    const bh = 52;
-    const gap = 8;
-    const total = attached.length * bw + (attached.length - 1) * gap;
-    attached.forEach((b, i) => {
-      let btn = this.disengage.get(b.id);
-      if (!btn) {
-        btn = el('button', 'disengage-btn');
-        const target: Boat = b;
-        btn.onclick = (ev) => {
-          ev.stopPropagation();
-          this.ctl.world.disengage(target);
-        };
-        this.disengageLayer.append(btn);
-        this.disengage.set(b.id, btn);
-      }
-      const link = w.links.linkBetween(w.player, b);
-      const casting = link ? w.links.castingOff(link) : false;
-      const label = casting ? `Casting off…\n${w.castOffStatus(b)}` : attached.length > 1 ? `Disengage\n${shipName(b.type)}` : 'Disengage';
-      if (btn.textContent !== label) btn.textContent = label;
-      btn.disabled = casting;
-      btn.classList.toggle('breaking', casting);
-      btn.style.left = `${Math.round(W / 2 - total / 2 + i * (bw + gap))}px`;
-      // Resting on the seam, just above it, so it covers neither the strip's gauges nor the decks.
-      btn.style.top = `${Math.round(proj.top - bh - 6)}px`;
-    });
-  }
-
-  /** Speed buttons show the setting for the current mode (sailing or close combat). */
+  /** The speed button shows the setting for the current mode (sailing or close combat). */
   private syncSpeed(): void {
     const ctl = this.ctl;
-    this.speedBtns.forEach((b, i) => b.classList.toggle('on', ctl.speed === i + 1));
-    const melee = ctl.speedMode() === 'melee';
-    for (const b of this.speedBtns) b.title = melee ? 'Speed during close combat' : 'Speed while sailing';
+    const v = ctl.speed;
+    const text = v === 0 ? '⏸' : v === 0.5 ? '½×' : `${v}×`;
+    if (this.speedBtn.textContent !== text) this.speedBtn.textContent = text;
+    this.speedBtn.classList.toggle('on', v === 0);
+    this.speedBtn.title = ctl.speedMode() === 'melee' ? 'Speed during close combat' : 'Speed while sailing';
   }
 
   private sync(): void {
@@ -238,7 +188,7 @@ export class Hud {
     this.root.style.setProperty('--ocean-frac', `${(this.ctl.oceanFrac * 100).toFixed(2)}%`);
     this.refit.frame();
     this.crewDebug.frame();
-    this.syncDisengage();
+    this.actions.frame();
     this.syncSpeed();
     const fighting = this.ctl.screen === 'fight';
     const full = !fighting && this.ctl.screen !== 'refit';
@@ -246,8 +196,6 @@ export class Hud {
     this.root.classList.toggle('setup-mode', this.ctl.screen === 'refit');
     this.root.classList.toggle('full-screen', full);
     this.fightPill.classList.toggle('hidden', !fighting);
-    const lees = p.crew.lees;
-    this.crewText.textContent = `${lees.filter((l) => l.alive).length}/${lees.length}`;
     // Speed and turning as a share of a fully crewed, undamaged boat (oars, sails, engine, water).
     const mp = motionParams(p, w.tuning);
     const mv = w.tuning.boat.movement;
@@ -259,10 +207,6 @@ export class Hud {
     this.waterFill.style.width = `${(s * 100).toFixed(1)}%`;
     this.waterFill.classList.toggle('danger', s > 0.7);
     this.waterText.textContent = `${Math.round(s * 100)}%`;
-    // Manned guns of those still online.
-    const online = p.guns.filter((c) => gunOnline(p, c, w.tuning));
-    const manned = online.filter((c) => w.gunnerOf(p, c) !== null).length;
-    this.gunsText.textContent = `${manned}/${online.length}`;
     this.sinkBanner.classList.toggle('hidden', p.sinkingSince === null);
     const live = w.liveEnemies().length;
     this.fightPill.textContent = `${this.ctl.mode === 'sandbox' ? 'Sandbox' : `Fight ${w.fight}`} · ${live}/${w.enemies.length} left`;
@@ -286,20 +230,23 @@ export class Hud {
     this.secondaryBtn.classList.toggle('hidden', !sandbox);
     const s: SideStats = w.stats.player;
     const pct = s.shellsFired ? Math.round((100 * s.shellsHit) / s.shellsFired) : 0;
-    const rows: [string, string, boolean?][] = [
+    const e = w.stats.enemy;
+    // The few numbers that say how it went.
+    const key: [string, string][] = [
       ['Time', fmtTime(r.time)],
+      ['Damage dealt / taken', `${Math.round(s.damageDealt)} / ${Math.round(s.damageTaken)}`],
+      ['Lees lost (you / enemy)', `${s.leesLost} / ${e.leesLost}`],
+    ];
+    const rows: [string, string][] = [
       [
         'Ships sunk / crew killed',
-        `${w.enemies.filter((e) => e.sinkingSince !== null).length} / ${w.enemies.filter((e) => e.sinkingSince === null && w.isOut(e)).length} of ${w.enemies.length}`,
+        `${w.enemies.filter((x) => x.sinkingSince !== null).length} / ${w.enemies.filter((x) => x.sinkingSince === null && w.isOut(x)).length} of ${w.enemies.length}`,
       ],
       ['Shells fired / hit', `${s.shellsFired} / ${s.shellsHit} (${pct}%)`],
-      ['Damage dealt / taken', `${Math.round(s.damageDealt)} / ${Math.round(s.damageTaken)}`],
-      ['Shells dodged', `${s.shellsDodged} of ${w.stats.enemy.shellsFired}`, true],
+      ['Shells dodged', `${s.shellsDodged} of ${e.shellsFired}`],
       ['Water taken / bailed', `${Math.round(s.waterTaken)} / ${Math.round(s.waterBailed)}`],
       ['HP repaired', `${Math.round(s.hpRepaired)}`],
-      ['Lees lost (you / enemy)', `${s.leesLost} / ${w.stats.enemy.leesLost}`, true],
     ];
-    const e = w.stats.enemy;
     const lost = (x: SideStats) =>
       (['cannon', 'gatling', 'melee', 'pistol', 'sank', 'spikes', 'explosion'] as const)
         .filter((k) => x.lostBy[k] > 0)
@@ -307,16 +254,15 @@ export class Hud {
         .join(', ') || 'none';
     if (s.leesLost || e.leesLost) rows.push(['  by cause (you)', lost(s)], ['  by cause (enemy)', lost(e)]);
     // Close combat: only when it happened.
-    if (s.dockTime > 0 || e.dockTime > 0) rows.push(['Time attached', fmtTime(Math.max(s.dockTime, e.dockTime))]);
+    if (s.closeTime > 0 || e.closeTime > 0) rows.push(['Time in close combat', fmtTime(Math.max(s.closeTime, e.closeTime))]);
     if (s.boardings || e.boardings) {
       rows.push([
         'Boardings (you / enemy)',
         `${s.boardings} / ${e.boardings} · ${Math.round(s.enemyDeckTime)}s / ${Math.round(e.enemyDeckTime)}s on decks`,
-        true,
       ]);
     }
     if (s.meleeDealt || e.meleeDealt) {
-      rows.push(['Melee kills (you / enemy)', `${s.meleeKills} / ${e.meleeKills}`, true], ['Melee damage dealt / taken', `${Math.round(s.meleeDealt)} / ${Math.round(s.meleeTaken)}`]);
+      rows.push(['Melee kills (you / enemy)', `${s.meleeKills} / ${e.meleeKills}`], ['Melee damage dealt / taken', `${Math.round(s.meleeDealt)} / ${Math.round(s.meleeTaken)}`]);
     }
     if (s.pistolShots || e.pistolShots) {
       const pp = s.pistolShots ? Math.round((100 * s.pistolHits) / s.pistolShots) : 0;
@@ -326,18 +272,19 @@ export class Hud {
       rows.push(['Gatling hits (you / enemy)', `${s.gatlingHits} of ${s.gatlingShots} / ${e.gatlingHits} of ${e.gatlingShots}`]);
     }
     if (s.ramsDone || s.ramsTaken) {
-      rows.push(['Rams done / taken', `${s.ramsDone} / ${s.ramsTaken} · dealt ${Math.round(s.ramDealt)} · took ${Math.round(s.ramTaken)}`, true]);
+      rows.push(['Rams done / taken', `${s.ramsDone} / ${s.ramsTaken} · dealt ${Math.round(s.ramDealt)} · took ${Math.round(s.ramTaken)}`]);
     }
-    if (s.disengages) rows.push(['Disengages', `${s.disengages}`]);
+    if (s.retreats) rows.push(['Retreats', `${s.retreats}`]);
     if (s.tilesBlown || e.tilesBlown) rows.push(['Tiles blown out (you / enemy)', `${s.tilesBlown} / ${e.tilesBlown}${s.explosions || e.explosions ? ` · explosions ${s.explosions} / ${e.explosions}` : ''}`]);
-    this.resultBody.replaceChildren(
-      ...rows.map(([k, v, key]) => {
-        const row = el('div', `stat${key ? ' key' : ''}`);
-        row.append(el('span', 'stat-k', k), el('span', 'stat-v', v));
-        return row;
-      }),
-      this.crewBreakdown(),
-    );
+    const line = ([k, v]: [string, string], cls = 'stat') => {
+      const row = el('div', cls);
+      row.append(el('span', 'stat-k', k), el('span', 'stat-v', v));
+      return row;
+    };
+    this.resultBody.replaceChildren(...key.map((x) => line(x, 'stat key')));
+    this.resultMore.replaceChildren(...rows.map((x) => line(x)), this.crewBreakdown());
+    this.resultMore.classList.add('hidden');
+    this.moreBtn.textContent = 'More';
     this.result.classList.remove('hidden');
   }
 
@@ -365,8 +312,8 @@ export class Hud {
       const tile = boat.grid.tiles[lee.home];
       const head = el('div', 'crew-row-head');
       head.append(
-        el('b', '', `${lee.label} · ${roleName(boat, lee.home)}`),
-        el('span', 'crew-row-home', tile.label),
+        el('b', '', `${lee.label} · ${JOB_INFO[lee.job].icon} ${JOB_INFO[lee.job].name}`),
+        el('span', 'crew-row-home', `started on ${tile.label}`),
         el('span', `crew-row-status ${lee.alive ? 'ok' : 'lost'}`, lee.alive ? 'survived' : 'lost'),
       );
       const bar = el('div', 'time-bar');

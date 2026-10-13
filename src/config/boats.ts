@@ -73,9 +73,9 @@ const FIVE_PART_ADJACENCY: [string, string][] = [
 
 const BEAM_THIRD = 5 / 3;
 
-/** Sloop: the all-rounder from the earlier phases. Five parts and a 5 × 3 deck. */
+/** Basic Ship (the old Sloop): the all-rounder from the earlier phases. Five parts and a 5 × 3 deck. */
 export const SLOOP: BoatLayout = {
-  id: 'sloop',
+  id: 'basic',
   length: 28,
   beam: 10,
   parts: [
@@ -129,9 +129,9 @@ export const SLOOP: BoatLayout = {
 
 const SK_THIRD = 8 / 3;
 
-/** Skiff (skirmisher): small, quick, lightly built. A 4 × 3 deck. */
+/** Long Distance Relation Ship (the old Skiff): small, quick, lightly built. A 4 × 3 deck. */
 export const SKIFF: BoatLayout = {
-  id: 'skiff',
+  id: 'longdistance',
   length: 22,
   beam: 8,
   parts: [
@@ -188,7 +188,7 @@ export const SKIFF: BoatLayout = {
  * of 7 × 2. No midship row: the two long sides are the main hull.
  */
 export const FRIEND_SHIP: BoatLayout = {
-  id: 'friendship',
+  id: 'friend',
   length: 33,
   beam: 7,
   parts: [
@@ -246,7 +246,7 @@ export const FRIEND_SHIP: BoatLayout = {
 
 /** Hard Ship (the gunnery galleon): big, slow and heavily built. A 6 × 4 deck. */
 export const HARD_SHIP: BoatLayout = {
-  id: 'hardship',
+  id: 'hard',
   length: 37,
   beam: 14,
   parts: [

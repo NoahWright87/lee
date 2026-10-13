@@ -1,6 +1,6 @@
-// Full-screen run screens over the canvas: the menu, choosing a ship, drafting
-// the crew, the starting part, after a fight (results → level-ups → reward),
-// and Run Over. Plus the ⚙️ system menu (on every screen) and the message for
+// Full-screen run screens over the canvas: the menu, choosing a ship (each
+// comes with its preset crew and loadout), after a fight (results → level-ups
+// → reward), and Run Over. Plus the ⚙️ system menu (on every screen) and the message for
 // a saved run that can't be continued.
 
 import { ITEMS } from '../config/items';
@@ -9,8 +9,8 @@ import { SHIP_ORDER, SHIPS } from '../config/ships';
 import { countTags, tagName } from '../config/tags';
 import type { Controller } from '../game/Controller';
 import { bonusLabel } from '../sim/levels';
-import { buildFor, crewMax, crewMin, draftOffer, itemOf, SAVE_VERSION, type RunState } from '../sim/run';
-import { itemCard, itemIcon, leeTypeCard, levelBadge, loadoutIcons, memberFigure, slotSummary, tagChips } from './cards';
+import { buildFor, crewMax, itemOf, SAVE_VERSION, type RunState } from '../sim/run';
+import { itemIcon, itemLine, jobBars, levelBadge, loadoutIcons, memberFigure } from './cards';
 import { button, confirmAction, el } from './dom';
 import { shipPreview } from './shipPreview';
 
@@ -97,7 +97,7 @@ export class Screens {
   private render(): void {
     const ctl = this.ctl;
     const run = ctl.run;
-    const full = ['menu', 'chooseShip', 'draft', 'startPart', 'post', 'over'].includes(ctl.screen);
+    const full = ['menu', 'chooseShip', 'post', 'over'].includes(ctl.screen);
     this.root.classList.toggle('hidden', !full);
     if (!full) {
       this.sig = '';
@@ -119,12 +119,6 @@ export class Screens {
       case 'chooseShip':
         this.renderChooseShip(body);
         break;
-      case 'draft':
-        if (run) this.renderDraft(body, run);
-        break;
-      case 'startPart':
-        if (run) this.renderStartPart(body, run);
-        break;
       case 'post':
         if (run) this.renderPost(body, run);
         break;
@@ -139,7 +133,7 @@ export class Screens {
   private renderMenu(body: HTMLElement): void {
     const ctl = this.ctl;
     body.classList.add('menu');
-    body.append(el('h1', 'title', 'Lee'), el('div', 'subtitle', 'Choose a ship, draft a crew, and see how far you get.'));
+    body.append(el('h1', 'title', 'Lee'), el('div', 'subtitle', 'Choose a ship, crew it with Lees, and see how far you get.'));
     const buttons = el('div', 'menu-buttons');
     buttons.append(button('New Run', 'big-btn primary', () => ctl.newRun()));
     if (ctl.canContinue() && ctl.saved.ok) {
@@ -172,68 +166,22 @@ export class Screens {
 
   private renderChooseShip(body: HTMLElement): void {
     const ctl = this.ctl;
-    const t = ctl.tuning;
-    body.append(el('h2', '', 'Choose a ship'), el('div', 'subtitle', 'Each one asks for a different way of fighting.'));
+    body.append(el('h2', '', 'Choose a ship'), el('div', 'subtitle', 'Each comes crewed and fitted out.'));
     const list = el('div', 'card-list');
     for (const id of SHIP_ORDER) {
       const ship = SHIPS[id];
-      const st = t.ships[id];
-      const card = el('div', 'card ship-card');
+      // The whole card is the button.
+      const card = button('', 'card ship-card pick', () => ctl.chooseShip(id));
+      card.setAttribute('aria-label', `Sail the ${ship.name}`);
       const head = el('div', 'card-row');
-      const names = el('div', 'card-names');
-      names.append(el('div', 'card-title', ship.name), el('div', 'card-sub', ship.style));
-      head.append(names);
-      card.append(head, shipPreview(ship, ship.defaults, 250), el('div', 'card-text', ship.blurb));
-      const stats = el('div', 'ship-stats');
-      const stat = (k: string, v: string) => {
-        const s = el('span', 'ship-stat');
-        s.append(el('small', '', k), el('b', '', v));
-        stats.append(s);
-      };
-      stat('Speed', `×${st.speed.toFixed(2)}`);
-      stat('Turning', `×${st.turn.toFixed(2)}`);
-      stat('Hull', `×${st.hullHp.toFixed(2)}`);
-      stat('Leaks', `×${st.leak.toFixed(2)}`);
-      stat('Crew', `${st.crewMin}–${st.crewMax}`);
-      stat('Treasures', `${st.treasures}`);
-      card.append(stats, el('div', 'card-sub slots', slotSummary(ship)));
-      card.append(loadoutIcons(Object.values(ship.defaults)));
-      if (ship.tags.length) card.append(tagChips(ship.tags));
-      card.append(button(`Sail the ${ship.name}`, 'big-btn primary', () => ctl.chooseShip(id)));
+      head.append(el('div', 'card-title', ship.name), el('div', 'card-sub', ship.style));
+      card.append(head, shipPreview(ship, ship.preset.loadout, 220, ship.preset.facings), el('div', 'card-text', ship.blurb));
+      // The crew and parts it comes with, as pictures.
+      const row = el('div', 'ship-kit');
+      for (const c of ship.preset.crew) row.append(memberFigure(c.type, 'chip-figure'));
+      row.append(loadoutIcons([...Object.values(ship.preset.loadout), ...(ship.preset.treasures ?? [])]));
+      card.append(row);
       list.append(card);
-    }
-    body.append(list);
-  }
-
-  private renderDraft(body: HTMLElement, run: RunState): void {
-    const ctl = this.ctl;
-    const t = ctl.tuning;
-    const need = crewMin(run, t);
-    body.append(el('h2', '', `Draft your crew · ${run.crew.length + 1} of ${need}`), el('div', 'subtitle', `${SHIPS[run.ship].name}: pick one Lee each round.`));
-    if (run.crew.length) {
-      const so = el('div', 'crew-so-far');
-      for (const m of run.crew) {
-        const chip = el('span', 'crew-chip');
-        chip.append(memberFigure(m.type, 'chip-figure'), document.createTextNode(m.label));
-        so.append(chip);
-      }
-      body.append(so);
-    }
-    const list = el('div', 'card-list');
-    for (const type of draftOffer(run, t)) {
-      list.append(leeTypeCard(type, t, 1, [button(`Draft ${LEE_DEFS[type].name}`, 'big-btn primary', () => ctl.draft(type))]));
-    }
-    body.append(list);
-  }
-
-  private renderStartPart(body: HTMLElement, run: RunState): void {
-    const ctl = this.ctl;
-    body.append(el('h2', '', 'Pick a starting part'), el('div', 'subtitle', 'Start steering your build. It goes into an empty slot if one fits, or into cargo.'));
-    const list = el('div', 'card-list');
-    for (const item of run.startOffer) {
-      const def = ITEMS[item];
-      if (!def) continue;
-      list.append(itemCard(def, [button(`Take the ${def.name}`, 'big-btn primary', () => ctl.takeStartPart(item))]));
     }
     body.append(list);
   }
@@ -298,9 +246,8 @@ export class Screens {
     }
     const left = post.levelUps.length;
     body.append(el('h2', '', `${m.label}: level ${up.level}`), el('div', 'subtitle', `Pick one bonus.${left > 1 ? ` ${left - 1} more level-up${left > 2 ? 's' : ''} after this.` : ''}`));
-    const head = el('div', 'card lee-mini');
-    head.append(memberFigure(m.type), el('div', 'card-title', `${LEE_DEFS[m.type]?.role ?? ''}`), el('span', 'level-badge', `Lv ${up.level}`));
-    if (m.bonuses.length) head.append(el('div', 'card-sub', `So far: ${m.bonuses.map((b) => bonusLabel(b, t, STAT_LABELS)).join(', ')}`));
+    const head = el('div', 'card-row');
+    head.append(memberFigure(m.type, 'chip-figure'), el('div', 'card-sub', m.bonuses.length ? `So far: ${m.bonuses.map((b) => bonusLabel(b, t, STAT_LABELS)).join(', ')}` : LEE_DEFS[m.type]?.role ?? ''));
     body.append(head);
     const list = el('div', 'bonus-list');
     up.offers.forEach((b, i) => {
@@ -310,7 +257,7 @@ export class Screens {
     });
     body.append(list);
     const row = el('div', 'row');
-    row.append(button('Auto-pick', 'hud-btn', () => ctl.chooseBonus(m.uid, up.offers[0])), button('Auto-pick all', 'hud-btn', () => ctl.autoPickAll()));
+    if (left > 1) row.append(button('Auto-pick all', 'hud-btn', () => ctl.autoPickAll()));
     body.append(row);
   }
 
@@ -345,22 +292,31 @@ export class Screens {
       }));
       return;
     }
-    body.append(el('h2', '', 'Pick a reward'), el('div', 'subtitle', 'One of three.'));
+    body.append(el('h2', '', 'Pick a reward'), el('div', 'subtitle', run.won === 1 ? 'Equip it before the next fight.' : 'It goes into your cargo.'));
     const list = el('div', 'card-list');
     post.reward.forEach((card, i) => {
       if (card.kind === 'recruit') {
         const full = run.crew.length >= crewMax(run, t);
-        const take = button(full ? `Recruit (release someone)` : `Recruit ${LEE_DEFS[card.type].name}`, 'big-btn primary', () => {
+        const def = LEE_DEFS[card.type];
+        const b = button('', 'card reward-card pick', () => {
           if (full) {
             this.releaseFor = i;
             this.render();
           } else ctl.takeReward(i);
         });
-        list.append(leeTypeCard(card.type, t, card.level, [el('div', 'card-sub', `Recruit · joins at level ${card.level}`), take]));
+        const names = el('div', 'card-names');
+        names.append(el('div', 'card-title', `${def.name}${card.level > 1 ? ` · Lv ${card.level}` : ''}`), el('div', 'card-text', `Recruit · ${def.role}${full ? ' · crew full: release someone' : ''}`));
+        if (def.trait) names.append(el('div', 'card-sub', `${def.trait.name}: ${def.trait.text}`));
+        const head = el('div', 'card-row');
+        head.append(memberFigure(card.type), names);
+        b.append(head, jobBars(card.type, t));
+        list.append(b);
       } else {
         const def = ITEMS[card.item];
         if (!def) return;
-        list.append(itemCard(def, [button(`Take the ${def.name}`, 'big-btn primary', () => ctl.takeReward(i))]));
+        const b = button('', 'card reward-card pick', () => ctl.takeReward(i));
+        b.append(itemLine(def));
+        list.append(b);
       }
     });
     body.append(list);
@@ -373,7 +329,7 @@ export class Screens {
     const t = ctl.tuning;
     body.append(el('h2', 'lose', 'Run over'), el('div', 'subtitle', `${run.won} ${run.won === 1 ? 'fight' : 'fights'} survived in the ${SHIPS[run.ship].name}.`));
     const build = buildFor(run);
-    body.append(shipPreview(SHIPS[run.ship], build.loadout, 280));
+    body.append(shipPreview(SHIPS[run.ship], build.loadout, 280, build.facings));
     const all = [...Object.values(build.loadout), ...(build.treasures ?? [])];
     body.append(loadoutIcons(all));
     const tags = countTags([SHIPS[run.ship].tags, ...all.map((i) => ITEMS[i]?.tags ?? []), ...run.crew.map((m) => LEE_DEFS[m.type]?.tags ?? [])]);

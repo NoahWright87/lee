@@ -81,3 +81,45 @@ export function boatCard(b: Boat, t: Tuning): BoatCard {
     repair,
   };
 }
+
+/** The refit's five stat bars, raw (the refit divides by tuning.refit's "full bar" values). */
+export interface BoatBars {
+  /** Damage per minute from manned guns (crew damage counts half). */
+  firepower: number;
+  /** Total hull HP, armor included. */
+  toughness: number;
+  /** Speed and turning with this crew, as a share of the baseline hull (60/40). */
+  speed: number;
+  /** The crew's sword power (damage × rate × HP, summed) × boarding range, plus anti-crew guns, spikes and planks. */
+  boarding: number;
+  /** Repair and bailing per second from Lees starting on plain deck (fixers), plus manned pumps. */
+  repair: number;
+}
+
+export const BAR_KEYS: (keyof BoatBars)[] = ['firepower', 'toughness', 'speed', 'boarding', 'repair'];
+export const BAR_NAMES: Record<keyof BoatBars, string> = { firepower: 'Firepower', toughness: 'Toughness', speed: 'Speed', boarding: 'Boarding', repair: 'Repair' };
+
+export function boatBars(b: Boat, t: Tuning): BoatBars {
+  const c = boatCard(b, t);
+  const mv = t.boat.movement;
+  let melee = 0;
+  let repair = 0;
+  for (const l of b.crew.lees) {
+    if (!l.alive) continue;
+    melee += leeStat(l, 'meleeDamage', b, t) * leeStat(l, 'meleeRate', b, t) * leeStat(l, 'hp', b, t);
+    const tile = b.grid.tiles[l.home];
+    if (l.job === 'fix') {
+      repair += (t.crew.repairRate * leeStat(l, 'repairRate', b, t) + t.crew.bailRate * leeStat(l, 'bailRate', b, t)) / 2;
+      if (tile.station === 'pump' && tile.fixture) repair += t.items[tile.fixture.item]?.rate ?? 0;
+    }
+  }
+  let rails = 0;
+  for (const tile of b.grid.tiles) for (const r of tile.rails) rails += r.kind === 'spikes' ? 0.6 : r.kind === 'planks' ? 0.4 : 0;
+  return {
+    firepower: c.hullDpm + c.crewDpm * 0.5,
+    toughness: c.hullHp,
+    speed: 0.6 * (c.speed / Math.max(1e-6, mv.cruiseSpeed)) + 0.4 * (c.turn / Math.max(1e-6, mv.turnRate)),
+    boarding: melee * b.mods.boardRange + c.crewDpm / 150 + rails,
+    repair,
+  };
+}

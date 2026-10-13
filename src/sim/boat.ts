@@ -82,9 +82,9 @@ export interface CrewEffects {
   accuracy: number;
   /** Reload time multiplier from manned powder stores (1 = none). */
   reload: number;
-  /** Swing time and grapple time multipliers from manned boarding hooks (1 = none). */
-  swing: number;
-  grapple: number;
+  /** Pit-stop bonuses while stopped: fixing (repair, bailing, pumping) and gunner aim (1 = none). */
+  fix: number;
+  aim: number;
 }
 
 export interface Boat {
@@ -106,6 +106,10 @@ export interface Boat {
   ai: AiProfile | null;
   /** Point the helm is seeking, or null to hold course. */
   target: Vec | null;
+  /** The helm bends into an orbit around a close target (otherwise it seeks the point straight on). */
+  orbit: boolean;
+  /** Told to stop (sails down, coasting to a halt): the pit stop. */
+  stopped: boolean;
   /** World time the boat crossed its sink line, or null. */
   sinkingSince: number | null;
   /** Total water that has leaked in (stat). */
@@ -119,7 +123,7 @@ export interface Boat {
 
 /** A ship's numbers (tuning.ships.<id>). */
 export function shipStats(b: { type: string }, t: Tuning): ShipStats {
-  return t.ships[b.type] ?? t.ships.sloop ?? Object.values(t.ships)[0];
+  return t.ships[b.type] ?? t.ships.basic ?? Object.values(t.ships)[0];
 }
 
 export interface BoatOptions {
@@ -207,12 +211,14 @@ export function createBoat(id: number, side: Side, build: BoatBuild, t: Tuning, 
     advantage: adv,
     ai: opts.ai ?? null,
     target: null,
+    orbit: true,
+    stopped: false,
     sinkingSince: null,
     waterTaken: 0,
     grid,
     crew: { lees: [], needs: [], thinkIn: 0 },
     mobility: { speed: 1, turn: 1 },
-    fx: { accuracy: 1, reload: 1, swing: 1, grapple: 1 },
+    fx: { accuracy: 1, reload: 1, fix: 1, aim: 1 },
   };
 }
 
@@ -285,8 +291,8 @@ export function gunSpec(b: Boat, g: GunState, t: Tuning): GunSpec {
     reload: Math.max(0.05, (G.reloadTime * n('reload', 1) * g.mods.reload * b.fx.reload) / b.advantage),
     damage: G.damage * n('damage', 1),
     crewDamage: G.crewDamage * n('crewDamage', 1),
-    spread: (G.spread * n('spread', 1) * b.mods.gunSpread * g.mods.spread) / Math.max(0.1, b.fx.accuracy),
-    spreadPerMeter: (n('spreadPerMeter', 0) * b.mods.gunSpread * g.mods.spread) / Math.max(0.1, b.fx.accuracy),
+    spread: (G.spread * n('spread', 1) * b.mods.gunSpread * g.mods.spread) / Math.max(0.1, b.fx.accuracy * b.fx.aim),
+    spreadPerMeter: (n('spreadPerMeter', 0) * b.mods.gunSpread * g.mods.spread) / Math.max(0.1, b.fx.accuracy * b.fx.aim),
     shellSpeed: Math.max(0.05, n('shellSpeed', 1)),
     pellets: Math.max(1, Math.round(n('pellets', 1))),
     splash: Math.max(1, n('splash', 1)),
@@ -431,9 +437,9 @@ export function motionParams(boat: Boat, t: Tuning): MotionParams {
     turnAcceleration: m.turnAcceleration * DEG,
     lateralDrag: m.lateralDrag,
     turnSpeedLoss: m.turnSpeedLoss,
-    throttle: sinking ? 0 : boat.throttle,
+    throttle: sinking || boat.stopped ? 0 : boat.throttle,
     orbitRadiusScale: m.orbitRadiusScale,
-    orbitCapture: m.orbitCapture,
+    orbitCapture: boat.orbit ? m.orbitCapture : 0,
   };
 }
 

@@ -178,7 +178,7 @@ export function labelTiles(layout: BoatLayout, tiles: Tile[], name: (item: strin
       t.label = `${layout.parts[t.part].label} deck`;
       continue;
     }
-    const side = t.station === 'gun' || t.station === 'oars' || t.station === 'hooks' ? sideName(t) : '';
+    const side = t.station === 'gun' || t.station === 'oars' ? sideName(t) : '';
     const k = key(t);
     count[k] = (count[k] ?? 0) + 1;
     const n = totals[k] > 1 && side ? ` ${count[k]}` : '';
