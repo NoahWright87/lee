@@ -1,6 +1,6 @@
 # TODO: where Phase 5 left off
 
-Phase 5 ("Commands & Clarity", [`PRD_PHASE5.md`](PRD_PHASE5.md)) is built. This file lists what's still open from it and what the next phase could be, so the next PR can start from here. **There is no Phase 6 PRD yet:** pick the next phase (below) and write its PRD first, the same way as Phases 1–5.
+Phase 5 ("Commands & Clarity", [`PRD_PHASE5.md`](PRD_PHASE5.md)) is built. This file lists what's still open from it, so the next PR can start from here. **The next phase is Phase 6, "Ports & the Sea Map":** [`PRD_PHASE6.md`](PRD_PHASE6.md).
 
 ## 1. Decide in playtest (Phase 5 open questions)
 
@@ -36,24 +36,12 @@ From PRD §13, plus the calls made while building it. Each one is a default that
 - [ ] A fifth action button.
 - [ ] Picking individual enemy Lees as targets.
 
-## 5. The next phase: candidates
+## 5. The next phase
 
-Everything below was ruled out of scope in Phase 4 (§12) and still is. **Recommended next: the run structure** (sea map, ports and shops, currency), because the temporary encounter list has stood in for two phases now and the code was built to be replaced there:
+**Phase 6: Ports & the Sea Map** ([`PRD_PHASE6.md`](PRD_PHASE6.md)): ports with shops, recruiting, a shipyard and a bank; gold; budget-built enemies; a sea map you cross by picking stops; endless escalation; difficulty levels and a Custom start. It replaces the temporary encounter list. Where it plugs in:
 
-- `encounterFor` / `enemySetups` (`src/sim/run.ts`) are the only things that pick the next fight; a sea map replaces them.
-- `rewardOffer` / `takeReward` (`src/sim/run.ts`) are the only reward source; shops and other nodes add sources next to it.
+- `encounterFor` / `enemySetups` (`src/sim/run.ts`) are the only things that pick the next fight; the map and the budget generator replace them.
+- `rewardOffer` / `takeReward` (`src/sim/run.ts`) are the only reward source; gold, spoils and shops replace them.
 - Which screen comes next lives in `src/game/Controller.ts`, not in `run.ts`.
 
-The full list to pick from:
-
-- [ ] **Sea map**: nodes, routes, route choice. Replaces the temporary encounter list.
-- [ ] **Ports and shops**: shopkeepers, currency, interest; buying ships; selling or scrapping items; the healing economy (ale bar, healers, paid repairs).
-- [ ] **Endless mode** as a designed system (the escalation after the list is a placeholder) and a **victory condition**.
-- [ ] **The Punishers** or another chasing faction.
-- [ ] **Sea modifiers** (the "-cy" seas) and sea selection; telegraph warning time is the intended difficulty dial (Phase 1 §13).
-- [ ] **Ness monsters** and **boss fights.** Telegraphs are ready for them (Phase 1 §13). Close combat isn't: Phase 3 §14 asked for links that work with a latching Ness, but Phase 5 replaced the link system with `src/sim/contact.ts`, which only knows boats, so a Ness needs that generalized first.
-- [ ] **Tag bonuses and synergies** (tags are data only today).
-- [ ] **Active abilities** on parts or Lees; **fire and other tile layers** (incendiary guns); **recoil** on very large guns.
-- [ ] **Ship upgrades beyond parts** (hull tiers, larger grids).
-- [ ] **Meta-progression** across runs (unlocks, achievements).
-- [ ] The **Lee Creator** tool; a **pun/naming and lore pass**; a **landscape layout**.
+Still later (PRD_PHASE6 §15): the PUNishers, wages, special "-cy" seas, text events, Ness and bosses, meta-progression, tag synergies, active abilities, fire and other tile layers, recoil, the Lee Creator, the lore pass, a landscape layout. **Before Ness:** Phase 3 §14 asked for close-combat links that a latching Ness could reuse, but Phase 5 replaced the link system with `src/sim/contact.ts`, which only knows boats, so it needs generalizing first.

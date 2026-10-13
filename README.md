@@ -10,7 +10,7 @@ Phase 4 turns the test bench into the start of a run: **do ship, crew and equipm
 
 Phase 5 is about operating and reading the game: **can a player with zero naval knowledge understand a fight and steer it with a few taps, without it becoming less of an autobattler?** ([`docs/PRD_PHASE5.md`](docs/PRD_PHASE5.md))
 
-What's still open from Phase 5, and the candidates for the next phase: [`docs/TODO.md`](docs/TODO.md).
+Phase 6 (next, not built yet) is the run between fights: **does choosing where to sail, what to fight, and what to buy make each run feel like your own story, while keeping the fights the heart of the game?** ([`docs/PRD_PHASE6.md`](docs/PRD_PHASE6.md)) What's still open from Phase 5: [`docs/TODO.md`](docs/TODO.md).
 
 The earlier grid autobattler lives in [`legacy/`](legacy/). It is not part of the build.
 
