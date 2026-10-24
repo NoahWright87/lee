@@ -2,13 +2,16 @@
 // screen is up, and session settings (speed, debug, pause). The Phaser scene
 // and the DOM HUD both talk to this.
 //
-// Flow: MENU → choose ship (it comes with its preset) → REFIT → FIGHT →
-// post-fight (results, level-ups, reward) → REFIT → ... until the boat sinks or
-// the crew is gone (RUN OVER). The first fight's reward must be equipped before
-// the second fight. The run is saved locally at every step outside a fight;
-// reloading mid-fight returns to the refit before it. Sandbox mode is the old
-// test bench: any ship, any part, any Lee, any encounter, free refit, nothing
-// permanent.
+// Flow: MENU → choose a ship and a difficulty (a preset ship, or Custom) →
+// PORT (shop, heal, repair, choose where to sail) → SEA MAP (tap a stop in
+// reach) → a fight stop: REFIT → FIGHT → post-fight (results, level-ups,
+// surrender, special pick) → back to the MAP; an event stop: its post screen →
+// MAP; the destination: the next PORT... endless, until the boat sinks or the
+// crew is gone (RUN OVER). Refit is open from the map and the port too.
+// The run is saved locally at every step outside a fight; reloading mid-fight
+// returns to the refit before it. Sandbox mode is the old test bench: any
+// ship, any part, any Lee, any encounter (or a generated one), free refit,
+// nothing permanent.
 
 import type { EnemySpec } from '../config/encounters';
 import { ITEMS } from '../config/items';
@@ -21,36 +24,45 @@ import type { Vec } from '../sim/math';
 import {
   addCrew,
   addItem,
+  answerSurrender,
   applyFight,
+  blankRun,
   cargo,
   autoArrangeRun,
   autoEquipAll,
   autoPickAll,
   chooseBonus,
   crewSpecs,
+  discard,
   enemySetups,
   equip,
   finishPost,
   fixHomes,
   loadRun,
-  mustPlaceOpen,
   newRun,
   release,
   saveRun,
   setFacing,
   setHome,
   setupFor,
+  skipReward,
   takeReward,
   unequip,
   wearTrinket,
   type LoadResult,
   type RunState,
 } from '../sim/run';
+import { buy, buyChassis, buyHeal, buyHealAll, buyRepair, enterPort, makePlan, reroll, sell, type Shop } from '../sim/port';
+import { leavePort, sailTo } from '../sim/seaMap';
+import { generateEnemies } from '../sim/budget';
+import { structureFraction } from '../sim/boat';
+import { rngFor } from '../sim/math';
 import type { BonusKey } from '../sim/levels';
 import { enemySetup } from '../sim/setup';
 import type { Job } from '../config/lees';
 import type { Lee } from '../sim/crew';
 import { World } from '../sim/world';
+import { DIFFICULTIES } from '../config/difficulty';
 
 const STORAGE_KEY = 'lee.tuning.current';
 const PRESETS_KEY = 'lee.tuning.presets';
@@ -62,7 +74,9 @@ const RESET_KEYS = [STORAGE_KEY, SPEED_KEY, RUN_KEY, SANDBOX_KEY, 'lee.crew.arra
 
 export type SpeedMode = 'ranged' | 'melee';
 export type Mode = 'run' | 'sandbox';
-export type Screen = 'menu' | 'chooseShip' | 'refit' | 'fight' | 'post' | 'over';
+export type Screen = 'menu' | 'chooseShip' | 'port' | 'map' | 'refit' | 'fight' | 'post' | 'over';
+/** What the refit screen is for: setting up a fight (LAUNCH), or a look between stops (DONE back to the map or port). */
+export type RefitFor = 'fight' | 'map' | 'port';
 
 /** Sandbox: a free run plus the encounter you're testing against. */
 export interface SandboxState {
@@ -141,6 +155,7 @@ export class Controller {
   runId = 0;
   mode: Mode | null = null;
   screen: Screen = 'menu';
+  refitFor: RefitFor = 'fight';
   /** The real run (null until one is started or continued). */
   run: RunState | null = null;
   sandbox: SandboxState | null = null;
@@ -193,12 +208,15 @@ export class Controller {
       this.world = this.idleWorld();
     } else {
       fixHomes(run);
-      const enemies = this.mode === 'sandbox' ? this.sandbox!.enemies.map((s, i) => enemySetup(s, this.tuning, { salt: i + 1 })) : enemySetups(run, this.tuning);
+      const sandbox = this.mode === 'sandbox';
+      const enemies = sandbox ? this.sandbox!.enemies.map((s, i) => enemySetup(s, this.tuning, { salt: i + 1 })) : this.refitFor === 'fight' ? enemySetups(run, this.tuning) : [];
       this.world = new World(this.tuning, (run.seed + run.fight * 7919) >>> 0, {
         fight: run.fight,
         player: setupFor(run, this.tuning),
         enemies,
-        assists: this.mode === 'sandbox',
+        assists: sandbox,
+        // The hull's damage carries (the sandbox always sails a fresh boat).
+        carry: sandbox ? undefined : { hp: run.hull, water: run.hull.map(() => 0) },
       });
     }
     this.runId++;
@@ -234,11 +252,35 @@ export class Controller {
     this.notify();
   }
 
-  /** Choose a ship: it comes with its preset (loadout and crew), ready for fight 1. */
-  chooseShip(ship: string): void {
-    this.run = newRun(ship, (Math.random() * 2 ** 31) >>> 0, this.tuning);
-    this.screen = 'refit';
+  /** Choose a ship: it comes with its preset (loadout and crew) and a little gold, in the first port. */
+  chooseShip(ship: string, diff = 'normal'): void {
+    const run = newRun(ship, (Math.random() * 2 ** 31) >>> 0, this.tuning, diff);
+    enterPort(run, makePlan(rngFor(run.seed, 'first port'), run, this.tuning, new Set()), this.tuning);
+    run.stage = 'port';
+    this.run = run;
+    this.showStage();
     this.changed();
+  }
+
+  /** Custom start: no ship, a big purse, and a port that has everything. */
+  customStart(diff = 'normal'): void {
+    const run = blankRun('basic', (Math.random() * 2 ** 31) >>> 0, diff);
+    run.noHull = true;
+    run.gold = Math.round(Math.max(0, this.tuning.economy.customGold) * (DIFFICULTIES[diff]?.gold ?? 1));
+    enterPort(run, makePlan(rngFor(run.seed, 'first port'), run, this.tuning, new Set()), this.tuning, { full: true });
+    run.stage = 'port';
+    this.run = run;
+    this.showStage();
+    this.changed();
+  }
+
+  /** Show the screen for where the run is. */
+  private showStage(): void {
+    const run = this.run;
+    if (!run) return;
+    const stage = run.stage;
+    this.screen = stage === 'post' ? 'post' : stage === 'over' ? 'over' : stage === 'port' ? 'port' : stage === 'map' ? 'map' : 'refit';
+    this.refitFor = 'fight';
   }
 
   continueRun(): void {
@@ -246,8 +288,7 @@ export class Controller {
     this.mode = 'run';
     this.run = this.saved.run;
     this.paused = false;
-    const stage = this.run.stage;
-    this.screen = stage === 'post' ? 'post' : stage === 'over' ? 'over' : 'refit';
+    this.showStage();
     this.changed();
   }
 
@@ -265,6 +306,7 @@ export class Controller {
     }
     if (!this.sandbox) this.sandbox = freshSandbox(this.tuning);
     this.screen = 'refit';
+    this.refitFor = 'fight';
     this.changed();
   }
 
@@ -332,11 +374,6 @@ export class Controller {
     if (!run) return;
     autoEquipAll(run, this.tuning);
     this.changed();
-  }
-
-  /** Is the first reward still waiting to be equipped? (Launch is blocked until it is.) */
-  mustPlace(): boolean {
-    return this.mode === 'run' && !!this.run && mustPlaceOpen(this.run);
   }
 
   /** Sandbox: nothing piles up in a cargo hold (Lees ashore stay). */
@@ -442,6 +479,13 @@ export class Controller {
     this.changed();
   }
 
+  /** Sandbox: generate an enemy from a budget (optionally on a given chassis), the way the sea does. */
+  generateSandbox(budget: number, chassis?: string): void {
+    if (!this.sandbox) return;
+    this.sandbox.enemies = generateEnemies(budget, (Math.random() * 2 ** 31) >>> 0, this.tuning, { chassis });
+    this.changed();
+  }
+
   /** Sandbox: the encounter to fight. */
   setSandboxEnemies(enemies: EnemySpec[]): void {
     if (!this.sandbox) return;
@@ -453,7 +497,7 @@ export class Controller {
 
   /** Launch: the fight starts. */
   launch(): void {
-    if (!this.active || this.mustPlace()) return;
+    if (!this.active || this.refitFor !== 'fight') return;
     if (this.world.phase === 'ready') this.world.placePlayerCrew(crewSpecs(this.active, this.tuning));
     this.world.start();
     this.screen = 'fight';
@@ -471,8 +515,33 @@ export class Controller {
       this.changed();
       return;
     }
-    applyFight(run, w.player.crew.lees, w.result.winner === 'player', this.tuning);
+    applyFight(
+      run,
+      {
+        won: w.result.winner === 'player',
+        lees: w.player.crew.lees,
+        enemies: w.enemyOutcomes(),
+        lastEnemy: w.lastEnemyStanding(),
+        hull: w.player.parts.map((p) => structureFraction(p)),
+      },
+      this.tuning,
+    );
     this.screen = run.stage === 'over' ? 'over' : 'post';
+    this.persist();
+    this.notify();
+  }
+
+  answerSurrender(accept: boolean, releaseFirst?: number): boolean {
+    if (!this.run) return false;
+    const ok = answerSurrender(this.run, accept, this.tuning, releaseFirst);
+    this.persist();
+    this.notify();
+    return ok;
+  }
+
+  skipReward(): void {
+    if (!this.run) return;
+    skipReward(this.run);
     this.persist();
     this.notify();
   }
@@ -499,11 +568,82 @@ export class Controller {
     return ok;
   }
 
-  /** Done after a fight: back to the refit screen for the next one. */
+  /** Done after a fight or event: back to the sea map. */
   finishPost(): void {
     if (!this.run) return;
     finishPost(this.run);
+    this.showStage();
+    this.changed();
+  }
+
+  // ------------------------------------------------------------ port and map
+
+  /** Run something on the run, then save and redraw (rebuilding the boat if asked). */
+  private act<T>(fn: (run: RunState) => T, rebuild = false): T | undefined {
+    if (!this.run) return undefined;
+    const out = fn(this.run);
+    this.changed(rebuild);
+    return out;
+  }
+
+  buy(shop: Shop | 'tavern', index: number): boolean {
+    return !!this.act((r) => buy(r, shop, index, this.tuning));
+  }
+
+  sell(uid: number): boolean {
+    return !!this.act((r) => sell(r, uid, this.tuning));
+  }
+
+  reroll(shop: Shop | 'tavern'): boolean {
+    return !!this.act((r) => reroll(r, shop, this.tuning));
+  }
+
+  repair(): boolean {
+    return !!this.act((r) => buyRepair(r, this.tuning), true);
+  }
+
+  heal(member?: number): boolean {
+    return !!this.act((r) => (member === undefined ? buyHealAll(r, this.tuning) : buyHeal(r, member, this.tuning)));
+  }
+
+  buyChassis(ship: string): boolean {
+    return !!this.act((r) => buyChassis(r, ship, this.tuning), true);
+  }
+
+  /** Throw (or leave behind) an item in cargo for good. */
+  discard(uid: number): void {
+    this.act((r) => discard(r, uid));
+  }
+
+  /** Leave port for one of its destinations: onto the sea map. */
+  leavePort(offer: number): boolean {
+    const ok = !!this.act((r) => leavePort(r, offer, this.tuning));
+    if (ok) this.showStage();
+    this.notify();
+    return ok;
+  }
+
+  /** Sail to a stop on the map. A fight opens its refit; an event its post screen; the destination its port. */
+  sailTo(stop: number): boolean {
+    const ok = !!this.act((r) => sailTo(r, stop, this.tuning));
+    if (ok) {
+      this.showStage();
+      this.changed();
+    }
+    return ok;
+  }
+
+  /** Refit between stops (from the map or a port): no fight, DONE goes back. */
+  openRefit(): void {
+    if (!this.run || this.run.noHull) return;
+    this.refitFor = this.run.stage === 'port' ? 'port' : 'map';
     this.screen = 'refit';
+    this.changed();
+  }
+
+  /** DONE in a refit between stops. */
+  closeRefit(): void {
+    this.showStage();
     this.changed();
   }
 

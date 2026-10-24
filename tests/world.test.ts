@@ -252,17 +252,16 @@ describe('several attackers and fight progression', () => {
     expect(four).toBeCloseTo(one / 4);
   });
 
-  test('damage carries into the next fight, minus repairs', () => {
+  test('damage carries into the next fight as it was (the run applies repairs)', () => {
     const t = quiet(defaultTuning());
-    t.run.repairBetweenFights = 0.5;
     const w = new World(t, 1);
     const mid = w.player.parts.find((p) => p.def.id === 'midship')!;
     mid.layers[0].hp = mid.layers[0].maxHp * 0.2;
     mid.water = 20;
     const next = new World(t, 2, { fight: 2, carry: w.playerCarry() });
     const mid2 = next.player.parts.find((p) => p.def.id === 'midship')!;
-    expect(mid2.layers[0].hp / mid2.layers[0].maxHp).toBeCloseTo(0.6);
-    expect(mid2.water).toBeCloseTo(10);
+    expect(mid2.layers[0].hp / mid2.layers[0].maxHp).toBeCloseTo(0.2);
+    expect(mid2.water).toBeCloseTo(20);
     expect(next.fight).toBe(2);
   });
 

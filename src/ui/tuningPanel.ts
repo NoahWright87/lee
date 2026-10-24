@@ -56,7 +56,6 @@ const RANGES: Record<string, Range> = {
   enemiesAddedPerFight: [0, 3, 0.25],
   maxEnemies: [1, 10, 1],
   spawnSpread: [0, 90, 1],
-  repairBetweenFights: [0, 1, 0.05],
   nextFightDelay: [0, 10, 0.5],
   friendlyFire: [0, 1, 1],
   maxIncomingShells: [0, 10, 1],
@@ -183,13 +182,21 @@ const PATH_RANGES: [RegExp, Range][] = [
   [/^items\.\w+\.arc$/, [5, 360, 5]],
   [/^items\./, [0, 5, 0.01]],
   [/^traits\./, [0, 3, 0.05]],
-  [/^ships\.\w+\.(crewMin|crewMax|treasures)$/, [0, 16, 1]],
+  [/^ships\.\w+\.(crewMin|crewMax|treasures|cargo)$/, [0, 16, 1]],
+  [/^budget\.(base|minShip)$/, [20, 2000, 10]],
+  [/^budget\.maxShips$/, [1, 6, 1]],
+  [/^map\.(radius|length|spacing)$/, [2, 300, 1]],
+  [/^map\.(stops|destinations)$/, [1, 40, 1]],
+  [/^map\.routeWiggle$/, [0, 80, 1]],
+  [/^stops\./, [0, 10, 0.05]],
+  [/^economy\.(customGold)$/, [0, 5000, 50]],
+  [/^economy\.(startGold|bankCap|rerollBase)$/, [0, 500, 1]],
   [/^ships\./, [0.2, 3, 0.05]],
   [/^guns\.reloadTime$/, [0.3, 10, 0.1]],
 ];
 
 /** Keys read only when a fight is built. */
-const NEXT_RUN = /^(boat\.parts\..*|ships\..*|items\..*|crew\.hp|lees\.\w+\.hp|global\.(enemyStart\w+|playerAdvantage|playerCrewStats)|fights\.(packHullScaling|spawnSpread)|tiles\.durability|enemyAI\.rangeJitter|ai\..*|run\..*|escalation\..*)$/;
+const NEXT_RUN = /^(boat\.parts\..*|ships\..*|items\..*|crew\.hp|lees\.\w+\.hp|global\.(enemyStart\w+|playerAdvantage|playerCrewStats)|fights\.(packHullScaling|spawnSpread)|tiles\.durability|enemyAI\.rangeJitter|ai\..*|run\..*|budget\..*|spoils\..*|economy\..*|map\..*|stops\..*)$/;
 
 const FOLDER_NAMES: Record<string, string> = {
   meta: 'Version',
@@ -212,9 +219,13 @@ const FOLDER_NAMES: Record<string, string> = {
   fights: 'Fights',
   tiles: 'Tiles (durability, blow-outs)',
   explosion: 'Explosions (volatile parts)',
-  run: 'Run (draft, rewards, recruits, between fights)',
+  run: 'Run (between fights, rewards, free repair)',
+  budget: 'Enemy budgets (generated ships, danger)',
+  spoils: 'Spoils (gold, capture, surrender)',
+  economy: 'Economy (prices, rerolls, bank, gold)',
+  map: 'Sea map (radius, size, stops)',
+  stops: 'Stop types (budget ×, weight)',
   leveling: 'XP and levels',
-  escalation: 'Escalation (after the encounter list)',
   traits: 'Lee traits',
   telegraph: 'Telegraph (red X)',
   camera: 'Camera',

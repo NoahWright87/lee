@@ -18,9 +18,9 @@
 //    numbers the action buttons use), an item one line of what it does and
 //    what it costs. ⓘ opens a Lee's full sheet; 📊 opens the stat bars.
 //
-// The run's first reward must be equipped before Launch.
+// Before a fight it ends in LAUNCH; opened from the sea map or a port, DONE.
 
-import { ARCHETYPE_NAMES, ARCHETYPES, ENCOUNTERS, crewCount, type EnemySpec } from '../config/encounters';
+import { ARCHETYPE_NAMES, ARCHETYPES, crewCount, type EnemySpec } from '../config/encounters';
 import { ITEMS, type ItemCategory } from '../config/items';
 import { JOB_INFO, LEE_DEFS, STAT_LABELS } from '../config/lees';
 import { SHIP_ORDER, SHIPS } from '../config/ships';
@@ -31,7 +31,8 @@ import { BAR_KEYS, BAR_NAMES, boatBars, boatCard, type BoatBars, type BoatCard }
 import { startingJob } from '../sim/crew';
 import { bonusLabel } from '../sim/levels';
 import { slotById, slotFacing } from '../sim/loadout';
-import { addItem, ashore, autoEquipAll, buildFor, cargo, encounterSummary, itemOf, setupFor, type CrewMember, type RunState } from '../sim/run';
+import { addItem, ashore, autoEquipAll, buildFor, cargo, cargoLimit, cargoOver, crewMax, encounterSummary, itemOf, setupFor, type CrewMember, type RunState } from '../sim/run';
+import { danger } from '../sim/seaMap';
 import {
   allSpots,
   applyMove,
@@ -131,6 +132,8 @@ export class RefitPanel {
   private statsOpen = false;
   private sheetFor: number | null = null;
   private sandboxOpen = false;
+  private genBudget = 400;
+  private genChassis = '';
   private builtFor: unknown = null;
   private lastSig = '';
   private now: { bars: BoatBars; card: BoatCard } | null = null;
@@ -372,7 +375,7 @@ export class RefitPanel {
   private render(cheap = false): void {
     if (!this.on) return;
     const run = this.run!;
-    const sig = JSON.stringify([run.loadout, run.facings, run.crew.map((m) => [m.uid, m.home, m.trinkets, m.level]), run.items.length, run.mustPlace, this.sel, this.preview?.dest, this.tab, this.statsOpen, this.sheetFor, this.sandboxOpen, this.ctl.runId, this.ctl.sandbox?.enemies]);
+    const sig = JSON.stringify([run.loadout, run.facings, run.crew.map((m) => [m.uid, m.home, m.trinkets, m.level]), run.items.length, run.gold, this.ctl.refitFor, this.sel, this.preview?.dest, this.tab, this.statsOpen, this.sheetFor, this.sandboxOpen, this.ctl.runId, this.ctl.sandbox?.enemies]);
     if (cheap && sig === this.lastSig) return;
     this.lastSig = sig;
     const nowKey = JSON.stringify([run.loadout, run.facings, run.crew.map((m) => [m.uid, m.home, m.trinkets, m.level, m.job]), this.ctl.runId]);
@@ -500,12 +503,12 @@ export class RefitPanel {
     const box = this.cargoEl;
     box.replaceChildren();
     const sandbox = this.ctl.mode === 'sandbox';
+    const over = sandbox ? 0 : cargoOver(run, this.ctl.tuning);
     const boatSel = !!this.sel && (this.sel.from === 'boat' || this.sel.from === 'worn');
     box.classList.toggle('stow', boatSel);
-    const must = run.mustPlace;
     // Every chip with the tab it belongs to; tabs only show when there are too many to scan.
     const chips: { tab: Tab; make: () => HTMLElement }[] = [];
-    const chip = (tab: Tab, s: Sel, icon: () => HTMLElement, label: string, mustGlow: boolean) =>
+    const chip = (tab: Tab, s: Sel, icon: () => HTMLElement, label: string, mustGlow = false) =>
       chips.push({
         tab,
         make: () => {
@@ -518,12 +521,12 @@ export class RefitPanel {
           return c;
         },
       });
-    for (const m of ashore(run)) chip('lees', { from: 'ashore', member: m.uid }, () => memberFigure(m.type, 'chip-figure'), `${m.label}${m.level > 1 ? ` · Lv ${m.level}` : ''}`, must?.kind === 'lee' && must.uid === m.uid);
-    if (sandbox) for (const d of Object.values(ITEMS)) chip(TAB_OF[d.category], { from: 'catalog', item: d.id }, () => itemIcon(d), d.name, false);
+    for (const m of ashore(run)) chip('lees', { from: 'ashore', member: m.uid }, () => memberFigure(m.type, 'chip-figure'), `${m.label}${m.level > 1 ? ` · Lv ${m.level}` : ''}`);
+    if (sandbox) for (const d of Object.values(ITEMS)) chip(TAB_OF[d.category], { from: 'catalog', item: d.id }, () => itemIcon(d), d.name);
     else
       for (const inst of cargo(run)) {
         const d = ITEMS[inst.item];
-        if (d) chip(TAB_OF[d.category], { from: 'cargo', uid: inst.uid }, () => itemIcon(d), d.name, must?.kind === 'item' && must.uid === inst.uid);
+        if (d) chip(TAB_OF[d.category], { from: 'cargo', uid: inst.uid }, () => itemIcon(d), d.name, over > 0);
       }
     const present = TABS.filter(([k]) => k === 'all' || chips.some((c) => c.tab === k));
     const showTabs = present.length > 2 && chips.length > CARGO_FITS;
@@ -542,7 +545,8 @@ export class RefitPanel {
     }
     const list = el('div', 'cargo rf-list');
     const leeSel = !!this.sel && this.sel.from === 'boat' && this.sel.layer === 'lee';
-    list.append(el('span', 'rf-row-label', boatSel ? (leeSel ? '⬇ Ashore' : '⬇ Stow') : 'Cargo'));
+    const hold = sandbox ? 'Cargo' : `Hold ${cargo(run).length}/${cargoLimit(run, this.ctl.tuning)}`;
+    list.append(el('span', `rf-row-label${over ? ' over' : ''}`, boatSel ? (leeSel ? '⬇ Ashore' : '⬇ Stow') : hold));
     for (const c of chips) if (this.tab === 'all' || c.tab === this.tab) list.append(c.make());
     if (!chips.length && !boatSel) list.append(el('span', 'tray-empty', 'empty'));
     box.append(list);
@@ -555,7 +559,7 @@ export class RefitPanel {
     const now = this.now!;
     const next = this.preview;
     const head = el('div', 'rf-head');
-    const fight = ctl.mode === 'sandbox' ? `Sandbox · ${this.sandboxSummary()}` : `Fight ${run.fight} · ${encounterSummary(run, t).split(':')[0]}`;
+    const fight = ctl.mode === 'sandbox' ? `Sandbox · ${this.sandboxSummary()}` : this.headline(run);
     head.append(
       el('div', 'next-fight', fight),
       button('📊', `rf-stats-btn${this.statsOpen ? ' on' : ''}`, () => {
@@ -640,10 +644,27 @@ export class RefitPanel {
   private warnings(run: RunState): string[] {
     const ctl = this.ctl;
     const out: string[] = [];
-    if (ctl.mustPlace()) out.push(run.mustPlace?.kind === 'lee' ? 'Place your recruit to launch.' : 'Equip your reward to launch.');
+    if (ctl.mode === 'run') {
+      const over = cargoOver(run, ctl.tuning);
+      if (over) out.push(`The hold is ${over} over (${cargo(run).length}/${cargoLimit(run, ctl.tuning)}): equip, sell or throw something away before you sail.`);
+      if (run.crew.length > crewMax(run, ctl.tuning)) out.push(`Too many Lees for this ship (${run.crew.length}/${crewMax(run, ctl.tuning)}).`);
+    }
     const boat = ctl.world.player;
     if (boat.guns.length && !boat.crew.lees.some((l) => l.job === 'fire')) out.push('Nobody starts on the guns.');
     return out;
+  }
+
+  /** "Fight 4 · Friend Ship · 💀💀" (or where you are, between stops). */
+  private headline(run: RunState): string {
+    const ctl = this.ctl;
+    const gold = `🪙 ${run.gold}`;
+    if (ctl.refitFor === 'port') return `In port · ${run.port?.name ?? ''} · ${gold}`;
+    if (ctl.refitFor === 'map') return `At sea · ${gold}`;
+    const enc = run.encounter;
+    const stop = enc && run.map ? run.map.stops[enc.stop ?? -1] : null;
+    const skulls = stop ? danger(run, stop, ctl.tuning) : null;
+    const kind = enc?.type === 'hard' ? 'Hard fight' : 'Fight';
+    return `${kind} ${run.fight} · ${encounterSummary(run)}${skulls ? ` · ${'💀'.repeat(skulls)}` : ''}`;
   }
 
   private sandboxSummary(): string {
@@ -787,12 +808,16 @@ export class RefitPanel {
           ctl.autoEquip();
         }),
       );
-    const blocked = ctl.mustPlace();
-    const launch = button('LAUNCH', `start-btn${blocked ? ' blocked' : ''}`, () => {
-      if (blocked) {
-        this.toast(run.mustPlace?.kind === 'lee' ? 'Place your recruit first.' : 'Equip your reward first.');
-        return;
-      }
+    if (ctl.mode === 'run' && ctl.refitFor !== 'fight') {
+      const done = button('DONE', 'start-btn', () => {
+        this.clearSel();
+        ctl.closeRefit();
+      });
+      done.append(el('small', '', ctl.refitFor === 'port' ? 'back to port' : 'back to the map'));
+      bar.append(done);
+      return;
+    }
+    const launch = button('LAUNCH', 'start-btn', () => {
       if (!run.crew.some((m) => m.home !== null)) {
         this.toast('Nobody is aboard.');
         return;
@@ -838,15 +863,27 @@ export class RefitPanel {
     box.append(add);
 
     box.append(el('div', 'cargo-head', 'Encounter builder'));
+    // Generate: a budget (and optionally a chassis), built the way the sea builds enemies.
+    const gen = el('div', 'row');
+    const budget = el('input');
+    budget.type = 'number';
+    budget.min = '50';
+    budget.step = '10';
+    budget.value = String(this.genBudget);
+    budget.onchange = () => (this.genBudget = Math.max(1, Math.round(Number(budget.value) || t.budget.base)));
+    const chassis = el('select');
+    chassis.append(new Option('Any ship', ''));
+    for (const id of SHIP_ORDER) chassis.append(new Option(SHIPS[id].name, id));
+    chassis.value = this.genChassis;
+    chassis.onchange = () => (this.genChassis = chassis.value);
+    gen.append(el('span', '', 'Budget'), budget, chassis, button('Generate', 'hud-btn', () => ctl.generateSandbox(this.genBudget, this.genChassis || undefined)));
+    box.append(gen);
     const preset = el('select');
-    preset.append(new Option('Load an encounter…', ''));
-    ENCOUNTERS.forEach((e, i) => preset.append(new Option(`${i + 1}. ${e.name}`, String(i))));
-    for (const id of Object.keys(ARCHETYPES)) preset.append(new Option(`Archetype: ${ARCHETYPE_NAMES[id] ?? id}`, `a:${id}`));
+    preset.append(new Option('Load an archetype…', ''));
+    for (const id of Object.keys(ARCHETYPES)) preset.append(new Option(`Archetype: ${ARCHETYPE_NAMES[id] ?? id}`, id));
     preset.onchange = () => {
       const v = preset.value;
-      if (!v) return;
-      const specs = v.startsWith('a:') ? [ARCHETYPES[v.slice(2)]] : ENCOUNTERS[Number(v)].enemies;
-      ctl.setSandboxEnemies(structuredClone(specs));
+      if (v) ctl.setSandboxEnemies(structuredClone([ARCHETYPES[v]]));
     };
     box.append(preset);
     const list = el('div', 'enc-list');
@@ -866,12 +903,14 @@ export class RefitPanel {
           e[bi].ship = s.value;
           e[bi].loadout = {};
           delete e[bi].fullLoadout;
+          delete e[bi].budget;
         });
       const ai = el('select');
       for (const id of Object.keys(t.ai)) ai.append(new Option(`AI: ${id}`, id));
       ai.value = spec.ai;
       ai.onchange = () => update((e) => (e[bi].ai = ai.value));
       row.append(s, ai, button('✕', 'hud-btn', () => update((e) => e.splice(bi, 1))));
+      if (spec.budget) row.append(el('span', 'card-sub', `${spec.budget} pts · ${Object.keys(spec.fullLoadout ?? {}).length} parts`));
       card.append(row);
       spec.crew.forEach((c, ci) => {
         const r = el('div', 'row crew-entry');
@@ -898,6 +937,6 @@ export class RefitPanel {
       list.append(card);
     });
     box.append(list, button('+ Enemy boat', 'hud-btn', () => update((e) => e.push({ ship: 'basic', ai: 'standard', crew: [{ type: 'basic', count: 4 }] }))));
-    box.append(el('div', 'setup-hint', 'Enemies sail their ship’s standard fit. Sandbox assists (Tune → Global) apply here, never in a run. The cargo is the whole catalog.'));
+    box.append(el('div', 'setup-hint', 'Enemies sail their ship’s standard fit (generated ones their own parts). Sandbox assists (Tune → Global) apply here, never in a run. The cargo is the whole catalog.'));
   }
 }

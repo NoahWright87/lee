@@ -1,7 +1,9 @@
-// Full-screen run screens over the canvas: the menu, choosing a ship (each
-// comes with its preset crew and loadout), after a fight (results → level-ups
-// → reward), and Run Over. Plus the ⚙️ system menu (on every screen) and the message for
-// a saved run that can't be continued.
+// Full-screen run screens over the canvas: the menu, choosing a ship and a
+// difficulty (each preset ship comes crewed and fitted; Custom starts with
+// nothing), after a fight or an event (results → level-ups → surrender → a
+// pick), and Run Over. Plus the ⚙️ system menu (on every screen) and the
+// message for a saved run that can't be continued. The port and the sea map
+// have their own screens (port.ts, seaMap.ts).
 
 import { ITEMS } from '../config/items';
 import { LEE_DEFS, STAT_LABELS } from '../config/lees';
@@ -9,7 +11,10 @@ import { SHIP_ORDER, SHIPS } from '../config/ships';
 import { countTags, tagName } from '../config/tags';
 import type { Controller } from '../game/Controller';
 import { bonusLabel } from '../sim/levels';
-import { buildFor, crewMax, itemOf, SAVE_VERSION, type RunState } from '../sim/run';
+import { DIFFICULTIES, DIFFICULTY_ORDER } from '../config/difficulty';
+import { STOP_TYPES } from '../config/sea';
+import { buildFor, cargo, cargoLimit, crewMax, hullShare, itemOf, SAVE_VERSION, type RunState } from '../sim/run';
+import { depthNow } from '../sim/seaMap';
 import { itemIcon, itemLine, jobBars, levelBadge, loadoutIcons, memberFigure } from './cards';
 import { button, confirmAction, el } from './dom';
 import { shipPreview } from './shipPreview';
@@ -17,7 +22,7 @@ import { shipPreview } from './shipPreview';
 declare const __BUILD__: string;
 const BUILD = typeof __BUILD__ === 'string' ? __BUILD__ : 'dev';
 
-type PostStep = 'results' | 'levels' | 'reward';
+type PostStep = 'results' | 'levels' | 'surrender' | 'reward';
 
 export class Screens {
   readonly root: HTMLDivElement;
@@ -27,8 +32,10 @@ export class Screens {
   private sig = '';
   private postStep: PostStep = 'results';
   private postFor = -1;
-  /** Picking someone to release for a recruit (reward card index), or null. */
+  /** Picking someone to release for a recruit (reward card index, or -1 for a surrender), or null. */
   private releaseFor: number | null = null;
+  /** Difficulty picked on the ship screen. */
+  private diff = 'normal';
   private saveErrorDismissed = false;
 
   constructor(ctl: Controller) {
@@ -103,12 +110,12 @@ export class Screens {
       this.sig = '';
       return;
     }
-    if (ctl.screen === 'post' && run?.pending && this.postFor !== run.pending.fight) {
-      this.postFor = run.pending.fight;
+    if (ctl.screen === 'post' && run?.pending && this.postFor !== run.pending.id) {
+      this.postFor = run.pending.id;
       this.postStep = 'results';
       this.releaseFor = null;
     }
-    const sig = JSON.stringify([ctl.screen, run && JSON.stringify(run), this.postStep, this.releaseFor, ctl.canContinue(), this.saveErrorDismissed, ctl.saved.ok]);
+    const sig = JSON.stringify([ctl.screen, run && JSON.stringify(run), this.postStep, this.releaseFor, this.diff, ctl.canContinue(), this.saveErrorDismissed, ctl.saved.ok]);
     if (sig === this.sig) return;
     this.sig = sig;
     const body = el('div', 'screen-body');
@@ -139,7 +146,8 @@ export class Screens {
     if (ctl.canContinue() && ctl.saved.ok) {
       const r = ctl.saved.run;
       const b = button('Continue', 'big-btn', () => ctl.continueRun());
-      b.append(el('small', '', `${SHIPS[r.ship]?.name ?? r.ship} · fight ${r.fight} · ${r.crew.length} Lees`));
+      const where = r.stage === 'port' ? `in ${r.port?.name ?? 'port'}` : `journey ${r.journey + 1}`;
+      b.append(el('small', '', `${r.noHull ? 'No ship yet' : SHIPS[r.ship]?.name ?? r.ship} · ${where} · 🪙 ${r.gold}`));
       buttons.append(b);
     }
     buttons.append(button('Sandbox', 'big-btn', () => ctl.enterSandbox()));
@@ -166,15 +174,29 @@ export class Screens {
 
   private renderChooseShip(body: HTMLElement): void {
     const ctl = this.ctl;
-    body.append(el('h2', '', 'Choose a ship'), el('div', 'subtitle', 'Each comes crewed and fitted out.'));
+    const t = ctl.tuning;
+    body.append(el('h2', '', 'Choose a ship'), el('div', 'subtitle', 'Each comes crewed and fitted. You start in port.'));
+    // Difficulty: one row of three.
+    const diffs = el('div', 'row seg center');
+    for (const id of DIFFICULTY_ORDER) {
+      const d = DIFFICULTIES[id];
+      const b = button(d.name, `hud-btn${this.diff === id ? ' on' : ''}`, () => {
+        this.diff = id;
+        this.render();
+      });
+      b.title = d.blurb;
+      diffs.append(b);
+    }
+    body.append(diffs, el('div', 'card-sub center', DIFFICULTIES[this.diff].blurb));
     const list = el('div', 'card-list');
+    const gold = Math.round(t.economy.startGold * DIFFICULTIES[this.diff].gold);
     for (const id of SHIP_ORDER) {
       const ship = SHIPS[id];
       // The whole card is the button.
-      const card = button('', 'card ship-card pick', () => ctl.chooseShip(id));
+      const card = button('', 'card ship-card pick', () => ctl.chooseShip(id, this.diff));
       card.setAttribute('aria-label', `Sail the ${ship.name}`);
       const head = el('div', 'card-row');
-      head.append(el('div', 'card-title', ship.name), el('div', 'card-sub', ship.style));
+      head.append(el('div', 'card-title', ship.name), el('div', 'card-sub', `${ship.style} · 🪙 ${gold} · hold ${Math.round(t.ships[id]?.cargo ?? 6)}`));
       card.append(head, shipPreview(ship, ship.preset.loadout, 220, ship.preset.facings), el('div', 'card-text', ship.blurb));
       // The crew and parts it comes with, as pictures.
       const row = el('div', 'ship-kit');
@@ -183,6 +205,12 @@ export class Screens {
       card.append(row);
       list.append(card);
     }
+    // Custom: nothing but a big purse in a port that has everything.
+    const custom = button('', 'card ship-card pick custom', () => ctl.customStart(this.diff));
+    const head = el('div', 'card-row');
+    head.append(el('div', 'card-title', 'Custom'), el('div', 'card-sub', `No ship · 🪙 ${Math.round(t.economy.customGold * DIFFICULTIES[this.diff].gold)}`));
+    custom.append(head, el('div', 'card-text', 'Start in a port with every service and a wide stock. Buy a hull, hire a crew, fit it out, then sail.'));
+    list.append(custom);
     body.append(list);
   }
 
@@ -191,19 +219,46 @@ export class Screens {
   private renderPost(body: HTMLElement, run: RunState): void {
     const post = run.pending;
     if (!post) {
-      body.append(button('Back to refit', 'big-btn primary', () => this.ctl.finishPost()));
+      body.append(button('Back to the map', 'big-btn primary', () => this.ctl.finishPost()));
       return;
     }
-    if (this.postStep === 'levels' && !post.levelUps.length) this.postStep = 'reward';
+    if (this.postStep === 'levels' && !post.levelUps.length) this.postStep = 'surrender';
+    if (this.postStep === 'surrender' && (!post.surrender || post.surrenderDone)) this.postStep = 'reward';
     if (this.postStep === 'results') this.renderResults(body, run);
     else if (this.postStep === 'levels') this.renderLevelUp(body, run);
+    else if (this.postStep === 'surrender') this.renderSurrender(body, run);
     else this.renderReward(body, run);
+  }
+
+  private nextStep(run: RunState): void {
+    const post = run.pending!;
+    this.postStep = post.levelUps.length ? 'levels' : post.surrender && !post.surrenderDone ? 'surrender' : 'reward';
+    this.render();
   }
 
   private renderResults(body: HTMLElement, run: RunState): void {
     const post = run.pending!;
     const t = this.ctl.tuning;
-    body.append(el('h2', 'win', `Fight ${post.fight} won`), el('div', 'subtitle', `${run.won} ${run.won === 1 ? 'fight' : 'fights'} survived this run.`));
+    const ev = post.event;
+    if (ev) {
+      const def = STOP_TYPES[ev.type];
+      body.append(el('h2', '', `${def?.icon ?? ''} ${def?.name ?? 'At sea'}`), el('div', 'subtitle', ev.text));
+    } else body.append(el('h2', 'win', `Fight ${post.fight} won`), el('div', 'subtitle', `${run.won} ${run.won === 1 ? 'fight' : 'fights'} won this run.`));
+    // What it paid.
+    const pay = el('div', 'spoils');
+    if (post.gold) pay.append(el('div', 'spoil gold', `🪙 +${post.gold} gold`));
+    for (const o of post.outcomes) pay.append(el('div', 'spoil', `${SHIPS[o.ship]?.name ?? o.ship}: ${o.how === 'sunk' ? 'sunk (its parts went down with it)' : 'captured'}`));
+    for (const id of post.spoils) {
+      const d = ITEMS[id];
+      if (!d) continue;
+      const row = el('div', 'spoil');
+      row.append(itemIcon(d), el('span', '', `Taken: ${d.name}`));
+      pay.append(row);
+    }
+    // The free fixing line after fights (and at a Cove, where it's the point); not after every event.
+    if ((post.repaired > 0 || post.healed > 0) && (!ev || ev.type === 'cove'))
+      pay.append(el('div', 'spoil fix', `Free fixing: hull ${Math.round(hullShare(run, t) * 100)}% · Lees healed ${Math.round(post.healed * 100)}% of their wounds`));
+    if (pay.childElementCount) body.append(pay);
     if (post.lost.length) {
       const box = el('div', 'memorial');
       box.append(el('h3', '', 'Lost'));
@@ -214,21 +269,76 @@ export class Screens {
       }
       body.append(box);
     }
-    const xp = el('div', 'xp-list');
-    xp.append(el('h3', '', 'Experience'));
-    for (const g of post.xp) {
-      const m = run.crew.find((x) => x.uid === g.uid);
-      if (!m) continue;
-      const row = el('div', 'xp-row');
-      row.append(memberFigure(m.type, 'chip-figure'), el('span', 'xp-name', m.label), el('span', 'xp-gain', `+${g.gained} XP`));
-      if (g.levelAfter > g.levelBefore) row.append(el('span', 'level-up', `Level ${g.levelBefore} → ${g.levelAfter}!`));
-      row.append(levelBadge(m, t));
-      xp.append(row);
+    if (post.xp.length) {
+      const xp = el('div', 'xp-list');
+      xp.append(el('h3', '', 'Experience'));
+      for (const g of post.xp) {
+        const m = run.crew.find((x) => x.uid === g.uid);
+        if (!m) continue;
+        const row = el('div', 'xp-row');
+        row.append(memberFigure(m.type, 'chip-figure'), el('span', 'xp-name', m.label), el('span', 'xp-gain', `+${g.gained} XP`));
+        if (g.levelAfter > g.levelBefore) row.append(el('span', 'level-up', `Level ${g.levelBefore} → ${g.levelAfter}!`));
+        row.append(levelBadge(m, t));
+        xp.append(row);
+      }
+      body.append(xp);
     }
-    body.append(xp);
+    body.append(button('Continue', 'big-btn primary', () => this.nextStep(run)));
+  }
+
+  /** The last enemy Lee standing offers to join. */
+  private renderSurrender(body: HTMLElement, run: RunState): void {
+    const ctl = this.ctl;
+    const t = ctl.tuning;
+    const s = run.pending!.surrender!;
+    const def = LEE_DEFS[s.type] ?? LEE_DEFS.basic;
+    if (this.releaseFor === -1) {
+      this.renderRelease(body, run, `Release someone to make room for the ${def.name}.`, (uid) => ctl.answerSurrender(true, uid));
+      return;
+    }
+    body.append(el('h2', '', 'Surrender!'), el('div', 'subtitle', `The last of their crew throws down his sword and asks to join yours.`));
+    const card = el('div', 'card');
+    const head = el('div', 'card-row');
+    const names = el('div', 'card-names');
+    names.append(el('div', 'card-title', `${def.name}${s.level > 1 ? ` · Lv ${s.level}` : ''}`), el('div', 'card-text', `${def.role} · joins wounded, ashore`));
+    head.append(memberFigure(s.type), names);
+    card.append(head, jobBars(s.type, t));
+    body.append(card);
+    const full = run.crew.length >= crewMax(run, t);
+    const row = el('div', 'menu-buttons');
+    row.append(
+      button(full ? 'Take him (crew full: release someone)' : 'Take him', 'big-btn primary', () => {
+        if (full) {
+          this.releaseFor = -1;
+          this.render();
+        } else ctl.answerSurrender(true);
+      }),
+      button('Send him off', 'big-btn', () => ctl.answerSurrender(false)),
+    );
+    body.append(row);
+  }
+
+  /** Pick a Lee to release (crew full). */
+  private renderRelease(body: HTMLElement, run: RunState, why: string, then: (uid: number) => void): void {
+    const t = this.ctl.tuning;
+    body.append(el('h2', '', 'Crew is full'), el('div', 'subtitle', `${why} Their trinkets go to cargo.`));
+    const list = el('div', 'release-list');
+    for (const m of run.crew) {
+      const row = el('div', 'release-row');
+      row.append(memberFigure(m.type, 'chip-figure'), el('span', '', m.label), levelBadge(m, t));
+      row.append(
+        button('Release', 'hud-btn danger', () => {
+          if (!confirmAction(`Release ${m.label} for good?`)) return;
+          this.releaseFor = null;
+          then(m.uid);
+        }),
+      );
+      list.append(row);
+    }
     body.append(
-      button('Continue', 'big-btn primary', () => {
-        this.postStep = post.levelUps.length ? 'levels' : 'reward';
+      list,
+      button('Back', 'big-btn', () => {
+        this.releaseFor = null;
         this.render();
       }),
     );
@@ -269,30 +379,16 @@ export class Screens {
       queueMicrotask(() => ctl.finishPost());
       return;
     }
-    if (this.releaseFor !== null) {
+    if (this.releaseFor !== null && this.releaseFor >= 0) {
       const card = post.reward[this.releaseFor];
-      body.append(el('h2', '', 'Crew is full'), el('div', 'subtitle', `Release someone to make room for the ${card.kind === 'recruit' ? LEE_DEFS[card.type].name : 'recruit'}. Their trinkets go to cargo.`));
-      const list = el('div', 'release-list');
-      for (const m of run.crew) {
-        const row = el('div', 'release-row');
-        row.append(memberFigure(m.type, 'chip-figure'), el('span', '', m.label), levelBadge(m, t));
-        row.append(
-          button('Release', 'hud-btn danger', () => {
-            if (!confirmAction(`Release ${m.label} for good?`)) return;
-            const i = this.releaseFor!;
-            this.releaseFor = null;
-            ctl.takeReward(i, m.uid);
-          }),
-        );
-        list.append(row);
-      }
-      body.append(list, button('Back', 'big-btn', () => {
-        this.releaseFor = null;
-        this.render();
-      }));
+      const i = this.releaseFor;
+      this.renderRelease(body, run, `Release someone to make room for the ${card.kind === 'recruit' ? LEE_DEFS[card.type].name : 'recruit'}.`, (uid) => ctl.takeReward(i, uid));
       return;
     }
-    body.append(el('h2', '', 'Pick a reward'), el('div', 'subtitle', run.won === 1 ? 'Equip it before the next fight.' : 'It goes into your cargo.'));
+    const kind = post.event?.type;
+    const title = kind === 'wreck' ? 'Take one' : kind === 'castaway' ? 'A castaway' : 'A rare find';
+    const sub = kind === 'castaway' ? 'Take him aboard (he waits ashore until placed).' : `It goes into your hold (${cargo(run).length}/${cargoLimit(run, t)}).`;
+    body.append(el('h2', '', title), el('div', 'subtitle', sub));
     const list = el('div', 'card-list');
     post.reward.forEach((card, i) => {
       if (card.kind === 'recruit') {
@@ -319,7 +415,7 @@ export class Screens {
         list.append(b);
       }
     });
-    body.append(list);
+    body.append(list, button(kind === 'castaway' ? 'Leave him' : 'Take nothing', 'big-btn', () => ctl.skipReward()));
   }
 
   // ------------------------------------------------------------ run over
@@ -327,7 +423,21 @@ export class Screens {
   private renderOver(body: HTMLElement, run: RunState): void {
     const ctl = this.ctl;
     const t = ctl.tuning;
-    body.append(el('h2', 'lose', 'Run over'), el('div', 'subtitle', `${run.won} ${run.won === 1 ? 'fight' : 'fights'} survived in the ${SHIPS[run.ship].name}.`));
+    body.append(el('h2', 'lose', 'Run over'), el('div', 'subtitle', `${run.won} ${run.won === 1 ? 'fight' : 'fights'} won in the ${SHIPS[run.ship].name}.`));
+    const tot = run.totals;
+    const stats = el('div', 'run-stats');
+    for (const [k, v] of [
+      ['Depth', depthNow(run).toFixed(1)],
+      ['Ports visited', String(tot.ports)],
+      ['Gold earned', `🪙 ${tot.goldEarned}`],
+      ['Fights won', String(run.won)],
+      ['Sunk · captured', `${tot.sunk} · ${tot.captured}`],
+    ]) {
+      const row = el('div', 'sc-row');
+      row.append(el('span', 'sc-k', k), el('span', 'sc-v', v));
+      stats.append(row);
+    }
+    body.append(stats);
     const build = buildFor(run);
     body.append(shipPreview(SHIPS[run.ship], build.loadout, 280, build.facings));
     const all = [...Object.values(build.loadout), ...(build.treasures ?? [])];

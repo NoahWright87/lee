@@ -50,6 +50,8 @@ export interface ShipDef {
   /** A new run starts with this. */
   preset: ShipPreset;
   tags: Tag[];
+  /** Guns that say what this ship is: a generated enemy's first gun is one of these (empty = any). */
+  signatureGuns: string[];
 }
 
 const DIRS: [number, number, Facing][] = [
@@ -120,6 +122,7 @@ export const SHIPS: Record<string, ShipDef> = {
       crew: [lee('quick', 2, 2), lee('basic', 3, 2), lee('basic', 0, 0), lee('handy', 1, 1)],
     },
     tags: [],
+    signatureGuns: [],
   },
   longdistance: {
     id: 'longdistance',
@@ -148,6 +151,7 @@ export const SHIPS: Record<string, ShipDef> = {
       crew: [lee('quick', 2, 2), lee('deft', 1, 0), lee('basic', 1, 2)],
     },
     tags: ['skirmish'],
+    signatureGuns: ['longGun'],
   },
   friend: {
     id: 'friend',
@@ -179,6 +183,7 @@ export const SHIPS: Record<string, ShipDef> = {
       crew: [lee('deft', 2, 0), lee('basic', 2, 1), lee('basic', 6, 1), lee('basic', 4, 1), lee('hard', 3, 1), lee('hard', 5, 0)],
     },
     tags: ['board'],
+    signatureGuns: ['carronade', 'gatling', 'scrap'],
   },
   hard: {
     id: 'hard',
@@ -215,6 +220,7 @@ export const SHIPS: Record<string, ShipDef> = {
       crew: [lee('quick', 2, 3), lee('quick', 3, 3), lee('basic', 1, 3), lee('basic', 4, 0), lee('handy', 2, 1)],
     },
     tags: ['barrage'],
+    signatureGuns: ['cannon', 'mortar'],
   },
 };
 
@@ -228,13 +234,13 @@ export function shipName(id: string): string {
 
 /** Per-ship numbers (tuning.ships). Multipliers on the tuning.boat baseline. */
 export function defaultShipStats() {
-  const s = (o: { speed: number; turn: number; hullHp: number; leak: number; capacity: number; accel: number; crewMin: number; crewMax: number; treasures: number }) => o;
+  const s = (o: { speed: number; turn: number; hullHp: number; leak: number; capacity: number; accel: number; crewMin: number; crewMax: number; treasures: number; cargo: number }) => o;
   return {
-    basic: s({ speed: 1, turn: 1, hullHp: 1, leak: 1, capacity: 1, accel: 1, crewMin: 4, crewMax: 8, treasures: 2 }),
-    longdistance: s({ speed: 1.35, turn: 1.3, hullHp: 0.7, leak: 1.2, capacity: 0.7, accel: 1.2, crewMin: 3, crewMax: 5, treasures: 1 }),
+    basic: s({ speed: 1, turn: 1, hullHp: 1, leak: 1, capacity: 1, accel: 1, crewMin: 4, crewMax: 8, treasures: 2, cargo: 6 }),
+    longdistance: s({ speed: 1.35, turn: 1.3, hullHp: 0.7, leak: 1.2, capacity: 0.7, accel: 1.2, crewMin: 3, crewMax: 5, treasures: 1, cargo: 4 }),
     // No sail by default: its turning comes from the hull (×1.5 of the no-sail baseline ≈ 0.9 of a crewed Basic Ship).
-    friend: s({ speed: 1.2, turn: 1.5, hullHp: 0.8, leak: 1, capacity: 0.75, accel: 1.15, crewMin: 6, crewMax: 12, treasures: 2 }),
-    hard: s({ speed: 0.65, turn: 0.6, hullHp: 1.6, leak: 1, capacity: 1.5, accel: 0.6, crewMin: 5, crewMax: 10, treasures: 3 }),
+    friend: s({ speed: 1.2, turn: 1.5, hullHp: 0.8, leak: 1, capacity: 0.75, accel: 1.15, crewMin: 6, crewMax: 12, treasures: 2, cargo: 6 }),
+    hard: s({ speed: 0.65, turn: 0.6, hullHp: 1.6, leak: 1, capacity: 1.5, accel: 0.6, crewMin: 5, crewMax: 10, treasures: 3, cargo: 9 }),
   };
 }
 

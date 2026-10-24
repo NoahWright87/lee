@@ -3,10 +3,8 @@
 // pool the player uses. No enemy-only ships, parts or Lees, and no hidden stat
 // multipliers: everything an enemy has is explainable from this data.
 //
-// THE TEMPORARY LIST below stands in for the sea map and endless mode. It will
-// be thrown away; nothing should assume it's final or that a run ends. After
-// its last entry, the run repeats the last encounter with higher levels (and
-// eventually more crew): tuning.escalation.
+// In a run, enemies are built from a budget (src/sim/budget.ts). The
+// archetypes below are hand-made ones for tests and the sandbox.
 
 export interface CrewEntry {
   type: string;
@@ -26,12 +24,8 @@ export interface EnemySpec {
   crew: CrewEntry[];
   /** AI profile id (tuning.ai.<id>). Belongs to the encounter, not the ship. */
   ai: string;
-}
-
-export interface EncounterDef {
-  id: string;
-  name: string;
-  enemies: EnemySpec[];
+  /** Points spent on it (generated ships): what it pays when beaten. */
+  budget?: number;
 }
 
 /** AI profiles (tuning.ai is built from these). */
@@ -60,35 +54,6 @@ export const ARCHETYPES: Record<string, EnemySpec> = {
 };
 
 export const ARCHETYPE_NAMES: Record<string, string> = { standard: 'Standard (Basic Ship)', boarder: 'Boarder (Friend Ship)', heavy: 'Heavy (Hard Ship)' };
-
-export const ENCOUNTERS: EncounterDef[] = [
-  // Fight 1 is pathetically easy: it's there to teach steering and the buttons.
-  {
-    id: 'first',
-    name: 'A leaky Basic Ship',
-    enemies: [{ ship: 'basic', ai: 'standard', fullLoadout: { 'fix:1,0': 'cannon', 'fix:1,2': 'cannon' }, crew: [{ type: 'basic', count: 1 }] }],
-  },
-  // Then it escalates gently: short-handed Basic crews first, specialists and levels later.
-  { id: 'lone-basic', name: 'A lone Basic Ship', enemies: [{ ship: 'basic', ai: 'standard', crew: [{ type: 'basic', count: 3 }] }] },
-  { id: 'friend-ship', name: 'A Friend Ship', enemies: [{ ship: 'friend', ai: 'boarder', crew: [{ type: 'basic', count: 4 }] }] },
-  { id: 'hard-ship', name: 'A Hard Ship', enemies: [{ ship: 'hard', ai: 'heavy', crew: [{ type: 'quick' }, { type: 'basic', count: 3 }] }] },
-  {
-    id: 'basic-pair',
-    name: 'A pair of Basic Ships',
-    enemies: [
-      { ship: 'basic', ai: 'standard', crew: [{ type: 'basic', count: 3 }] },
-      { ship: 'basic', ai: 'skirmisher', loadout: { 'fix:1,0': 'longGun', 'fix:1,2': 'longGun' }, crew: [{ type: 'deft' }, { type: 'basic', count: 2 }] },
-    ],
-  },
-  {
-    id: 'boarding-party',
-    name: 'A boarding party',
-    enemies: [
-      { ship: 'friend', ai: 'boarder', crew: [{ type: 'hard', count: 2, level: 2 }, { type: 'deft', level: 2 }, { type: 'basic', count: 3, level: 2 }] },
-      { ship: 'basic', ai: 'standard', crew: [{ type: 'quick', level: 2 }, { type: 'handy', level: 2 }, { type: 'basic', level: 2 }] },
-    ],
-  },
-];
 
 /** Total enemy Lees in a spec (for summaries). */
 export function crewCount(spec: EnemySpec): number {
