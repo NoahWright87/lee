@@ -62,7 +62,7 @@ import { enemySetup } from '../sim/setup';
 import type { Job } from '../config/lees';
 import type { Lee } from '../sim/crew';
 import { World } from '../sim/world';
-import { DIFFICULTIES } from '../config/difficulty';
+import { difficulty, DIFFICULTIES } from '../config/difficulty';
 
 const STORAGE_KEY = 'lee.tuning.current';
 const PRESETS_KEY = 'lee.tuning.presets';
@@ -215,6 +215,7 @@ export class Controller {
         player: setupFor(run, this.tuning),
         enemies,
         assists: sandbox,
+        hesitation: difficulty(run.difficulty).hesitation,
         // The hull's damage carries (the sandbox always sails a fresh boat).
         carry: sandbox ? undefined : { hp: run.hull, water: run.hull.map(() => 0) },
       });

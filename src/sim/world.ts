@@ -4,7 +4,9 @@
 import { ITEMS } from '../config/items';
 import { LEE_DEFS } from '../config/lees';
 import type { Side, Tuning } from '../config/tuning';
-import { ContactSystem, hullGap, inReach, sideAboard, sideFacing, spikesOn, type ContactEvent } from './contact';
+import { ContactSystem, hullGap, sideAboard, sideFacing, spikesOn, type ContactEvent } from './contact';
+import { canCross, hookRange, hookReaches, LineSystem, railGap, railPoint, railsOf, ropeReach, type Line, type LineEvent, type RailRef } from './lines';
+import { OrderSystem, type DeckOrder } from './orders';
 import {
   applyDamage,
   createBoat,
@@ -25,8 +27,9 @@ import {
   type PartState,
 } from './boat';
 import { updateEngagement, stepMelee, stepPistols, type CombatEvent } from './combat';
-import { createLee, damageCrewAt, hurtLee, inArc, jobCounts, leeStat, loseLee, orderJob, stepCrew, tilesWithin, updateMobility, wetFactor, workerAt, type CrewContext, type Lee, type LossCause } from './crew';
+import { createLee, damageCrewAt, crossingReady, foesOn, outbound, standingTile, hurtLee, inArc, jobCounts, leeStat, loseLee, orderJob, stepCrew, tilesWithin, updateMobility, wetFactor, workerAt, type CrewContext, type Lee, type LossCause } from './crew';
 import type { Job } from '../config/lees';
+import type { AiProfile } from '../config/encounters';
 import { boardOrRam, nearSide, steer, type Helm, type HelmWorld, type ManeuverKind } from './helm';
 import { tileAt, tileAtCell } from './grid';
 import { defaultBuild, itemParam, slotById } from './loadout';
@@ -81,6 +84,14 @@ export type WorldEvent =
   | { type: 'swing'; leeId: number; back: boolean }
   | { type: 'crewLost'; boatId: number }
   | { type: 'gatling'; boatId: number; cannon: number; from: Vec; to: Vec; hit: boolean; side: Side }
+  | { type: 'hookThrown'; boatId: number; targetId: number; from: Vec; to: Vec; flight: number }
+  | { type: 'hookLanded'; boatId: number; targetId: number; line: number; from: Vec; to: Vec }
+  | { type: 'hookMissed'; boatId: number; targetId: number; at: Vec }
+  | { type: 'lineCut'; boatId: number; targetId: number; line: number; by: 'hacked' | 'broke' | 'sank' }
+  | { type: 'plank'; boatId: number; tile: number; down: boolean; destroyed: boolean }
+  | { type: 'ropeCut'; boatId: number; leeId: number }
+  | { type: 'shove'; boatId: number; otherId: number }
+  | { type: 'tapRefused'; boatId: number; why: string }
   | { type: 'blowout'; boatId: number; tile: number; pos: Vec }
   | { type: 'explosion'; boatId: number; tile: number; pos: Vec };
 
@@ -119,6 +130,10 @@ export interface SideStats {
   /** This side's tiles blown out, and volatile parts that went up. */
   tilesBlown: number;
   explosions: number;
+  /** Hooks thrown, hooks that landed, and lines this side cut. */
+  hooksThrown: number;
+  hooksLanded: number;
+  linesCut: number;
 }
 
 const emptyStats = (): SideStats => ({
@@ -131,9 +146,12 @@ const emptyStats = (): SideStats => ({
   leesLost: 0,
   hpRepaired: 0,
   waterBailed: 0,
-  lostBy: { cannon: 0, gatling: 0, melee: 0, pistol: 0, sank: 0, spikes: 0, explosion: 0 },
+  lostBy: { cannon: 0, gatling: 0, melee: 0, pistol: 0, sank: 0, spikes: 0, explosion: 0, fall: 0 },
   tilesBlown: 0,
   explosions: 0,
+  hooksThrown: 0,
+  hooksLanded: 0,
+  linesCut: 0,
   gatlingShots: 0,
   gatlingHits: 0,
   gatlingDealt: 0,
@@ -175,6 +193,8 @@ export interface EnemyBrain {
   side: number;
   /** World time of its next ⚔️ order (boarders move Lees to the boarding party as they close). */
   nextOrder: number;
+  /** Close-quarters decisions waiting out their hesitation: decision key → world time it acts. */
+  waits: Map<string, { due: number; seen: number }>;
 }
 
 /** Player damage carried into the next fight (structure fraction and water per part). */
@@ -203,6 +223,8 @@ export interface WorldOptions {
    * in a run: there, everything is explained by ships, loadouts and crews.
    */
   assists?: boolean;
+  /** × the enemy's hesitation before each close-quarters decision (difficulty: Easy more, Hard less). */
+  hesitation?: number;
 }
 
 /** Home tile per Lee slot (null = in the tray). */
@@ -257,6 +279,12 @@ export class World {
 
   /** Sandbox assists on (see WorldOptions.assists). */
   readonly assists: boolean;
+  /** Hooks in the air and the lines between hulls. */
+  readonly lines = new LineSystem();
+  /** Taps on a deck waiting for, or being worked by, a Lee. */
+  readonly orders = new OrderSystem();
+  /** × the enemy's hesitation before each close-quarters decision. */
+  readonly hesitation: number;
 
   constructor(tuning: Tuning, seed = (Math.random() * 2 ** 31) | 0, opts: WorldOptions = {}) {
     this.tuning = tuning;
@@ -264,6 +292,7 @@ export class World {
     this.rng = new Rng(seed);
     this.fight = Math.max(1, opts.fight ?? 1);
     this.assists = opts.assists ?? true;
+    this.hesitation = Math.max(0, opts.hesitation ?? 1);
     const assist = (v: number, off: number) => (this.assists ? v : off);
     const playerSetup: BoatSetup = opts.player ?? (opts.crew ? { build: defaultBuild('basic'), crew: basicCrew(opts.crew) } : defaultPlayerSetup(tuning));
     this.player = createBoat(1, 'player', playerSetup.build, tuning, { x: 0, y: 0 }, NORTH, { advantage: assist(tuning.global.playerAdvantage, 1) });
@@ -300,7 +329,7 @@ export class World {
       this.enemyBudgets.push(setup.budget ?? 0);
       this.boardCrew(e, setup.crew);
       const jitter = tuning.enemyAI.rangeJitter;
-      this.brains.set(e.id, { orbitDir: 0, range: ai.preferredRange + this.rng.range(-jitter, jitter), seek: null, mode: 'orbit', side: 0, nextOrder: 0 });
+      this.brains.set(e.id, { orbitDir: 0, range: ai.preferredRange + this.rng.range(-jitter, jitter), seek: null, mode: 'orbit', side: 0, nextOrder: 0, waits: new Map() });
     });
     this.boats = [this.player, ...this.enemies];
   }
@@ -396,7 +425,8 @@ export class World {
     const id = this.boardTargetId;
     const tgt = id !== null ? this.enemies.find((e) => e.id === id && !this.isOut(e)) ?? null : null;
     if (tgt) return tgt;
-    return this.touching(this.player).find((e) => !this.isOut(e)) ?? null;
+    const held = this.lines.linesOf(this.player).map((l) => (l.owner === this.player ? l.target : l.owner));
+    return this.touching(this.player).find((e) => !this.isOut(e)) ?? held.find((e) => !this.isOut(e) && e.side !== this.player.side) ?? null;
   }
 
   /** Where a boat's ⚔️ Lees head: yours from your target; enemies always go for you. */
@@ -422,7 +452,7 @@ export class World {
   /** In melee contact: ⏩ shows RETREAT instead of SAIL. */
   canRetreat(): boolean {
     const p = this.player;
-    return this.inContact(p) || sideAboard(p, 'enemy', this.allLees()) || p.crew.lees.some((l) => l.alive && l.deck !== p);
+    return this.inContact(p) || this.lines.held(p) || sideAboard(p, 'enemy', this.allLees()) || p.crew.lees.some((l) => l.alive && l.deck !== p);
   }
 
   /** Is the player pulling out (RETREAT)? */
@@ -519,7 +549,7 @@ export class World {
         for (const l of self.crew.lees) {
           if (!l.alive || l.deck === self || l.deck.sinkingSince !== null) continue;
           if (l.swing && !l.swing.back) return l.swing.to;
-          if (!l.swing && inReach(self, l.deck, this.tuning)) return l.deck;
+          if (!l.swing && canCross(self, l.deck, this.tuning)) return l.deck;
         }
         return null;
       },
@@ -658,6 +688,8 @@ export class World {
           if (h.killed) this.noteLost(h.lee);
         }
       }
+      this.orders.step(this, dt);
+      this.stepRails();
       this.stepCombat(dt);
     }
     for (const e of this.enemies) this.thinkEnemy(e);
@@ -666,6 +698,7 @@ export class World {
       const target = this.isSinking(b) ? null : b.target;
       stepMotion(b.motion, target, motionParams(b, this.tuning), dt);
     }
+    for (const ev of this.lines.step({ tuning: this.tuning, time: this.time, gone: (b) => this.isSinking(b) }, dt)) this.handleLineEvent(ev);
     for (const ev of this.contacts.step({ tuning: this.tuning, time: this.time, boats: this.boats }, dt)) this.handleContactEvent(ev);
     if (!decided) {
       for (const side of ['player', 'enemy'] as const) {
@@ -833,6 +866,7 @@ export class World {
     }
     const prof = e.ai ?? this.tuning.ai.standard;
     this.orderEnemyCrew(e, brain, prof);
+    this.thinkQuarters(e, brain, prof);
     if (prof.seekAttach > 0 && !this.isSinking(p)) {
       this.thinkBoarder(e, brain, prof);
       return;
@@ -878,8 +912,9 @@ export class World {
   }
 
   /** A boarder AI moves Lees into its boarding party (one order at a time) once you're within boardAt. */
-  private orderEnemyCrew(e: Boat, brain: EnemyBrain, prof: { boardShare: number; boardAt: number }): void {
+  private orderEnemyCrew(e: Boat, brain: EnemyBrain, prof: { boardShare: number; boardAt: number; winBoard?: number }): void {
     if (prof.boardShare <= 0 || this.time < brain.nextOrder || this.isSinking(this.player)) return;
+    if (prof.winBoard && e.crew.lees.filter((l) => l.alive).length < this.player.crew.lees.filter((l) => l.alive).length * 1.3) return;
     if (dist(e.motion, this.player.motion) > prof.boardAt) return;
     const alive = e.crew.lees.filter((l) => l.alive).length;
     if (jobCounts(e).board >= Math.round(alive * Math.min(1, prof.boardShare))) return;
@@ -893,15 +928,30 @@ export class World {
    * otherwise come alongside. After a ram it holds its nose in. Same steering
    * (and the same autopilot) as yours.
    */
-  private thinkBoarder(e: Boat, brain: EnemyBrain, ai: { ramLine: number; ramRange: number }): void {
+  private thinkBoarder(e: Boat, brain: EnemyBrain, ai: { ramLine: number; ramRange: number; hooks?: number }): void {
     const p = this.player;
     const hw = this.helmWorld();
+    // A boarder with hooks to throw eases in to hook range, and lets its lines do the pulling once one lands;
+    // when its hooks are cut it falls back to ramming or coming alongside.
+    const hooks = railsOf(e, 'hook');
+    const hooking = (ai.hooks ?? 0) >= 1 && hooks.some((r) => r.rail.out || r.rail.readyAt <= this.time);
+    const lined = this.lines.between(e, p).some((l) => l.owner === e);
+    // Judged by where its hooks actually are (a boat coming in at an angle has its rails farther off than its hull).
+    const reach = hooks.length ? Math.max(...hooks.map((r) => hookRange(this.tuning, r.rail.item))) : 0;
+    const gapNow = hooks.length ? Math.min(...hooks.map((r) => railGap(e, r.tile, p, r.rail))) : hullGap(e, p).gap;
     const drive = (helm: Helm) => {
       const { cmd, helm: next } = steer(e, helm, hw);
       if (next.kind === 'board') brain.side = next.side;
       brain.seek = cmd.target;
       e.target = cmd.target;
       e.throttle = cmd.throttle;
+      // Match the target's speed (plus a little to close) rather than a fixed crawl, so a fleeing target can still be hooked.
+      const cruise = Math.max(1, motionParams(e, this.tuning).cruiseSpeed);
+      const theirs = Math.hypot(p.motion.vx, p.motion.vy);
+      // Lined, it keeps just ahead of your speed and lets its lines do the closing (so a boat sailing away drags it along, and a faster boarder still wins).
+      if (hooking && lined) e.throttle = Math.min(1, theirs / cruise + 0.12);
+      else if (hooking && gapNow < reach * 0.9) e.throttle = Math.min(e.throttle, Math.max(0, theirs / cruise));
+      else if (hooking && gapNow < reach * 2.5) e.throttle = Math.min(e.throttle, Math.min(1, (theirs + 1.5) / cruise));
     };
     if (brain.mode === 'hold') {
       if (hullGap(e, p).gap <= this.tuning.boarding.range + this.tuning.boarding.rangeSlack) {
@@ -918,7 +968,7 @@ export class World {
     const across = Math.abs(Math.sin(e.motion.heading - p.motion.heading));
     const line = (brain.mode === 'ram' ? 2 : 1) * ai.ramLine * DEG;
     const range = ai.ramRange * (brain.mode === 'ram' ? 1.3 : 1);
-    if (!this.inContact(e) && off <= line && d <= range && across >= 0.6 && speed >= this.tuning.attach.ramSpeed) {
+    if (!hooking && !this.inContact(e) && off <= line && d <= range && across >= 0.6 && speed >= this.tuning.attach.ramSpeed) {
       brain.mode = 'ram';
       drive({ kind: 'ram', boatId: p.id, hold: false });
       return;
@@ -927,6 +977,274 @@ export class World {
     if (brain.mode !== 'alongside') brain.side = nearSide(e, p);
     brain.mode = 'alongside';
     drive({ kind: 'board', boatId: p.id, side: brain.side });
+  }
+
+  // ------------------------------------------------------------ close quarters
+
+  /** True while an opposing Lee stands on this boat's deck. */
+  liveFoesAboard(boat: Boat): boolean {
+    return foesOn(boat, boat.side, this.allLees()).length > 0;
+  }
+
+  /** Planks come up when no hostile hull is within reach any more (or the plank was destroyed). */
+  private stepRails(): void {
+    const reach = Math.max(0, this.tuning.lines.plankReach) * 1.5;
+    for (const b of this.boats) {
+      for (const tile of b.grid.tiles) {
+        for (const r of tile.rails) {
+          if (r.kind !== 'planks' || !r.lowered) continue;
+          const w = railPoint(b, tile, r);
+          const near = this.boats.some((o) => o !== b && o.side !== b.side && !this.isSinking(o) && distanceToHull(o, w) <= reach);
+          if (r.destroyed || tile.blown || this.isSinking(b) || !near) {
+            r.lowered = false;
+            this.events.push({ type: 'plank', boatId: b.id, tile: tile.index, down: false, destroyed: r.destroyed });
+          }
+        }
+      }
+    }
+  }
+
+  private handleLineEvent(ev: LineEvent): void {
+    switch (ev.type) {
+      case 'hookLanded': {
+        const l = ev.line;
+        this.stats[l.owner.side].hooksLanded++;
+        this.events.push({ type: 'hookLanded', boatId: l.owner.id, targetId: l.target.id, line: l.id, from: this.lines.anchorWorld(l), to: this.lines.attachWorld(l) });
+        for (const b of [l.owner, l.target]) b.crew.thinkIn = 0;
+        break;
+      }
+      case 'hookMissed':
+        this.events.push({ type: 'hookMissed', boatId: ev.flight.owner.id, targetId: ev.flight.target.id, at: ev.flight.to });
+        break;
+      case 'lineCut':
+        this.stats[ev.line.target.side].linesCut++;
+        this.events.push({ type: 'lineCut', boatId: ev.line.owner.id, targetId: ev.line.target.id, line: ev.line.id, by: ev.by });
+        for (const b of [ev.line.owner, ev.line.target]) b.crew.thinkIn = 0;
+        break;
+      case 'shoved':
+        this.events.push({ type: 'shove', boatId: ev.a.id, otherId: ev.b.id });
+        break;
+      case 'hookThrown':
+        break;
+    }
+  }
+
+  /** Cut a line now (a Lee hacked through it, it broke, or its boat went down). */
+  cutLine(line: Line, by: 'hacked' | 'broke' | 'sank' = 'hacked'): void {
+    this.handleLineEvent(this.lines.cut(line, this.tuning, this.time, by));
+  }
+
+  /** Cut the rope a Lee is swinging on: it falls short, back onto the deck it left, and the landing hurts. */
+  cutRope(swinger: Lee): void {
+    const s = swinger.swing;
+    if (!s || s.cut) return;
+    s.cut = true;
+    if (s.via) s.via.rail.readyAt = this.time + Math.max(0, this.tuning.lines.hookCooldown);
+    this.events.push({ type: 'ropeCut', boatId: s.to.id, leeId: swinger.id });
+  }
+
+  private refuse(boat: Boat, why: string): string {
+
+    this.events.push({ type: 'tapRefused', boatId: boat.id, why });
+    return why;
+  }
+
+  /**
+   * A tap on one of this boat's rail items. Returns null when it's taken (a Lee
+   * will answer), else why not. Hooks throw at the ⚔️ target; ropes send ⚔️ Lees
+   * across, one at a time; planks lower (or come up); poles shove the boats apart.
+   */
+  tapRail(ref: RailRef): string | null {
+    const boat = ref.boat;
+    const t = this.tuning;
+    const r = ref.rail;
+    if (this.result || this.isSinking(boat)) return this.refuse(boat, 'the fight is over');
+    if (r.destroyed || ref.tile.blown) return this.refuse(boat, 'it is wrecked');
+    const target = this.boardTargetOf(boat);
+    const foeNear = (reach: number): boolean => this.boats.some((o) => o.side !== boat.side && !this.isSinking(o) && railGap(boat, ref.tile, o, ref.rail) <= reach);
+    switch (r.kind) {
+      case 'hook':
+        if (!target || this.isOut(target)) return this.refuse(boat, 'tap an enemy ship first');
+        if (r.out) return this.refuse(boat, 'the hook is out');
+        if (r.readyAt > this.time) return this.refuse(boat, 'the hook is cooling down');
+        if (!hookReaches(ref, target, t)) return this.refuse(boat, 'out of hook range');
+        this.orders.place(this, { boat, kind: 'throw', role: 'nearest', tile: ref.tile.index, rail: ref });
+        return null;
+      case 'rope': {
+        if (!target || this.isOut(target)) return this.refuse(boat, 'tap an enemy ship first');
+        if (railGap(boat, ref.tile, target, ref.rail) > ropeReach(t, r.item)) return this.refuse(boat, 'out of swing range');
+        r.pending = Math.min(3, r.pending + 1);
+        const ordered = railsOf(boat, 'rope').reduce((n, x) => n + x.rail.pending, 0);
+        if (jobCounts(boat).board < ordered) {
+          const lee = orderJob(boat, 'board', this.time, t);
+          if (lee) this.events.push({ type: 'order', boatId: boat.id, leeId: lee.id, job: 'board' });
+        }
+        boat.crew.thinkIn = 0;
+        return null;
+      }
+      case 'planks':
+        if (r.lowered) {
+          r.lowered = false;
+          this.events.push({ type: 'plank', boatId: boat.id, tile: ref.tile.index, down: false, destroyed: false });
+          return null;
+        }
+        if (!foeNear(Math.max(0, t.lines.plankReach))) return this.refuse(boat, 'too far to lower the plank');
+        this.orders.place(this, { boat, kind: 'lower', role: 'nearest', tile: ref.tile.index, rail: ref });
+        return null;
+      case 'pole':
+        if (r.readyAt > this.time) return this.refuse(boat, 'the poles are not ready');
+        if (!foeNear(Math.max(1, t.boarding.range) * 3)) return this.refuse(boat, 'nothing to push off');
+        this.orders.place(this, { boat, kind: 'push', role: 'nearest', tile: ref.tile.index, rail: ref });
+        return null;
+      default:
+        return this.refuse(boat, 'nothing to use there');
+    }
+  }
+
+  /** A tap on a line that holds this boat: a ⚔️ or 🛠️ Lee goes and hacks at it. */
+  tapLine(line: Line, boat: Boat): string | null {
+    if (this.result || this.isSinking(boat)) return this.refuse(boat, 'the fight is over');
+    if (line.owner !== boat && line.target !== boat) return this.refuse(boat, 'that line is not on this boat');
+    this.orders.place(this, { boat, kind: 'cutLine', role: 'cutter', tile: 0, line });
+    return null;
+  }
+
+  /** A tap on an enemy plank lowered onto this boat's rail: a ⚔️ or 🛠️ Lee goes and destroys it. */
+  tapPlank(ref: RailRef, boat: Boat): string | null {
+    if (this.result || this.isSinking(boat)) return this.refuse(boat, 'the fight is over');
+    if (ref.boat.side === boat.side || !ref.rail.lowered) return this.refuse(boat, 'nothing to destroy');
+    this.orders.place(this, { boat, kind: 'wreckPlank', role: 'cutter', tile: 0, rail: ref });
+    return null;
+  }
+
+  /** A tap on the rope an enemy Lee is swinging on: a ⚔️ or 🛠️ Lee goes to its landing and cuts it. */
+  tapRope(swinger: Lee, boat: Boat): string | null {
+    const s = swinger.swing;
+    if (this.result || this.isSinking(boat)) return this.refuse(boat, 'the fight is over');
+    if (!s || s.via === null || s.cut || s.to !== boat || swinger.side === boat.side || s.via.rail.kind !== 'rope') return this.refuse(boat, 'no rope to cut');
+    this.orders.place(this, { boat, kind: 'cutRope', role: 'cutter', tile: s.toTile, swinger });
+    return null;
+  }
+
+  /** A Lee has reached the rail and finished the work of a throw, a lower or a shove. */
+  doRail(o: DeckOrder): void {
+    const t = this.tuning;
+    const ref = o.rail!;
+    const boat = o.boat;
+    if (o.kind === 'throw') {
+      const target = this.boardTargetOf(boat);
+      const f = target ? this.lines.throwHook(ref, target, t, this.time) : null;
+      if (!f) {
+        this.refuse(boat, 'the hook could not be thrown');
+        return;
+      }
+      this.stats[boat.side].hooksThrown++;
+      this.events.push({ type: 'hookThrown', boatId: boat.id, targetId: f.target.id, from: f.from, to: f.to, flight: f.flight });
+      // The throw is telegraphed to whoever it's aimed at.
+      if (f.target.side === 'player') this.telegraphs.add('area', f.to, f.flight, t.telegraph.lingerTime, Math.max(1.5, t.lines.hookCatch));
+    } else if (o.kind === 'lower') {
+      ref.rail.lowered = true;
+      this.events.push({ type: 'plank', boatId: boat.id, tile: ref.tile.index, down: true, destroyed: false });
+      boat.crew.thinkIn = 0;
+    } else if (o.kind === 'push') {
+      let other: Boat | null = null;
+      let best = Infinity;
+      for (const b of this.boats) {
+        if (b.side === boat.side || this.isSinking(b)) continue;
+        const g = hullGap(boat, b).gap;
+        if (g < best) {
+          best = g;
+          other = b;
+        }
+      }
+      if (!other) return;
+      ref.rail.readyAt = this.time + Math.max(0, t.lines.poleCooldown);
+      this.lines.shove(boat, other, t, this.time);
+      this.events.push({ type: 'shove', boatId: boat.id, otherId: other.id });
+    }
+  }
+
+  /** The way the ⚔️ button's Lees can cross right now (planks down, ropes with a crossing ordered). */
+  crossingsReady(boat: Boat = this.player): number {
+    const target = this.boardTargetOf(boat);
+    return target ? outbound(boat, target, this.tuning).filter((c) => crossingReady(c, boat, this.time)).length : 0;
+  }
+
+  // -------- enemy: close quarters
+
+  /** Wait out a random hesitation after a condition first holds, then act once. Returns nothing; call every step. */
+  private want(brain: EnemyBrain, seen: Set<string>, key: string, scale: number, act: () => void): void {
+    seen.add(key);
+    const w = brain.waits.get(key);
+    if (!w) {
+      brain.waits.set(key, { due: this.time + this.rng.range(0.5, 1.5) * this.hesitation * Math.max(0, scale), seen: this.time });
+      return;
+    }
+    w.seen = this.time;
+    if (this.time < w.due) return;
+    brain.waits.delete(key);
+    act();
+  }
+
+  /**
+   * Hooks, planks, ropes, cutting lines: the enemy's close-quarters decisions,
+   * by style (its AI profile), each waiting out a short random hesitation
+   * (difficulty scales it). It taps the same things you do.
+   */
+  private thinkQuarters(e: Boat, brain: EnemyBrain, prof: AiProfile): void {
+    const p = this.player;
+    const t = this.tuning;
+    if (this.isSinking(p) || this.result) return;
+    const seen = new Set<string>();
+    const mine = e.crew.lees.filter((l) => l.alive).length;
+    const theirs = p.crew.lees.filter((l) => l.alive).length;
+    const winning = mine >= theirs * 1.3;
+    const boarding = prof.boardShare > 0 && (!prof.winBoard || winning);
+    const reach = Math.max(0, t.lines.plankReach);
+    const myLines = this.lines.between(e, p).filter((l) => l.owner === e).length + this.lines.flights.filter((f) => f.owner === e).length + this.orders.of(e).filter((o) => o.kind === 'throw').length;
+
+    // Hooks: throw at you while there's a line to spare.
+    const hooking = prof.hooks >= 1 || (prof.hooks > 0 && winning);
+    for (const ref of railsOf(e, 'hook')) {
+      const key = `hook:${ref.rail.slot}`;
+      if (hooking && myLines < prof.hookLines && !ref.rail.out && ref.rail.readyAt <= this.time && hookReaches(ref, p, t) && !this.orders.find(e, 'throw', { rail: ref })) {
+        this.want(brain, seen, key, 1, () => void this.tapRail(ref));
+      }
+    }
+    // Planks and ropes: when it means to board and has ⚔️ Lees waiting.
+    if (boarding && jobCounts(e).board > 0) {
+      for (const ref of railsOf(e, 'planks')) {
+        if (!ref.rail.lowered && railGap(e, ref.tile, p, ref.rail) <= reach && !this.orders.find(e, 'lower', { rail: ref })) this.want(brain, seen, `plank:${ref.rail.slot}`, 1, () => void this.tapRail(ref));
+      }
+      for (const ref of railsOf(e, 'rope')) {
+        const waiting = e.crew.lees.some((l) => l.alive && l.deck === e && !l.swing && l.task.type === 'board' && !l.path.length && standingTile(l) === ref.tile.index);
+        if (waiting && ref.rail.pending === 0 && ref.rail.readyAt <= this.time && railGap(e, ref.tile, p, ref.rail) <= ropeReach(t, ref.rail.item)) this.want(brain, seen, `rope:${ref.rail.slot}`, 0.5, () => void this.tapRail(ref));
+      }
+    }
+    // Resisting: cut your lines, destroy your planks, cut your ropes (how fast is the style's cutDelay).
+    if (prof.cutDelay > 0) {
+      for (const line of this.lines.linesOf(e)) {
+        if (line.owner === e && !prof.breakOff) continue;
+        if (this.orders.find(e, 'cutLine', { line })) continue;
+        this.want(brain, seen, `cut:${line.id}`, prof.breakOff ? 0.1 : prof.cutDelay, () => void this.tapLine(line, e));
+      }
+      for (const ref of railsOf(p, 'planks')) {
+        if (!ref.rail.lowered || distanceToHull(e, railPoint(p, ref.tile, ref.rail)) > reach * 1.5 || this.orders.find(e, 'wreckPlank', { rail: ref })) continue;
+        this.want(brain, seen, `wreck:${ref.rail.slot}`, prof.cutDelay, () => void this.tapPlank(ref, e));
+      }
+      for (const l of p.crew.lees) {
+        if (!l.alive || !l.swing || l.swing.cut || l.swing.to !== e || l.swing.via?.rail.kind !== 'rope' || this.orders.find(e, 'cutRope', { swinger: l })) continue;
+        this.want(brain, seen, `swing:${l.id}`, prof.cutDelay, () => void this.tapRope(l, e));
+      }
+    }
+    // Getting clear: a skirmisher shoves off whatever has closed on it.
+    if (prof.shove > 0 && !this.lines.held(e)) {
+      for (const ref of railsOf(e, 'pole')) {
+        if (ref.rail.readyAt <= this.time && railGap(e, ref.tile, p, ref.rail) <= Math.max(1, t.boarding.range) * 2 && !this.orders.find(e, 'push', { rail: ref })) this.want(brain, seen, `pole:${ref.rail.slot}`, 0.6, () => void this.tapRail(ref));
+      }
+    }
+    // A decision forgotten for a moment (a Lee mid-step) keeps its wait; one that stays false is dropped.
+    for (const [k, w] of [...brain.waits]) if (!seen.has(k) && this.time - w.seen > 0.5) brain.waits.delete(k);
   }
 
   // ------------------------------------------------------------ guns

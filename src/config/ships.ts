@@ -108,10 +108,18 @@ export const SHIPS: Record<string, ShipDef> = {
       [fix(3, 2)]: 'cannon',
       [fix(2, 1)]: 'sail',
       [fix(3, 1)]: 'lookout',
+      [rail(2, 2, 'starboard')]: 'ropes',
+      [rail(3, 2, 'starboard')]: 'hooks',
+      [rail(2, 0, 'port')]: 'ropes',
+      [rail(3, 0, 'port')]: 'hooks',
     },
     preset: {
-      // A real broadside to starboard (three cannons), one gun to port, oars and a sail.
+      // A real broadside to starboard (three cannons), one gun to port, oars and a sail; ropes and hooks on the rail.
       loadout: {
+        [rail(2, 2, 'starboard')]: 'ropes',
+        [rail(3, 2, 'starboard')]: 'hooks',
+        [rail(2, 0, 'port')]: 'ropes',
+        [rail(3, 0, 'port')]: 'hooks',
         [fix(1, 2)]: 'cannon',
         [fix(2, 2)]: 'cannon',
         [fix(3, 2)]: 'cannon',
@@ -137,10 +145,14 @@ export const SHIPS: Record<string, ShipDef> = {
       [fix(2, 0)]: 'longGun',
       [fix(2, 2)]: 'longGun',
       [fix(1, 1)]: 'sail',
+      [rail(2, 2, 'starboard')]: 'poles',
+      [rail(2, 0, 'port')]: 'poles',
     },
     preset: {
-      // Long guns to starboard and a bow chaser, oars to port.
+      // Long guns to starboard and a bow chaser, oars to port, and poles to shove off whatever hooks it.
       loadout: {
+        [rail(2, 2, 'starboard')]: 'poles',
+        [rail(2, 0, 'port')]: 'poles',
         [fix(1, 2)]: 'longGun',
         [fix(2, 2)]: 'longGun',
         [fix(3, 1)]: 'longGun',
@@ -165,10 +177,17 @@ export const SHIPS: Record<string, ShipDef> = {
       [fix(2, 0)]: 'oars',
       [fix(2, 1)]: 'oars',
       [rail(6, 0, 'bow')]: 'spikes',
+      [rail(3, 1, 'starboard')]: 'planks',
+      [rail(2, 1, 'starboard')]: 'ropes',
+      [rail(4, 1, 'starboard')]: 'hooks',
+      [rail(5, 1, 'starboard')]: 'hooks',
+      [rail(3, 0, 'port')]: 'planks',
+      [rail(2, 0, 'port')]: 'ropes',
+      [rail(4, 0, 'port')]: 'hooks',
+      [rail(5, 0, 'port')]: 'hooks',
     },
-    defaultTreasures: ['ropes'],
     preset: {
-      // Spikes on the bow, a Gatling facing forward, planks to starboard, and Swinging Ropes.
+      // Spikes on the bow, a Gatling facing forward, planks and Swinging Ropes to starboard, and hooks.
       loadout: {
         [fix(6, 1)]: 'gatling',
         [fix(4, 1)]: 'carronade',
@@ -177,9 +196,15 @@ export const SHIPS: Record<string, ShipDef> = {
         [rail(6, 0, 'bow')]: 'spikes',
         [rail(6, 1, 'bow')]: 'spikes',
         [rail(3, 1, 'starboard')]: 'planks',
+        [rail(2, 1, 'starboard')]: 'ropes',
+        [rail(4, 1, 'starboard')]: 'hooks',
+        [rail(5, 1, 'starboard')]: 'hooks',
+        [rail(3, 0, 'port')]: 'planks',
+        [rail(2, 0, 'port')]: 'ropes',
+        [rail(4, 0, 'port')]: 'hooks',
+        [rail(5, 0, 'port')]: 'hooks',
       },
       facings: { [fix(6, 1)]: 'bow' },
-      treasures: ['ropes'],
       crew: [lee('deft', 2, 0), lee('basic', 2, 1), lee('basic', 6, 1), lee('basic', 4, 1), lee('hard', 3, 1), lee('hard', 5, 0)],
     },
     tags: ['board'],
@@ -203,9 +228,17 @@ export const SHIPS: Record<string, ShipDef> = {
       [fix(4, 3)]: 'oars',
       [fix(3, 1)]: 'sail',
       [fix(2, 2)]: 'powder',
+      [rail(2, 3, 'starboard')]: 'poles',
+      [rail(3, 3, 'starboard')]: 'planks',
+      [rail(2, 0, 'port')]: 'poles',
+      [rail(3, 0, 'port')]: 'planks',
     },
     preset: {
       loadout: {
+        [rail(2, 3, 'starboard')]: 'poles',
+        [rail(3, 3, 'starboard')]: 'planks',
+        [rail(2, 0, 'port')]: 'poles',
+        [rail(3, 0, 'port')]: 'planks',
         [fix(1, 3)]: 'cannon',
         [fix(2, 3)]: 'cannon',
         [fix(3, 3)]: 'cannon',
@@ -234,13 +267,13 @@ export function shipName(id: string): string {
 
 /** Per-ship numbers (tuning.ships). Multipliers on the tuning.boat baseline. */
 export function defaultShipStats() {
-  const s = (o: { speed: number; turn: number; hullHp: number; leak: number; capacity: number; accel: number; crewMin: number; crewMax: number; treasures: number; cargo: number }) => o;
+  const s = (o: { speed: number; turn: number; hullHp: number; leak: number; capacity: number; accel: number; crewMin: number; crewMax: number; treasures: number; cargo: number; mass: number }) => o;
   return {
-    basic: s({ speed: 1, turn: 1, hullHp: 1, leak: 1, capacity: 1, accel: 1, crewMin: 4, crewMax: 8, treasures: 2, cargo: 6 }),
-    longdistance: s({ speed: 1.35, turn: 1.3, hullHp: 0.7, leak: 1.2, capacity: 0.7, accel: 1.2, crewMin: 3, crewMax: 5, treasures: 1, cargo: 4 }),
+    basic: s({ speed: 1, turn: 1, hullHp: 1, leak: 1, capacity: 1, accel: 1, crewMin: 4, crewMax: 8, treasures: 2, cargo: 6, mass: 1 }),
+    longdistance: s({ speed: 1.35, turn: 1.3, hullHp: 0.7, leak: 1.2, capacity: 0.7, accel: 1.2, crewMin: 3, crewMax: 5, treasures: 1, cargo: 4, mass: 0.6 }),
     // No sail by default: its turning comes from the hull (×1.5 of the no-sail baseline ≈ 0.9 of a crewed Basic Ship).
-    friend: s({ speed: 1.2, turn: 1.5, hullHp: 0.8, leak: 1, capacity: 0.75, accel: 1.15, crewMin: 6, crewMax: 12, treasures: 2, cargo: 6 }),
-    hard: s({ speed: 0.65, turn: 0.6, hullHp: 1.6, leak: 1, capacity: 1.5, accel: 0.6, crewMin: 5, crewMax: 10, treasures: 3, cargo: 9 }),
+    friend: s({ speed: 1.2, turn: 1.5, hullHp: 0.8, leak: 1, capacity: 0.75, accel: 1.15, crewMin: 6, crewMax: 12, treasures: 2, cargo: 6, mass: 0.8 }),
+    hard: s({ speed: 0.65, turn: 0.6, hullHp: 1.6, leak: 1, capacity: 1.5, accel: 0.6, crewMin: 5, crewMax: 10, treasures: 3, cargo: 9, mass: 2.2 }),
   };
 }
 

@@ -252,7 +252,7 @@ export class Hud {
       ['HP repaired', `${Math.round(s.hpRepaired)}`],
     ];
     const lost = (x: SideStats) =>
-      (['cannon', 'gatling', 'melee', 'pistol', 'sank', 'spikes', 'explosion'] as const)
+      (['cannon', 'gatling', 'melee', 'pistol', 'sank', 'spikes', 'explosion', 'fall'] as const)
         .filter((k) => x.lostBy[k] > 0)
         .map((k) => `${x.lostBy[k]} ${k === 'sank' ? 'sank' : k}`)
         .join(', ') || 'none';

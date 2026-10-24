@@ -258,6 +258,49 @@ export function defaultTuning() {
       /** Seconds between Lees leaving one boat for the same enemy boat (one at a time over the rail). */
       swingInterval: 0.8,
     },
+    /** Hooks, lines, ropes, planks and poles: the only ways to connect two boats and cross between them. */
+    lines: {
+      /** Hook reach: × pistol range, measured from the hook's rail tile to the other hull, m (× the item's range). */
+      hookRange: 1,
+      /** Seconds a thrown hook is in the air (the throw is telegraphed). Steer away before it lands to dodge it. */
+      hookFlight: 1,
+      /** A hook lands if its aim point is within this many m of the other hull when it arrives. */
+      hookCatch: 3,
+      /** Seconds before a hook can be thrown again once its line is cut or breaks. */
+      hookCooldown: 12,
+      /** Damage a line takes before it parts (~2 s of hacking for a baseline Lee). */
+      lineHp: 5,
+      /** Reeling in: m/s of closing per line on a baseline-mass boat (÷ the heavier boat's mass). */
+      pull: 0.5,
+      /** A boat sailing away eats the pull: reel speed lost per m/s of separating speed. */
+      dragEffect: 0.15,
+      /** Taut lines swing the two boats round to lie side by side, at up to this many rad/s. */
+      align: 0.5,
+      /** Once the hulls touch, lines slide the pair level with each other at up to this many m/s. */
+      slide: 2,
+      /** Lines stop reeling in at this hull gap, m. */
+      closeGap: 1.2,
+      /** Rope swing reach, m from the rope's rail to the other hull (× the item's reach). */
+      ropeRange: 4,
+      /** A plank can be lowered onto a hull this close, m. */
+      plankReach: 2,
+      /** A lowered plank is destroyed after this much damage. */
+      plankHp: 6,
+      /** Seconds between Lees stepping onto one plank. */
+      plankInterval: 0.35,
+      /** Seconds a Lee spends on the rail throwing a hook, lowering a plank or working a pole. */
+      workTime: 0.5,
+      /** Push poles: separating speed (m/s), for how long (s), and the cooldown (s). */
+      poleSpeed: 3,
+      poleTime: 1,
+      poleCooldown: 4,
+      /** Seconds of hacking to cut a rope with a Lee on it. */
+      ropeCutTime: 0.6,
+      /** A tap that needs a ⚔️ or 🛠️ Lee (cutting, destroying) is open to any Lee after this long with none free, s. */
+      answerFallback: 1.5,
+      /** Extra damage a Lee takes when something drops it onto a hard surface (a cut rope, a knock into the rail). */
+      hardSurfaceDamage: 10,
+    },
     /** Jobs and the four action buttons (⏩ SAIL, 🔫 FIRE, ⚔️ BOARD, 🛠️ FIX). */
     jobs: {
       /** A gunner stays on a gun that can't bear for this long before looking elsewhere, s. */

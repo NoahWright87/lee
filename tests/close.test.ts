@@ -63,6 +63,8 @@ const crewOf = (places: Place[]): CrewSpec[] => places.map((p) => (Array.isArray
 function quiet(t: Tuning): Tuning {
   t.boat.flooding.bilgeRate = 0;
   t.boat.flooding.leakRate = 0;
+  // Phase 3 tests aren't about hooks: nobody throws one unless a test wants it.
+  for (const p of Object.values(t.ai)) p.hooks = 0;
   // Keep enemy boarders from re-ordering their crew mid-test unless a test wants it.
   return t;
 }
@@ -73,9 +75,15 @@ function pin(_w: World, b: Boat, at: Vec): void {
   b.target = null;
 }
 
+/** Phase 7: ropes carry a Lee only when a crossing is ordered; these tests are about what happens after, so keep one ordered on every rope. */
+const sendRopes = (w: World) => {
+  for (const b of w.boats) for (const tile of b.grid.tiles) for (const r of tile.rails) if (r.kind === 'rope' && r.pending < 1) r.pending = 1;
+};
+
 const run = (w: World, seconds: number, each?: () => void) => {
   for (let i = 0; i < seconds / FIXED_DT; i++) {
     each?.();
+    sendRopes(w);
     w.step(FIXED_DT);
   }
 };
@@ -372,7 +380,7 @@ describe('boarding: only ⚔️ Lees go', () => {
       for (const p of e.parts) p.water = p.capacity * line * f;
     };
     w.drainEvents();
-    run(w, 3, () => {
+    run(w, 9, () => {
       hold();
       fill(0.95);
     });
@@ -404,8 +412,8 @@ describe('boarding: only ⚔️ Lees go', () => {
       expect(l.deck).toBe(e);
       expect(l.reason).toMatch(/stranded/);
     }
-    // Back alongside: they jump home.
-    run(w, 4, hold);
+    // Back alongside: they walk to a rope and swing home.
+    run(w, 10, hold);
     for (const l of across.filter((x) => x.alive)) expect(l.deck).toBe(w.player);
   });
 

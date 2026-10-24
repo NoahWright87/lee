@@ -43,7 +43,7 @@ export interface EffectDef {
 }
 
 export type StationKind = 'gun' | 'oars' | 'sails' | 'lookout' | 'pump' | 'powder';
-export type RailKind = 'spikes' | 'fence' | 'planks';
+export type RailKind = 'spikes' | 'fence' | 'planks' | 'rope' | 'hook' | 'pole';
 /** How a gun's shot travels and is telegraphed. */
 export type GunMode = 'shell' | 'lob' | 'stream' | 'burst';
 
@@ -316,8 +316,8 @@ const list: ItemDef[] = [
     id: 'planks',
     name: 'Boarding Planks',
     icon: '🪵',
-    description: 'Boarders leaving here swing faster and shoot harder.',
-    tradeoff: 'Shootable mid-swing.',
+    description: 'Tap to lower onto a hull within 2 m: Lees walk across, faster than swinging, and shoot harder.',
+    tradeoff: 'Shootable mid-crossing. An enemy plank on your rail can be destroyed.',
     category: 'rail',
     fits: ['rail'],
     tags: ['board'],
@@ -325,6 +325,49 @@ const list: ItemDef[] = [
     effects: [],
     rail: 'planks',
     rewardWeight: 1.5,
+  },
+
+  {
+    id: 'hooks',
+    name: 'Boarding Hooks',
+    icon: '🪝',
+    description: 'Tap to throw a hook at your ⚔️ target. A hook that lands is a line that slowly pulls the boats together.',
+    tradeoff: 'The throw is telegraphed (steer off to dodge it) and the line can be cut. Cooldown after a cut.',
+    category: 'rail',
+    fits: ['rail'],
+    tags: ['board'],
+    params: { range: 1, pull: 1, hp: 1 },
+    effects: [],
+    rail: 'hook',
+    rewardWeight: 1.3,
+  },
+  {
+    id: 'ropes',
+    name: 'Swinging Ropes',
+    icon: '🪢',
+    description: 'Tap to send ⚔️ Lees across one at a time, from 50% farther away and 30% faster than planks.',
+    tradeoff: 'One Lee per rope at a time. Cut a rope and the Lee swinging on it falls short.',
+    category: 'rail',
+    fits: ['rail'],
+    tags: ['board'],
+    params: { reach: 1.5, swing: 0.7 },
+    effects: [],
+    rail: 'rope',
+    rewardWeight: 1.3,
+  },
+  {
+    id: 'poles',
+    name: 'Push Poles',
+    icon: '🦯',
+    description: 'Tap to shove the boats apart. Cut the lines first, or it only strains against them.',
+    tradeoff: 'Short shove, then a cooldown.',
+    category: 'rail',
+    fits: ['rail'],
+    tags: ['bulwark'],
+    params: { push: 1 },
+    effects: [],
+    rail: 'pole',
+    rewardWeight: 1,
   },
 
   // ------------------------------------------------------------ hull modules
@@ -505,19 +548,6 @@ const list: ItemDef[] = [
     rewardWeight: 1,
   },
 
-  {
-    id: 'ropes',
-    name: 'Swinging Ropes',
-    icon: '🪢',
-    description: 'Boarders swing from 50% farther, 30% faster.',
-    tradeoff: '',
-    category: 'treasure',
-    fits: ['treasure'],
-    tags: ['board'],
-    params: { reach: 1.5, swing: 0.7 },
-    effects: [fx('boat', 'boardRange', 'mul', 'reach'), fx('boat', 'swing', 'mul')],
-    rewardWeight: 1,
-  },
   // Between-fight treasures: they do nothing in a fight (the run reads them).
   {
     id: 'ledger',
