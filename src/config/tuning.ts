@@ -90,12 +90,16 @@ export function defaultGunTuning() {
     /** Shell flight time = (base + perMeter × distance) ÷ the gun's shell speed (seconds). */
     flightTimeBase: 1.9,
     flightTimePerMeter: 0.011,
+    /** Extra scatter per meter of distance to the target, m (÷ accuracy). Far shots wander. */
+    spreadPerMeter: 0.02,
+    /** Extra scatter per rad/s the shooter's own boat is turning, m. A boat in a hard turn can't aim. */
+    turnScatter: 14,
     /** A shell lands on a part if within this distance of it, m. */
     impactRadius: 1.2,
     /** Gunners aim at a random point within this distance of a random part's center, m. */
     aimRadius: 3.5,
     /** Lead error: the gunner leads a moving target by the right amount × (1 ± this), so fast or far targets are harder to hit. */
-    leadError: 0.2,
+    leadError: 0.3,
     /**
      * Gunners guess at your turn too: each shot follows a random 0..this fraction of the
      * target's current turn rate over the flight time. Changing direction is what dodges.
@@ -177,6 +181,12 @@ export function defaultTuning() {
       maxIncomingShells: 3,
       /** 1 = enemy shells can hit other enemies (crossfire), 0 = they pass through. */
       friendlyFire: 1,
+      /** An enemy gun whose shot would land within this many m of one of its own ships may hold fire. */
+      holdFireRadius: 30,
+      /** Chance (0..1) that such a gun holds fire this time (it rechecks after holdFireRetry). */
+      holdFireChance: 0.85,
+      /** Seconds a gun that held fire waits before it looks again. */
+      holdFireRetry: 1.5,
     },
     /** Tiles are units: shells damage them, and a blown-out tile loses its fixture. */
     tiles: {
@@ -520,6 +530,13 @@ export function defaultTuning() {
       barRepair: 8,
       /** Seconds the bars take to settle after a change. */
       barAnimTime: 0.6,
+    },
+    /** Game speed: sailing speed blends down to the close-combat setting as an enemy comes into pistol range. */
+    speed: {
+      /** The blend starts when the nearest enemy hull is this many × pistol range away... */
+      blendStart: 1.5,
+      /** ...and is complete (close-combat speed) at this many × pistol range. */
+      blendEnd: 1,
     },
     layout: {
       /** Ocean share of the screen in refit (the deck, cargo and buttons get the rest). */

@@ -353,7 +353,7 @@ export class BattleScene extends Phaser.Scene {
     this.clock += dt;
     this.animatePanels(dt);
     if (!ctl.blocked && !ctl.paused && world.phase !== 'ready') {
-      this.acc += dt * ctl.speed;
+      this.acc += dt * ctl.effectiveSpeed;
       let steps = 0;
       while (this.acc >= FIXED_DT && steps < 12) {
         world.step(FIXED_DT);

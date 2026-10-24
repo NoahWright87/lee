@@ -668,14 +668,23 @@ export class Controller {
     for (const fn of this.frameListeners) fn();
   }
 
-  /** Which speed setting applies right now: close combat once the close-up is more than half open. */
+  /** Which speed setting the button changes right now: close combat once the blend is more than half done. */
   speedMode(): SpeedMode {
-    return this.world.phase === 'running' && this.world.closeness() > 0.5 ? 'melee' : 'ranged';
+    return this.world.phase === 'running' && this.world.speedBlend() > 0.5 ? 'melee' : 'ranged';
   }
 
-  /** Current game speed (0 = paused by the speed button). */
+  /** The speed setting shown on the button (0 = paused by it). */
   get speed(): Speed {
     return this.speeds[this.speedMode()];
+  }
+
+  /** The game speed the sim actually runs at: the sailing setting blended into the close-combat one as an enemy comes in range. */
+  get effectiveSpeed(): number {
+    if (this.world.phase !== 'running') return this.speeds.ranged;
+    const set = this.speed;
+    if (set === 0) return 0;
+    const k = this.world.speedBlend();
+    return this.speeds.ranged + (this.speeds.melee - this.speeds.ranged) * k;
   }
 
   /** The speed button: Pause → 0.5× → 1× → 3× → Pause… */

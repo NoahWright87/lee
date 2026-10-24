@@ -364,6 +364,25 @@ export class World {
     return clamp01((far - gap) / (far - near));
   }
 
+  /**
+   * 0 → 1 as the nearest enemy hull closes from blendStart × pistol range to
+   * blendEnd × pistol range (and 1 while connected): the game speed slides from
+   * the sailing setting to the close-combat setting with it.
+   */
+  speedBlend(b: Boat = this.player): number {
+    const t = this.tuning;
+    if (this.inContact(b)) return 1;
+    let gap = Infinity;
+    for (const e of this.boats) {
+      if (e.side === b.side || this.isOut(e)) continue;
+      gap = Math.min(gap, hullGap(b, e).gap);
+    }
+    const pistol = Math.max(1, t.pistol.range);
+    const near = pistol * Math.max(0, t.speed.blendEnd);
+    const far = Math.max(near + 1, pistol * t.speed.blendStart);
+    return clamp01((far - gap) / (far - near));
+  }
+
   /** Enemies close enough to show in the close-up, nearest first. */
   closeBoats(b: Boat = this.player): Boat[] {
     const far = this.tuning.layout.closeViewStart;
@@ -1056,6 +1075,22 @@ export class World {
     this.events.push({ type: 'gatling', boatId: b.id, cannon: b.guns.indexOf(g), from, to, hit, side: b.side });
   }
 
+  /**
+   * Would this shot land near one of the shooter's own ships? Then the gun
+   * mostly holds fire: it waits holdFireRetry s before it looks again, so
+   * closing on one enemy shelters you from the rest of a pack.
+   */
+  private holdsFire(b: Boat, g: GunState, aim: Vec): boolean {
+    const F = this.tuning.fights;
+    if (g.holdUntil > this.time) return true;
+    if (F.holdFireChance <= 0) return false;
+    const near = this.boats.some((o) => o !== b && o.side === b.side && !this.isSinking(o) && distanceToHull(o, aim) <= F.holdFireRadius);
+    if (!near || this.rng.next() >= F.holdFireChance) return false;
+    g.holdUntil = this.time + Math.max(0, F.holdFireRetry);
+    g.aim = null;
+    return true;
+  }
+
   /** Enemy shots currently in the air (a burst of pellets counts once). */
   incomingShells(): number {
     const groups = new Set<number>();
@@ -1065,6 +1100,7 @@ export class World {
 
   private stepGuns(b: Boat, dt: number): void {
     const cap = Math.round(this.tuning.fights.maxIncomingShells);
+    const G0 = this.tuning.guns;
     // Sandbox assist: bigger packs reload slower per ship.
     const pack = b.side !== 'player' && this.assists ? Math.pow(this.enemies.length, Math.max(0, this.tuning.fights.packReloadScaling)) : 1;
     b.guns.forEach((g, i) => {
@@ -1093,7 +1129,11 @@ export class World {
       const { aim, time } = this.leadAim(b, from, target, target.parts[g.aim.part], g.aim, spec.shellSpeed);
       if (!this.canHit(b, g, from, aim)) return;
       const accuracy = Math.max(0.05, leeStat(gunner, 'accuracy', b, this.tuning));
-      const scatter = (spec.spread + spec.spreadPerMeter * dist(from, aim)) / accuracy;
+      // Accuracy pass: scatter grows with distance and with how hard the shooter's own boat is turning.
+      const turning = Math.abs(b.motion.omega) * Math.max(0, G0.turnScatter);
+      const scatter = (spec.spread + (spec.spreadPerMeter + Math.max(0, G0.spreadPerMeter)) * dist(from, aim) + turning) / accuracy;
+      // Hold fire: a shot that could land near one of its own ships mostly isn't taken.
+      if (b.side !== 'player' && this.holdsFire(b, g, aim)) return;
       g.load = 0;
       g.lastFired = this.time;
       g.aim = null;

@@ -62,6 +62,8 @@ export interface GunState {
   lastFired: number;
   /** What the gunner is aiming at for the next shot (rolled when loaded, cleared on firing). */
   aim: AimPlan | null;
+  /** World time before which this gun holds fire (an ally is near where the shot would land). */
+  holdUntil: number;
 }
 
 /** A gunner's aim for one shot: which boat, which part, where on it, and how well it leads. */
@@ -184,6 +186,7 @@ export function createBoat(id: number, side: Side, build: BoatBuild, t: Tuning, 
       load: 0.15 + 0.25 * (guns.length % 4),
       lastFired: -99,
       aim: null,
+      holdUntil: 0,
     });
   }
 
