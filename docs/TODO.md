@@ -1,6 +1,23 @@
-# TODO: where Phase 6 left off
+# TODO: where Phase 7 left off
 
-Phase 6 ("Ports & the Sea Map", [`PRD_PHASE6.md`](PRD_PHASE6.md)) is built: gold, budget-built enemies, sink/capture/surrender spoils, ports (shops, specialties, rerolls, tavern, shipwright, shipyard, bank), the cargo limit, paid and free repair and healing, the sea map (guaranteed route, travel radius, stop types, Fog, intel levels, the Crow's Nest, map styles), endless escalation by depth, Easy/Normal/Hard and the Custom start. This file lists what's still open, so the next PR can start from here.
+Phase 7 ("Close Quarters", [`PRD_PHASE7.md`](PRD_PHASE7.md)) is built in its five slices: the speed blend, accuracy pass and holding fire; hooks, lines, ropes, planks and push poles as the only way to connect and cross; deck taps with best-fit answering; breaking away, capture picks and mid-fight surrender; crew bars. It sits on top of Phase 6 (ports, gold, the sea map; its leftovers are in sections 0–5). This file lists what's still open, so the next PR can start from here.
+
+## Phase 7 open questions (PRD §16) and things to watch in playtest
+
+- [ ] **Who cuts lines?** Built as ⚔️ or 🛠️, whichever is closer and free, with any Lee after `lines.answerFallback` (1.5 s). Is that right, or should it be whoever is nearest?
+- [ ] **Ropes** are now only a rail item (the treasure is gone). An old save with the treasure equipped just carries an inert item.
+- [ ] **No rope or plank = can't board.** There's no slow climb across once the hulls touch.
+- [ ] **How much should a heavy resist boarding?** Today: fast line cutting, plank destroying and rope cutting (`ai.heavy.cutDelay`), plus its mass (2.2). More mass, more hooks, or both?
+- [ ] **Where the role icons and bars sit.** Left of the ocean, resting on the seam (enemy on the right). They cover part of the ocean and never the deck view; check thumb reach on a real phone.
+- [ ] **A cut rope drops the Lee on its own deck** (hurt) rather than in the water (no overboard yet).
+- [ ] **Stranded boarders** keep fighting until the boats are back within reach of a rope or plank; does a ship count as captured if you've sailed away? (Today: only when its crew is dead.)
+- [ ] **Pull and cooldown numbers** are first guesses (`lines.*`, `ships.<id>.mass`): a boarder should take several seconds to haul you in after the first hook lands (a test checks > 3 s) and a cut buys ~12 s.
+- [ ] **Boarder pacing.** A boarder eases in to hook range and lets its lines close the gap (`thinkBoarder`). If it's too passive, shorten the standoff; if hooks never land on a fast target, widen `lines.hookCatch`.
+- [ ] **Sweep.** `npm run sweep` (4 seeds, 3 journeys) is within a hair of Phase 6 for Basic and Hard (1.8 journeys) and the Friend Ship (2.8, but it now loses ~6 Lees a run, up from ~4: boarding costs more); the Long Distance Relation Ship got worse (0.8 against 1.3: its long shells scatter with distance now). The captain taps hooks, planks and ropes with the Friend Ship and cuts lines with everything else.
+- [ ] **Tap targets are tuned by eye** (`radius` in `sim/targets.ts`, the finger width in `BattleScene.tapDeck`). Debug shows them.
+- [ ] **Crew bars** have no armor shading or damage-over-time band yet (PRD §12.3, later). Buff/debuff chevrons only cover wet feet, wounds with enemies about, the pit-stop bonus, planks and tile occupant bonuses.
+- [ ] **Danger zones on the deck** (PRD §17.3): shells already use `TelegraphSystem`; a deck-tile version (Phase 8) isn't built.
+- [ ] **Hooks vs. a moving target.** A hook lands where the hull will be if it holds course, then slides to the hull point nearest its rail. A target turning hard drags lines taut and across the deck: worth watching.
 
 ## 0. Decide in playtest (Phase 6 open questions, PRD §16)
 
@@ -63,4 +80,4 @@ Each one is a default that can change (tunable or data).
 
 ## 6. The next phase
 
-Still later (PRD_PHASE6 §15): the PUNishers, wages and upkeep, special "-cy" seas, text events, merchant ships and distress calls, Ness and bosses, a victory condition, meta-progression, tag synergies, active abilities, fire and other tile layers, recoil, the Lee Creator, the lore pass (port and item names), owning more than one ship, a landscape layout. **Before Ness:** Phase 3 §14 asked for close-combat links that a latching Ness could reuse, but Phase 5 replaced the link system with `src/sim/contact.ts`, which only knows boats, so it needs generalizing first.
+Still later (PRD_PHASE6 §15): the PUNishers, wages and upkeep, special "-cy" seas, text events, merchant ships and distress calls, Ness and bosses, a victory condition, meta-progression, tag synergies, active abilities, fire and other tile layers, recoil, the Lee Creator, the lore pass (port and item names), owning more than one ship, a landscape layout. **Before Ness:** Phase 7 built `src/sim/lines.ts` (hooks, lines, pulling by mass, tap targets as data, pushes), but it's still written against `Boat`; a Ness that latches or a harpoon that hits one needs the ends generalized (anything with a motion state, a hull and a mass).
