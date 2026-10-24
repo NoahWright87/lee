@@ -13,6 +13,7 @@ import {
   addCrew,
   addItem,
   applyFight,
+  pickCapture,
   autoPickAll,
   buildFor,
   canEquip,
@@ -185,11 +186,17 @@ describe('after a fight', () => {
       report(run, true, lees(run), {
         enemies: [
           { ship: 'basic', how: 'sunk', budget: 300, intact: ['cannon'] },
-          { ship: 'friend', how: 'captured', budget: 500, intact: ['gatling'] },
+          { ship: 'friend', how: 'captured', budget: 500, intact: ['gatling', 'carronade', 'gatling'] },
         ],
       }),
       t,
     );
+    // A capture offers its whole working parts to pick from: one pick, not a random draw.
+    expect(post.captures).toEqual([{ ship: 'friend', options: ['gatling', 'carronade'], picks: 1, taken: [] }]);
+    expect(post.spoils).toEqual([]);
+    expect(pickCapture(run, 0, 'cannon')).toBe(false); // not on offer
+    expect(pickCapture(run, 0, 'gatling')).toBe(true);
+    expect(pickCapture(run, 0, 'carronade')).toBe(false); // the pick is used
     expect(post.gold).toBe(Math.round(300 * t.spoils.goldPerBudget) + Math.round(500 * t.spoils.goldPerBudget));
     expect(run.gold).toBe(gold + post.gold);
     expect(run.totals.goldEarned).toBe(post.gold);

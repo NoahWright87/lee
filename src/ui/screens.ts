@@ -1,6 +1,6 @@
 // Full-screen run screens over the canvas: the menu, choosing a ship and a
 // difficulty (each preset ship comes crewed and fitted; Custom starts with
-// nothing), after a fight or an event (results → level-ups → surrender → a
+// nothing), after a fight or an event (results → level-ups → capture picks → surrender → a
 // pick), and Run Over. Plus the ⚙️ system menu (on every screen) and the
 // message for a saved run that can't be continued. The port and the sea map
 // have their own screens (port.ts, seaMap.ts).
@@ -22,7 +22,7 @@ import { shipPreview } from './shipPreview';
 declare const __BUILD__: string;
 const BUILD = typeof __BUILD__ === 'string' ? __BUILD__ : 'dev';
 
-type PostStep = 'results' | 'levels' | 'surrender' | 'reward';
+type PostStep = 'results' | 'levels' | 'capture' | 'surrender' | 'reward';
 
 export class Screens {
   readonly root: HTMLDivElement;
@@ -222,18 +222,49 @@ export class Screens {
       body.append(button('Back to the map', 'big-btn primary', () => this.ctl.finishPost()));
       return;
     }
-    if (this.postStep === 'levels' && !post.levelUps.length) this.postStep = 'surrender';
+    if (this.postStep === 'levels' && !post.levelUps.length) this.postStep = 'capture';
+    if (this.postStep === 'capture' && !this.openCapture(post)) this.postStep = 'surrender';
     if (this.postStep === 'surrender' && (!post.surrender || post.surrenderDone)) this.postStep = 'reward';
     if (this.postStep === 'results') this.renderResults(body, run);
     else if (this.postStep === 'levels') this.renderLevelUp(body, run);
+    else if (this.postStep === 'capture') this.renderCapture(body, run);
     else if (this.postStep === 'surrender') this.renderSurrender(body, run);
     else this.renderReward(body, run);
   }
 
   private nextStep(run: RunState): void {
     const post = run.pending!;
-    this.postStep = post.levelUps.length ? 'levels' : post.surrender && !post.surrenderDone ? 'surrender' : 'reward';
+    this.postStep = post.levelUps.length ? 'levels' : this.openCapture(post) ? 'capture' : post.surrender && !post.surrenderDone ? 'surrender' : 'reward';
     this.render();
+  }
+
+  /** The first captured ship with a pick still to make, or -1. */
+  private openCapture(post: NonNullable<RunState['pending']>): number | false {
+    const i = post.captures.findIndex((c) => c.taken.length < c.picks);
+    return i >= 0 ? i : false;
+  }
+
+  /** A clean capture: your pick of the parts left working on the ship you took. */
+  private renderCapture(body: HTMLElement, run: RunState): void {
+    const ctl = this.ctl;
+    const post = run.pending!;
+    const i = post.captures.findIndex((c) => c.taken.length < c.picks);
+    if (i < 0) {
+      queueMicrotask(() => this.nextStep(run));
+      return;
+    }
+    const c = post.captures[i];
+    const left = c.picks - c.taken.length;
+    body.append(el('h2', '', `Captured: ${SHIPS[c.ship]?.name ?? c.ship}`), el('div', 'subtitle', `Pick ${left === 1 ? 'a part' : `${left} parts`} still working on her. The rest goes with the wreck.`));
+    const list = el('div', 'bonus-list');
+    for (const id of c.options) {
+      const d = ITEMS[id];
+      if (!d) continue;
+      const btn = button('', 'big-btn bonus', () => ctl.pickCapture(i, id));
+      btn.append(itemIcon(d), el('span', '', ` ${d.name}`));
+      list.append(btn);
+    }
+    body.append(list, button('Leave them', 'big-btn', () => ctl.skipCapture(i)));
   }
 
   private renderResults(body: HTMLElement, run: RunState): void {

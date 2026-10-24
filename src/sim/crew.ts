@@ -170,6 +170,8 @@ export interface Lee {
   hurtAt: number;
   /** In the air between decks, or null. */
   swing: Swing | null;
+  /** Threw down its sword in the fight and joined the other side. */
+  defected: boolean;
   /** A deck order (a tap) it is answering, or null: it keeps its job and comes back to it when done. */
   order: number | null;
   /** Sharing a tile with an opposing Lee: fighting, nothing else. */
@@ -351,6 +353,7 @@ export function createLee(id: number, number: number, def: LeeDef, side: Side, b
     lostCause: null,
     hurtAt: -99,
     swing: null,
+    defected: false,
     order: null,
     engaged: false,
     retreating: false,

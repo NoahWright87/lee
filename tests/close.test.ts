@@ -63,6 +63,7 @@ const crewOf = (places: Place[]): CrewSpec[] => places.map((p) => (Array.isArray
 function quiet(t: Tuning): Tuning {
   t.boat.flooding.bilgeRate = 0;
   t.boat.flooding.leakRate = 0;
+  t.spoils.midSurrender = 0;
   // Phase 3 tests aren't about hooks: nobody throws one unless a test wants it.
   for (const p of Object.values(t.ai)) p.hooks = 0;
   // Keep enemy boarders from re-ordering their crew mid-test unless a test wants it.

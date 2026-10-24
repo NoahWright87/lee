@@ -15,6 +15,7 @@ import { World, type Shell } from '../src/sim/world';
 function quiet(t: Tuning): Tuning {
   t.boat.flooding.bilgeRate = 0;
   t.boat.flooding.leakRate = 0;
+  t.spoils.midSurrender = 0;
   for (const p of Object.values(t.ai)) p.hooks = 0;
   return t;
 }

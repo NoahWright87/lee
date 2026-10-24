@@ -94,6 +94,8 @@ export interface FightReport {
   enemies: EnemyOutcome[];
   /** The last enemy Lee to fall (not by sinking): who might surrender. */
   lastEnemy: { type: string; level: number } | null;
+  /** An enemy Lee that threw down its sword mid-fight and is still alive: it asks to stay (no roll). */
+  joined?: { type: string; level: number } | null;
   /** Your hull after the fight: structure share per part. */
   hull: number[];
 }
@@ -120,6 +122,8 @@ export interface PostFight {
   outcomes: { ship: string; how: 'sunk' | 'captured' }[];
   /** Items taken (already in cargo). */
   spoils: string[];
+  /** Captured ships: pick whole working parts from the ones that survived (a pick each, `taken` fills as you go). */
+  captures: { ship: string; options: string[]; picks: number; taken: string[] }[];
   /** The last enemy Lee offers to join (null = nobody). */
   surrender: { type: string; level: number } | null;
   surrenderDone: boolean;
@@ -674,6 +678,7 @@ export function emptyPost(run: RunState, won: boolean): PostFight {
     gold: 0,
     outcomes: [],
     spoils: [],
+    captures: [],
     surrender: null,
     surrenderDone: false,
     reward: [],
@@ -754,17 +759,16 @@ export function applyFight(run: RunState, report: FightReport, t: Tuning): PostF
       if (e.how === 'sunk') run.totals.sunk++;
       else {
         run.totals.captured++;
-        // A capture: parts from tiles that weren't blown out.
-        const pool = e.intact.map((id, i) => [i, ITEMS[id] ? 1 : 0] as [number, number]);
-        for (const i of drawDistinct(rng, pool, Math.max(0, Math.round(t.spoils.captureParts)))) {
-          addItem(run, e.intact[i]);
-          post.spoils.push(e.intact[i]);
-        }
+        // A capture: your pick of the whole working parts on tiles that weren't blown out.
+        const options = [...new Set(e.intact.filter((id) => ITEMS[id]))];
+        const picks = Math.max(0, Math.round(t.spoils.captureParts));
+        if (options.length && picks > 0) post.captures.push({ ship: e.ship, options, picks, taken: [] });
       }
     }
     // Sometimes the last enemy Lee standing surrenders.
     const chance = Math.max(0, t.spoils.surrender) * difficulty(run.difficulty).surrender;
-    if (report.lastEnemy && LEE_DEFS[report.lastEnemy.type] && rng.next() < chance) post.surrender = { ...report.lastEnemy };
+    if (report.joined && LEE_DEFS[report.joined.type]) post.surrender = { ...report.joined };
+    else if (report.lastEnemy && LEE_DEFS[report.lastEnemy.type] && rng.next() < chance) post.surrender = { ...report.lastEnemy };
     if (enc?.special) post.reward = specialReward(run, t);
     if (enc && enc.stop !== null && run.map?.stops[enc.stop]) run.map.stops[enc.stop].cleared = true;
     applyFreeFix(run, post, t);
@@ -774,6 +778,22 @@ export function applyFight(run: RunState, report: FightReport, t: Tuning): PostF
   run.fight++;
   run.pending = post;
   return post;
+}
+
+/** Take one of the parts a captured ship offers (into cargo). Returns false if it isn't on offer or the picks are used up. */
+export function pickCapture(run: RunState, capture: number, item: string): boolean {
+  const c = run.pending?.captures[capture];
+  if (!c || c.taken.length >= c.picks || !c.options.includes(item)) return false;
+  addItem(run, item);
+  c.taken.push(item);
+  run.pending!.spoils.push(item);
+  return true;
+}
+
+/** Leave the rest of a captured ship's parts. */
+export function skipCapture(run: RunState, capture: number): void {
+  const c = run.pending?.captures[capture];
+  if (c) c.picks = c.taken.length;
 }
 
 /** Take (or refuse) the surrendering Lee. If the crew is full, `releaseFirst` must name someone to let go. */
@@ -909,6 +929,8 @@ export function loadRun(json: string | null): LoadResult {
   const r = data as RunState;
   if (r.version !== SAVE_VERSION) return { ok: false, reason: 'version' };
   if (!validRun(r)) return { ok: false, reason: 'invalid' };
+  // Saved before Phase 7: a post-fight screen with no capture picks.
+  if (r.pending && !r.pending.captures) r.pending.captures = [];
   return { ok: true, run: r };
 }
 

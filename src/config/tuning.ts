@@ -499,8 +499,11 @@ export function defaultTuning() {
     spoils: {
       /** Gold per point of a beaten ship's budget. */
       goldPerBudget: 0.1,
-      /** Parts taken from a captured ship (its crew gone, still afloat), from tiles that weren't blown out. */
+      /** Parts you may pick from a captured ship (its crew gone, still afloat): whole working parts, from tiles that weren't blown out. */
       captureParts: 1,
+      /** Chance (× difficulty) that, in the fight itself, the last enemy Lee standing (or the weakest of a crew outnumbered `surrenderRatio`:1) throws down its sword and joins you on the spot. */
+      midSurrender: 0.3,
+      surrenderRatio: 3,
       /** Chance the last enemy Lee standing surrenders and offers to join (× difficulty). */
       surrender: 0.2,
       /** An abandoned ship is salvaged for this many gold per point of its stop's budget. */

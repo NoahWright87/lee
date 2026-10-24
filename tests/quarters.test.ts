@@ -6,6 +6,7 @@ import { defaultTuning, type Tuning } from '../src/config/tuning';
 import { gunSpec, type Boat, type GunState } from '../src/sim/boat';
 import { hullGap } from '../src/sim/contact';
 import { crossings, railsOf } from '../src/sim/lines';
+import { deckTargets, pickTarget } from '../src/sim/targets';
 import { defaultBuild, type BoatBuild } from '../src/sim/loadout';
 import type { Vec } from '../src/sim/math';
 import { archetypeSetup, autoArrange, type BoatSetup, type CrewSpec } from '../src/sim/setup';
@@ -15,6 +16,7 @@ import { World } from '../src/sim/world';
 function quiet(t: Tuning): Tuning {
   t.boat.flooding.bilgeRate = 0;
   t.boat.flooding.leakRate = 0;
+  t.spoils.midSurrender = 0;
   return t;
 }
 
@@ -513,5 +515,206 @@ describe('the enemy at close quarters (§11)', () => {
       return cut < 0 ? Infinity : cut - landed;
     };
     expect(waitFor(2)).toBeGreaterThan(waitFor(0.5));
+  });
+});
+
+describe('tapping the deck (§7, §8)', () => {
+  test('targets are data: rail items, lines, planks, and the pick favors what is urgent', () => {
+    const d = duel({ gap: 6, mine: { ...HOOKS, ...ROPES }, myCrew: [[1, 1]], myJob: 'board' });
+    const { w, e, t } = d;
+    let ts = deckTargets(w, [w.player, e]);
+    expect(ts.filter((x) => x.kind === 'hook')).toHaveLength(1);
+    expect(ts.filter((x) => x.kind === 'rope')).toHaveLength(1);
+    // A tap near a rail item picks it (generously, a finger wide).
+    const hook = ts.find((x) => x.kind === 'hook')!;
+    expect(pickTarget(ts, { x: hook.a.x + 1, y: hook.a.y + 0.5 }, 1.5)?.kind).toBe('hook');
+    expect(pickTarget(ts, { x: hook.a.x + 30, y: hook.a.y }, 1.5)).toBeNull();
+    // With a line out, tapping on it wins over anything under it.
+    w.lines.throwHook(starboardRail(w.player, 'hook'), e, t, w.time);
+    run(w, t.lines.hookFlight + 0.1, d.hold);
+    ts = deckTargets(w, [w.player, e]);
+    const line = ts.find((x) => x.kind === 'line')!;
+    expect(line).toBeDefined();
+    const mid = { x: (line.a.x + line.b!.x) / 2, y: (line.a.y + line.b!.y) / 2 };
+    expect(pickTarget(ts, mid, 1.5)?.kind).toBe('line');
+  });
+
+  test('a tap on a flooded part sends a Lee to bail it; the Lee keeps its job and goes back to what it was doing', () => {
+    const d = duel({ gap: 30, myCrew: [[2, 1], [1, 1]], myJob: 'board' });
+    const { w } = d;
+    const mid = w.player.parts.find((p) => p.def.id === 'midship')!;
+    mid.water = mid.capacity * 0.5;
+    const tile = w.player.grid.tiles.find((x) => x.part === mid.index)!;
+    expect(w.tapTile(w.player, tile.index)).toBeNull();
+    expect(w.orders.list.map((o) => o.kind)).toEqual(['bail']);
+    const before = mid.water;
+    run(w, 6, d.hold);
+    expect(mid.water).toBeLessThan(before - 1);
+    // Whoever answered kept its ⚔️ job.
+    for (const l of w.player.crew.lees) expect(l.job).toBe('board');
+    // Dry it: the order ends and the Lees are free again.
+    mid.water = 0;
+    run(w, 1, d.hold);
+    expect(w.orders.list).toHaveLength(0);
+    expect(w.player.crew.lees.every((l) => l.order === null)).toBe(true);
+  });
+
+  test('a tap on a damaged part sends a Lee to repair it first; a part that is fine refuses the tap', () => {
+    const d = duel({ gap: 30, myCrew: [[1, 1]], myJob: 'fix' });
+    const { w } = d;
+    const bow = w.player.parts.find((p) => p.def.id === 'bow')!;
+    const tile = w.player.grid.tiles.find((x) => x.part === bow.index)!;
+    expect(w.tapTile(w.player, tile.index)).toMatch(/nothing/);
+    const st = bow.layers[bow.layers.length - 1];
+    st.hp = st.maxHp * 0.3;
+    expect(w.tapTile(w.player, tile.index)).toBeNull();
+    const before = st.hp;
+    run(w, 5, d.hold);
+    expect(st.hp).toBeGreaterThan(before + 2);
+  });
+
+  test('cutting an enemy rope while a Lee swings on it: it falls short, back where it started, and the landing hurts', () => {
+    // They sit east of you heading north: their port side (west) faces you, their rope on tile (2,0).
+    const d = duel({ gap: 2, theirs: { 'rail:2,0:port': 'ropes' }, theirCrew: [[2, 0]], myCrew: [[2, 2], [1, 2]], myJob: 'board', tune: (t) => (t.ai.standard.boardShare = 0) });
+    const { w, e, t } = d;
+    const rope = railsOf(e, 'rope')[0];
+    for (const l of e.crew.lees) {
+      l.job = 'board';
+      l.task = { type: 'board', target: w.player.id };
+    }
+    let tapped = false;
+    let fell = false;
+    run(w, 8, () => {
+      d.hold();
+      e.crew.lees.forEach((l) => (l.job = 'board'));
+      rope.rail.pending = Math.max(rope.rail.pending, tapped ? 0 : 1);
+      const swinger = e.crew.lees.find((l) => l.swing && !l.swing.back && l.swing.via?.rail === rope.rail);
+      if (swinger && !tapped) {
+        tapped = true;
+        expect(w.tapRope(swinger, w.player)).toBeNull();
+      }
+      for (const ev of w.events) if (ev.type === 'ropeCut') fell = true;
+      w.events = [];
+    });
+    expect(tapped).toBe(true);
+    expect(fell).toBe(true);
+    const lee = e.crew.lees[0];
+    expect(lee.deck).toBe(e);
+    expect(lee.hp).toBeLessThanOrEqual(lee.maxHp - t.lines.hardSurfaceDamage * 0.9);
+    expect(rope.rail.readyAt).toBeGreaterThan(0);
+  });
+
+  test('tapping a tile on their deck sends your boarders there first', () => {
+    const d = duel({ gap: 1.5, mine: ROPES, myCrew: [[2, 2], [3, 2]], myJob: 'board', theirCrew: [[0, 0], [4, 2]] });
+    const { w, e } = d;
+    // Get them across.
+    for (let i = 0; i < 6 && w.stats.player.boardings < 2; i++) {
+      w.tapRail(starboardRail(w.player, 'rope'));
+      run(w, 2, d.hold);
+    }
+    expect(w.stats.player.boardings).toBeGreaterThan(0);
+    const far = e.grid.tiles.find((x) => x.col === 4 && x.row === 2)!;
+    expect(w.focusDeck(w.player, e, far.index)).toBeNull();
+    expect(w.player.crew.focus?.tile).toBe(far.index);
+    run(w, 5, d.hold);
+    const over = w.player.crew.lees.filter((l) => l.alive && l.deck === e && !l.swing);
+    expect(over.length).toBeGreaterThan(0);
+    for (const l of over) expect(l.dest === far.index || l.tile === far.index || l.engaged).toBe(true);
+    // Not their own deck, and not where you have nobody.
+    expect(w.focusDeck(w.player, w.player, 0)).toMatch(/own/);
+  });
+
+  test('a ⚔️ or 🛠️ Lee answers a cutting tap; with none free, any Lee comes after a short wait', () => {
+    const d = duel({ gap: 6, mine: HOOKS, myCrew: [[1, 1]] });
+    const { w, e, t } = d;
+    // The only Lee is ⚔️... make it a rower: a cutter order waits.
+    w.player.crew.lees[0].job = 'sail';
+    w.lines.throwHook(starboardRail(w.player, 'hook'), e, t, w.time);
+    run(w, t.lines.hookFlight + 0.1, d.hold);
+    const line = w.lines.lines[0];
+    w.tapLine(line, w.player);
+    run(w, 0.5, d.hold);
+    expect(w.orders.list[0].lees).toHaveLength(0);
+    run(w, t.lines.answerFallback + 0.5, d.hold);
+    expect(w.orders.list[0]?.lees.length ?? 1).toBe(1);
+  });
+});
+
+describe('breaking away and boarding rewards (§9, §10)', () => {
+  test('the first Lees to cut and sail away get you clear, and the cut hooks cannot be thrown again right away', () => {
+    const t = quiet(defaultTuning());
+    const enemy = archetypeSetup('boarder', t, 5);
+    const mine: BoatBuild = defaultBuild('basic');
+    const w = new World(t, 5, { player: { build: mine, crew: crewAt(mine, [[1, 1], [2, 1], [3, 1], [2, 0], [0, 0], [0, 2]], 'fix') }, enemies: [enemy], assists: false });
+    w.start();
+    const e = w.enemies[0];
+    pin(w.player, { x: 0, y: 0 });
+    pin(e, { x: 50, y: 25 }, 3);
+    // You sit still until the Friend Ship has hauled you in a little, then react: cut every line and sail.
+    let hooked = -1;
+    let cutAll = -1;
+    let reacted = false;
+    run(w, 90, () => {
+      if (!reacted) pin(w.player, { x: 0, y: 0 });
+      if (hooked < 0 && w.lines.lines.length >= 2) hooked = w.time;
+      if (hooked >= 0 && w.time > hooked + 2.5 && !reacted) {
+        reacted = true;
+        w.setHelm({ kind: 'heading', h: Math.PI });
+        for (const j of ['sail', 'sail', 'sail'] as const) w.order(j);
+      }
+      if (reacted) {
+        for (const line of w.lines.lines) if (!w.orders.find(w.player, 'cutLine', { line })) w.tapLine(line, w.player);
+        if (cutAll < 0 && w.lines.lines.length === 0) cutAll = w.time;
+      }
+    });
+    expect(hooked).toBeGreaterThan(0);
+    expect(cutAll).toBeGreaterThan(hooked);
+    // Cutting took a few seconds, not an instant: it was a fight to get loose.
+    expect(cutAll - hooked).toBeGreaterThan(3);
+    // Their hooks were put on a cooldown by the cut: nothing new landed during it.
+    const thrown = railsOf(e, 'hook').filter((r) => r.rail.readyAt > 0);
+    expect(thrown.length).toBeGreaterThanOrEqual(2);
+    for (const r of thrown) expect(r.rail.readyAt).toBeGreaterThan(cutAll);
+  });
+
+  test('RETREAT does not cut loose on its own any more: while a line holds, sailing only puts Lees on the oars', () => {
+    const d = duel({ gap: 8, mine: { ...HOOKS, 'fix:0,2': 'oars', 'fix:2,1': 'sail' }, myCrew: [[1, 1], [2, 1]], myJob: 'fix' });
+    const { w, e, t } = d;
+    w.lines.throwHook(starboardRail(w.player, 'hook'), e, t, w.time);
+    run(w, t.lines.hookFlight + 0.1, d.hold);
+    expect(w.canRetreat()).toBe(true);
+    const lee = w.order('sail');
+    expect(lee).not.toBeNull();
+    expect(lee!.job).toBe('sail');
+    expect(w.helm.kind).not.toBe('retreat');
+    run(w, 6, () => Object.assign(e.motion, { vx: 0, vy: 0, omega: 0 }));
+    expect(w.lines.lines).toHaveLength(1);
+  });
+
+  test('mid-fight surrender: when an enemy crew is down to one, its last Lee may join you on the spot', () => {
+    const d = duel({ gap: 30, myCrew: [[1, 1], [2, 1]], theirCrew: [[1, 1]], tune: (t) => (t.spoils.midSurrender = 1) });
+    const { w, e } = d;
+    expect(w.defectors()).toBeNull();
+    run(w, 1, d.hold);
+    const lee = w.player.crew.lees.find((l) => l.defected)!;
+    expect(lee).toBeDefined();
+    expect(lee.side).toBe('player');
+    expect(lee.boat).toBe(w.player);
+    expect(e.crew.lees).toHaveLength(0);
+    expect(w.defectors()).toEqual({ type: 'basic', level: 1 });
+    // It's now one of your Lees: it fights for you and stays in your crew list.
+    expect(w.allLees().filter((l) => l.side === 'player')).toHaveLength(3);
+  });
+
+  test('mid-fight surrender also happens when an enemy crew is outnumbered 3:1, and not when it is a fair fight or the roll fails', () => {
+    const outnumbered = duel({ gap: 30, myCrew: [[1, 1], [2, 1], [3, 1], [1, 0], [2, 0], [3, 0]], theirCrew: [[1, 1], [2, 1]], tune: (t) => (t.spoils.midSurrender = 1) });
+    run(outnumbered.w, 1, outnumbered.hold);
+    expect(outnumbered.w.defectors()).not.toBeNull();
+    const fair = duel({ gap: 30, myCrew: [[1, 1], [2, 1], [3, 1]], theirCrew: [[1, 1], [2, 1]], tune: (t) => (t.spoils.midSurrender = 1) });
+    run(fair.w, 1, fair.hold);
+    expect(fair.w.defectors()).toBeNull();
+    const unlucky = duel({ gap: 30, myCrew: [[1, 1], [2, 1]], theirCrew: [[1, 1]], tune: (t) => (t.spoils.midSurrender = 0) });
+    run(unlucky.w, 1, unlucky.hold);
+    expect(unlucky.w.defectors()).toBeNull();
   });
 });

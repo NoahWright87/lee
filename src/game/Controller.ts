@@ -25,6 +25,8 @@ import {
   addCrew,
   addItem,
   answerSurrender,
+  pickCapture,
+  skipCapture,
   applyFight,
   blankRun,
   cargo,
@@ -219,6 +221,7 @@ export class Controller {
         enemies,
         assists: sandbox,
         hesitation: difficulty(run.difficulty).hesitation,
+        surrender: difficulty(run.difficulty).surrender,
         // The hull's damage carries (the sandbox always sails a fresh boat).
         carry: sandbox ? undefined : { hp: run.hull, water: run.hull.map(() => 0) },
       });
@@ -526,11 +529,28 @@ export class Controller {
         lees: w.player.crew.lees,
         enemies: w.enemyOutcomes(),
         lastEnemy: w.lastEnemyStanding(),
+        joined: w.defectors(),
         hull: w.player.parts.map((p) => structureFraction(p)),
       },
       this.tuning,
     );
     this.screen = run.stage === 'over' ? 'over' : 'post';
+    this.persist();
+    this.notify();
+  }
+
+  /** Take a part from a captured ship. */
+  pickCapture(capture: number, item: string): boolean {
+    if (!this.run) return false;
+    const ok = pickCapture(this.run, capture, item);
+    this.persist();
+    this.notify();
+    return ok;
+  }
+
+  skipCapture(capture: number): void {
+    if (!this.run) return;
+    skipCapture(this.run, capture);
     this.persist();
     this.notify();
   }
@@ -714,11 +734,7 @@ export class Controller {
   order(job: Job): Lee | null {
     const w = this.world;
     if (w.phase !== 'running' || w.result) return null;
-    if (job === 'sail' && w.canRetreat()) {
-      w.retreat();
-      this.notify();
-      return null;
-    }
+    // ⏩ while connected reads RETREAT, but it only puts a Lee on the oars: the lines have to be cut (a tap on each) and you steer away.
     return w.order(job);
   }
 

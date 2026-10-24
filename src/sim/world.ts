@@ -92,6 +92,7 @@ export type WorldEvent =
   | { type: 'ropeCut'; boatId: number; leeId: number }
   | { type: 'shove'; boatId: number; otherId: number }
   | { type: 'focus'; boatId: number; deckId: number; tile: number }
+  | { type: 'surrender'; leeId: number; kind: string; level: number; boatId: number }
   | { type: 'tapRefused'; boatId: number; why: string }
   | { type: 'blowout'; boatId: number; tile: number; pos: Vec }
   | { type: 'explosion'; boatId: number; tile: number; pos: Vec };
@@ -196,6 +197,8 @@ export interface EnemyBrain {
   nextOrder: number;
   /** Close-quarters decisions waiting out their hesitation: decision key → world time it acts. */
   waits: Map<string, { due: number; seen: number }>;
+  /** Surrender rolls already made ('last' = down to one Lee, 'out' = badly outnumbered). */
+  rolled: Set<string>;
 }
 
 /** Player damage carried into the next fight (structure fraction and water per part). */
@@ -226,6 +229,8 @@ export interface WorldOptions {
   assists?: boolean;
   /** × the enemy's hesitation before each close-quarters decision (difficulty: Easy more, Hard less). */
   hesitation?: number;
+  /** × the chance an enemy Lee throws down its sword mid-fight (difficulty). */
+  surrender?: number;
 }
 
 /** Home tile per Lee slot (null = in the tray). */
@@ -286,6 +291,10 @@ export class World {
   readonly orders = new OrderSystem();
   /** × the enemy's hesitation before each close-quarters decision. */
   readonly hesitation: number;
+  /** × the chance an enemy Lee throws down its sword mid-fight. */
+  readonly surrenderMul: number;
+  /** Enemy Lees that changed sides in the fight. */
+  private defected: Lee[] = [];
 
   constructor(tuning: Tuning, seed = (Math.random() * 2 ** 31) | 0, opts: WorldOptions = {}) {
     this.tuning = tuning;
@@ -294,6 +303,7 @@ export class World {
     this.fight = Math.max(1, opts.fight ?? 1);
     this.assists = opts.assists ?? true;
     this.hesitation = Math.max(0, opts.hesitation ?? 1);
+    this.surrenderMul = Math.max(0, opts.surrender ?? 1);
     const assist = (v: number, off: number) => (this.assists ? v : off);
     const playerSetup: BoatSetup = opts.player ?? (opts.crew ? { build: defaultBuild('basic'), crew: basicCrew(opts.crew) } : defaultPlayerSetup(tuning));
     this.player = createBoat(1, 'player', playerSetup.build, tuning, { x: 0, y: 0 }, NORTH, { advantage: assist(tuning.global.playerAdvantage, 1) });
@@ -330,7 +340,7 @@ export class World {
       this.enemyBudgets.push(setup.budget ?? 0);
       this.boardCrew(e, setup.crew);
       const jitter = tuning.enemyAI.rangeJitter;
-      this.brains.set(e.id, { orbitDir: 0, range: ai.preferredRange + this.rng.range(-jitter, jitter), seek: null, mode: 'orbit', side: 0, nextOrder: 0, waits: new Map() });
+      this.brains.set(e.id, { orbitDir: 0, range: ai.preferredRange + this.rng.range(-jitter, jitter), seek: null, mode: 'orbit', side: 0, nextOrder: 0, waits: new Map(), rolled: new Set() });
     });
     this.boats = [this.player, ...this.enemies];
   }
@@ -626,6 +636,67 @@ export class World {
     return out;
   }
 
+  /**
+   * Mid-fight surrender: when you're clearly winning (an enemy crew down to one Lee, or outnumbered
+   * `surrenderRatio`:1), its weakest Lee may throw down its sword and join you right there, once per
+   * condition. It comes home with your boarders and fights for you against any other ships.
+   */
+  private stepSurrender(): void {
+    const S = this.tuning.spoils;
+    for (const e of this.enemies) {
+      if (this.isOut(e)) continue;
+      const brain = this.brains.get(e.id);
+      if (!brain) continue;
+      const theirs = e.crew.lees.filter((l) => l.alive);
+      const mine = this.player.crew.lees.filter((l) => l.alive).length;
+      if (!theirs.length || !mine) continue;
+      const key = theirs.length === 1 ? 'last' : mine >= theirs.length * Math.max(1, S.surrenderRatio) ? 'out' : null;
+      if (!key || brain.rolled.has(key)) continue;
+      brain.rolled.add(key);
+      if (this.rng.next() >= Math.max(0, S.midSurrender) * this.surrenderMul) continue;
+      const weakest = [...theirs].sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp || a.id - b.id)[0];
+      this.defect(weakest);
+    }
+  }
+
+  /** An enemy Lee throws down its sword and joins you. */
+  private defect(lee: Lee): void {
+    const from = lee.boat;
+    const home = this.player;
+    from.crew.lees = from.crew.lees.filter((l) => l !== lee);
+    // A tile of your deck to call home (the one with the most room).
+    let tile = 0;
+    let best = Infinity;
+    for (const t of home.grid.tiles) {
+      const n = home.crew.lees.filter((l) => l.alive && l.tile === t.index).length;
+      if (n < best) {
+        best = n;
+        tile = t.index;
+      }
+    }
+    lee.side = 'player';
+    lee.boat = home;
+    lee.home = tile;
+    lee.job = 'board';
+    lee.defected = true;
+    lee.engaged = false;
+    lee.retreating = false;
+    lee.meleeTarget = null;
+    lee.task = { type: 'idle', target: -1 };
+    lee.reason = 'threw down its sword and joined you';
+    home.crew.lees.push(lee);
+    this.defected.push(lee);
+    home.crew.thinkIn = 0;
+    from.crew.thinkIn = 0;
+    this.events.push({ type: 'surrender', leeId: lee.id, kind: lee.def.id, level: lee.level, boatId: from.id });
+  }
+
+  /** Enemy Lees that changed sides in the fight and are still alive (they may stay with you after it). */
+  defectors(): { type: string; level: number } | null {
+    const l = this.defected.find((x) => x.alive);
+    return l ? { type: l.def.id, level: l.level } : null;
+  }
+
   /** The last enemy Lee to fall other than by sinking (who might surrender), or null. */
   lastEnemyStanding(): { type: string; level: number } | null {
     const l = this.lastEnemyLost;
@@ -691,6 +762,7 @@ export class World {
       }
       this.orders.step(this, dt);
       this.stepRails();
+      this.stepSurrender();
       this.stepCombat(dt);
     }
     for (const e of this.enemies) this.thinkEnemy(e);
