@@ -91,6 +91,7 @@ export type WorldEvent =
   | { type: 'plank'; boatId: number; tile: number; down: boolean; destroyed: boolean }
   | { type: 'ropeCut'; boatId: number; leeId: number }
   | { type: 'shove'; boatId: number; otherId: number }
+  | { type: 'focus'; boatId: number; deckId: number; tile: number }
   | { type: 'tapRefused'; boatId: number; why: string }
   | { type: 'blowout'; boatId: number; tile: number; pos: Vec }
   | { type: 'explosion'; boatId: number; tile: number; pos: Vec };
@@ -1123,6 +1124,36 @@ export class World {
     if (this.result || this.isSinking(boat)) return this.refuse(boat, 'the fight is over');
     if (!s || s.via === null || s.cut || s.to !== boat || swinger.side === boat.side || s.via.rail.kind !== 'rope') return this.refuse(boat, 'no rope to cut');
     this.orders.place(this, { boat, kind: 'cutRope', role: 'cutter', tile: s.toTile, swinger });
+    return null;
+  }
+
+  /** A tap on one of this boat's tiles: bail the part it belongs to if it is flooded, else repair it first. */
+  tapTile(boat: Boat, tile: number): string | null {
+    const t = this.tuning;
+    if (this.result || this.isSinking(boat)) return this.refuse(boat, 'the fight is over');
+    const at = boat.grid.tiles[tile];
+    const part = boat.parts[at.part];
+    const fill = part.capacity > 0 ? part.water / part.capacity : 0;
+    if (fill > t.crewAI.bailStopAt) {
+      this.orders.place(this, { boat, kind: 'bail', role: 'fixer', tile, part: at.part });
+      return null;
+    }
+    const f = structureFraction(part);
+    if (f > 0 && f < Math.min(1, Math.max(0, t.crew.repairCeiling)) - 1e-6) {
+      this.orders.place(this, { boat, kind: 'repair', role: 'fixer', tile, part: at.part });
+      return null;
+    }
+    return this.refuse(boat, 'nothing to fix there');
+  }
+
+  /** A tap on an enemy deck tile: this boat's boarders over there head for it first. */
+  focusDeck(boat: Boat, deck: Boat, tile: number): string | null {
+    if (this.result || this.isSinking(boat)) return this.refuse(boat, 'the fight is over');
+    if (deck.side === boat.side) return this.refuse(boat, 'that is your own deck');
+    if (!boat.crew.lees.some((l) => l.alive && l.deck === deck)) return this.refuse(boat, 'none of your Lees are over there');
+    boat.crew.focus = { deck, tile, until: this.time + Math.max(0, this.tuning.lines.focusTime) };
+    boat.crew.thinkIn = 0;
+    this.events.push({ type: 'focus', boatId: boat.id, deckId: deck.id, tile });
     return null;
   }
 

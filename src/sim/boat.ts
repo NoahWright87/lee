@@ -219,7 +219,7 @@ export function createBoat(id: number, side: Side, build: BoatBuild, t: Tuning, 
     sinkingSince: null,
     waterTaken: 0,
     grid,
-    crew: { lees: [], needs: [], thinkIn: 0 },
+    crew: { lees: [], needs: [], thinkIn: 0, focus: null },
     mobility: { speed: 1, turn: 1 },
     fx: { accuracy: 1, reload: 1, fix: 1, aim: 1 },
   };

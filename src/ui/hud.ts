@@ -150,6 +150,7 @@ export class Hud {
 
     ctl.onChange(() => this.sync());
     ctl.onFrame(() => this.frame());
+    ctl.onToast((text) => this.showToast(text));
     this.sync();
   }
 

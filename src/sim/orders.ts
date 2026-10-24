@@ -12,16 +12,17 @@
 // "flee this danger zone" and "stab the stunned head" are more entries here.
 
 import type { Job } from '../config/lees';
-import type { Boat } from './boat';
+import { structureFraction, type Boat } from './boat';
 import { isWounded, leeStat, setDestination, takeOrder, type Lee } from './crew';
 import type { Line, RailRef } from './lines';
 import { railGap, railPoint } from './lines';
 import { dist, toLocal } from './math';
 import type { World } from './world';
 
-export type OrderKind = 'throw' | 'lower' | 'push' | 'cutLine' | 'wreckPlank' | 'cutRope';
+export type OrderKind = 'throw' | 'lower' | 'push' | 'cutLine' | 'wreckPlank' | 'cutRope' | 'bail' | 'repair';
 
-export type OrderRole = 'cutter' | 'nearest';
+/** Who answers: a cutter is ⚔️ or 🛠️ (whichever is closer and free), a fixer is 🛠️, anyone else: whoever is nearest. */
+export type OrderRole = 'cutter' | 'fixer' | 'nearest';
 
 export interface DeckOrder {
   id: number;
@@ -36,6 +37,8 @@ export interface DeckOrder {
   line?: Line;
   /** cutRope: the Lee swinging on the rope. */
   swinger?: Lee;
+  /** bail, repair: the hull part. */
+  part?: number;
   /** Lees wanted on it (repeated taps add more). */
   wanted: number;
   /** Lees assigned (ids). */
@@ -55,10 +58,12 @@ export const ORDER_LABEL: Record<OrderKind, string> = {
   cutLine: 'Cut the line',
   wreckPlank: 'Destroy the plank',
   cutRope: 'Cut the rope',
+  bail: 'Bail here',
+  repair: 'Repair here',
 };
 
-/** Jobs that answer a 'cutter' order straight away; anyone else only after a short wait (you're never stuck). */
-const CUTTER_JOBS: Job[] = ['board', 'fix'];
+/** Jobs that answer an order of each role straight away; anyone else only after a short wait (you're never stuck). */
+const ROLE_JOBS: Record<OrderRole, Job[] | null> = { cutter: ['board', 'fix'], fixer: ['fix'], nearest: null };
 
 export class OrderSystem {
   readonly list: DeckOrder[] = [];
@@ -73,14 +78,14 @@ export class OrderSystem {
   }
 
   /** The order on this target already (so a second tap adds a Lee instead). */
-  find(boat: Boat, kind: OrderKind, target: { rail?: RailRef; line?: Line; swinger?: Lee }): DeckOrder | undefined {
-    return this.list.find((o) => o.boat === boat && o.kind === kind && o.rail?.rail === target.rail?.rail && o.line === target.line && o.swinger === target.swinger);
+  find(boat: Boat, kind: OrderKind, target: { rail?: RailRef; line?: Line; swinger?: Lee; part?: number }): DeckOrder | undefined {
+    return this.list.find((o) => o.boat === boat && o.kind === kind && o.rail?.rail === target.rail?.rail && o.line === target.line && o.swinger === target.swinger && o.part === target.part);
   }
 
   /** Place an order, or add a Lee to the one already there. */
   place(w: World, order: Omit<DeckOrder, 'id' | 'lees' | 'progress' | 'since' | 'wanted' | 'left'> & { wanted?: number }): DeckOrder {
     const old = this.find(order.boat, order.kind, order);
-    const cap = order.kind === 'cutLine' || order.kind === 'wreckPlank' ? 3 : 1;
+    const cap = order.kind === 'cutLine' || order.kind === 'wreckPlank' || order.kind === 'bail' || order.kind === 'repair' ? 3 : 1;
     if (old) {
       old.wanted = Math.min(cap, old.wanted + (order.wanted ?? 1));
       return old;
@@ -125,6 +130,14 @@ export class OrderSystem {
         const s = o.swinger!.swing;
         return !!s && !s.cut && s.via !== null && o.swinger!.alive;
       }
+      case 'bail': {
+        const part = o.boat.parts[o.part!];
+        return part.capacity > 0 && part.water / part.capacity > t.crewAI.bailStopAt;
+      }
+      case 'repair': {
+        const f = structureFraction(o.boat.parts[o.part!]);
+        return f > 0 && f < Math.min(1, Math.max(0, t.crew.repairCeiling)) - 1e-6;
+      }
     }
   }
 
@@ -157,6 +170,9 @@ export class OrderSystem {
         const s = o.swinger!.swing;
         return s ? s.toTile : o.tile;
       }
+      case 'bail':
+      case 'repair':
+        return o.tile;
     }
   }
 
@@ -168,12 +184,13 @@ export class OrderSystem {
     for (const lee of boat.crew.lees) {
       if (!lee.alive || lee.swing || lee.deck !== boat || lee.engaged || lee.retreating || lee.order !== null) continue;
       if (isWounded(lee, w.tuning) && w.liveFoesAboard(boat)) continue;
-      const cutter = CUTTER_JOBS.includes(lee.job);
-      if (o.role === 'cutter' && !cutter && waited < w.tuning.lines.answerFallback) continue;
+      const jobs = ROLE_JOBS[o.role];
+      const fits = !jobs || jobs.includes(lee.job);
+      if (!fits && waited < w.tuning.lines.answerFallback) continue;
       // Walking time to the tile, with a little extra for pulling a Lee off a post.
       const walk = (dist(lee.pos, boat.grid.tiles[o.tile].center) + boat.grid.dist[lee.tile][o.tile]) / Math.max(0.1, w.tuning.crew.walkSpeed * leeStat(lee, 'walkSpeed', boat, w.tuning));
       const post = lee.task.type === 'station' && lee.working ? 0.6 : 0;
-      out.push({ lee, cost: walk + post + (o.role === 'cutter' && !cutter ? 5 : 0) });
+      out.push({ lee, cost: walk + post + (fits ? 0 : 5) });
     }
     out.sort((a, b) => a.cost - b.cost || a.lee.id - b.lee.id);
     return out.map((x) => x.lee);
@@ -210,6 +227,7 @@ export class OrderSystem {
       const here: Lee[] = [];
       for (const id of o.lees) {
         const lee = w.findLee(id)!.lee;
+        if (o.kind === 'bail' || o.kind === 'repair') lee.task = { type: o.kind, target: o.part! };
         if (lee.dest !== o.tile) setDestination(lee, o.tile, o.boat);
         if (lee.working && lee.tile === o.tile && !lee.path.length) here.push(lee);
       }
@@ -247,6 +265,14 @@ export class OrderSystem {
             w.cutRope(o.swinger!);
             this.remove(w, o);
           }
+          break;
+        }
+        case 'bail':
+        case 'repair': {
+          // The crew's own work does it; the Lee just has to be pointed at the part.
+          const part = o.boat.parts[o.part!];
+          o.progress = o.kind === 'bail' ? 1 - Math.min(1, part.water / Math.max(1e-6, part.capacity)) : structureFraction(part);
+          for (const lee of here) if (lee.task.type !== o.kind || lee.task.target !== o.part) lee.task = { type: o.kind, target: o.part! };
           break;
         }
         case 'throw':

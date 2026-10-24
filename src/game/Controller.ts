@@ -172,6 +172,9 @@ export class Controller {
   stripProjection: StripProjection | null = null;
   private listeners = new Set<Listener>();
   private frameListeners = new Set<Listener>();
+  private toastListeners = new Set<(text: string) => void>();
+  /** The deck view's tap targets right now, with where each is on screen (CSS px). Set by the scene; tests and tools read it. */
+  tapTargets: () => { id: string; kind: string; label: string; css: { x: number; y: number } | null }[] = () => [];
 
   constructor() {
     this.tuning = defaultTuning();
@@ -663,6 +666,16 @@ export class Controller {
   onFrame(fn: Listener): () => void {
     this.frameListeners.add(fn);
     return () => this.frameListeners.delete(fn);
+  }
+
+  /** Show a short message in the HUD (a tap that couldn't be taken, and why). */
+  toast(text: string): void {
+    for (const fn of this.toastListeners) fn(text);
+  }
+
+  onToast(fn: (text: string) => void): () => void {
+    this.toastListeners.add(fn);
+    return () => this.toastListeners.delete(fn);
   }
 
   frame(): void {

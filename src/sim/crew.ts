@@ -219,6 +219,8 @@ export interface CrewState {
   needs: Need[];
   /** Seconds until the next decision. */
   thinkIn: number;
+  /** A tap on an enemy deck tile: where this crew's boarders over there head first (until the time runs out). */
+  focus: { deck: Boat; tile: number; until: number } | null;
 }
 
 export interface CrewContext {
@@ -1687,6 +1689,16 @@ export function thinkBoarders(boat: Boat, ctx: CrewContext): void {
       continue;
     }
     const here = lee.path.length ? lee.path[0] : lee.tile;
+    // A tap on their deck: the boarders head for that part of it first.
+    const focus = boat.crew.focus;
+    if (focus && focus.deck === deck && ctx.time < focus.until && !why) {
+      const goal = hasRoom(deck, focus.tile, lees, ctx.tuning, lee) ? focus.tile : nearestRoom(deck, focus.tile, lees, ctx.tuning, lee);
+      if (goal >= 0) {
+        lee.reason = `boarding ${boatLabel(deck)}: sent to ${deck.grid.tiles[focus.tile].label}`;
+        if (lee.dest !== goal || (!lee.path.length && lee.tile !== goal)) setDestination(lee, goal, deck);
+        continue;
+      }
+    }
     let best: Lee | null = null;
     let bestD = Infinity;
     for (const f of foes) {

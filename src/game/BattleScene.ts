@@ -32,7 +32,9 @@ import { clamp, DEG, dist, lerp, rotate, toLocal, toWorld, type Vec } from '../s
 import { FIXED_DT, predictPath } from '../sim/steering';
 import { TelegraphSystem } from '../sim/telegraph';
 import type { World, WorldEvent } from '../sim/world';
+import { deckTargets, pickTarget } from '../sim/targets';
 import { BoatView, lerpColor } from './BoatView';
+import { drawLines, drawOrderMarkers, drawTargets } from './QuartersView';
 import type { Controller } from './Controller';
 import { CrewView } from './CrewView';
 import {
@@ -133,6 +135,8 @@ export class BattleScene extends Phaser.Scene {
   private expandK = 0;
   /** Strip camera framing (local to your boat): center offset and zoom, smoothed. */
   private stripFrame: { x: number; y: number; zoom: number } | null = null;
+  /** The strip camera's projection this frame (to turn a tap into a world point). */
+  private stripView: { c: Vec; sz: number; SH: number; heading: number } | null = null;
   private acc = 0;
   private runId = -1;
   private lastPhase = '';
@@ -225,6 +229,8 @@ export class BattleScene extends Phaser.Scene {
     this.setupK = this.ctl.world.phase === 'ready' ? 1 : 0;
     this.frac = this.targetFrac();
     this.setupInput();
+    this.ctl.tapTargets = () =>
+      this.deckTargetsNow().map((t) => ({ id: t.id, kind: t.kind, label: t.label, css: this.ctl.stripProjection?.worldToCss(t.b ? { x: (t.a.x + t.b.x) / 2, y: (t.a.y + t.b.y) / 2 } : t.a) ?? null }));
     this.scale.on('resize', () => {
       this.layout();
       this.snapCamera = true;
@@ -287,6 +293,10 @@ export class BattleScene extends Phaser.Scene {
   private setupInput(): void {
     const inOcean = (p: Phaser.Input.Pointer) => p.y < this.oceanH;
     this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
+      if (!inOcean(p) && !this.ctl.blocked) {
+        this.tapDeck({ x: p.x, y: p.y });
+        return;
+      }
       if (this.pointerId !== null || !inOcean(p) || this.ctl.blocked) return;
       this.pointerId = p.id;
       this.pointerScreen = { x: p.x, y: p.y };
@@ -330,6 +340,37 @@ export class BattleScene extends Phaser.Scene {
     }
     this.steerAt(screen);
     return true;
+  }
+
+  /** A screen point in the deck view → world. */
+  private stripWorld(screen: Vec): Vec | null {
+    const v = this.stripView;
+    if (!v) return null;
+    const r = { x: (screen.x - this.W / 2) / v.sz, y: (screen.y - this.oceanH - v.SH / 2) / v.sz };
+    const w = rotate(r, v.heading);
+    return { x: v.c.x + w.x, y: v.c.y + w.y };
+  }
+
+  /** The decks the deck view shows right now. */
+  private deckTargetsNow(): ReturnType<typeof deckTargets> {
+    return deckTargets(this.ctl.world, this.stripDecks(this.ctl.world));
+  }
+
+  /**
+   * A tap on the deck view always commands: a rail item, a line, a plank, a rope with a Lee on
+   * it, a flooded or damaged tile, an enemy tile where your boarders are. The world picks the Lee.
+   */
+  private tapDeck(screen: Vec): void {
+    const world = this.ctl.world;
+    if (world.phase !== 'running' || world.result || world.player.sinkingSince !== null) return;
+    const p = this.stripWorld(screen);
+    if (!p) return;
+    const grab = this.px(this.stripCam, 16);
+    const hit = pickTarget(this.deckTargetsNow(), p, grab);
+    if (!hit) return;
+    const why = hit.tap();
+    if (why) this.ctl.toast(why[0].toUpperCase() + why.slice(1));
+    this.rings.push({ x: hit.a.x, y: hit.a.y, t: this.clock, dur: 0.35, r: 2.2, color: why ? 0xff8a6a : 0xffd27a });
   }
 
   /** Steer toward a screen point: a heading through it, or a circle around an enemy it's near. */
@@ -510,6 +551,30 @@ export class BattleScene extends Phaser.Scene {
           this.spray.explode(10, e.pos.x, e.pos.y);
           this.rings.push({ x: e.pos.x, y: e.pos.y, t: this.clock, dur: 0.4, r: 3, color: 0xe0f4ff });
           break;
+        case 'hookThrown':
+          this.rings.push({ x: e.from.x, y: e.from.y, t: this.clock, dur: 0.3, r: 2, color: COLOR.link });
+          break;
+        case 'hookLanded':
+          this.chips.explode(10, e.to.x, e.to.y);
+          this.rings.push({ x: e.to.x, y: e.to.y, t: this.clock, dur: 0.5, r: 4, color: COLOR.link });
+          break;
+        case 'hookMissed':
+          this.spray.explode(8, e.at.x, e.at.y);
+          this.rings.push({ x: e.at.x, y: e.at.y, t: this.clock, dur: 0.5, r: 3, color: 0xe0f4ff });
+          break;
+        case 'lineCut': {
+          const a = this.ctl.world.boats.find((x) => x.id === e.boatId);
+          const b = this.ctl.world.boats.find((x) => x.id === e.targetId);
+          if (a && b) {
+            const m = { x: (a.motion.x + b.motion.x) / 2, y: (a.motion.y + b.motion.y) / 2 };
+            this.chips.explode(10, m.x, m.y);
+            this.rings.push({ x: m.x, y: m.y, t: this.clock, dur: 0.4, r: 3, color: 0xfff3d6 });
+          }
+          break;
+        }
+        case 'tapRefused':
+          if (this.ctl.world.boats.find((x) => x.id === e.boatId)?.side === 'player') this.ctl.toast(e.why[0].toUpperCase() + e.why.slice(1));
+          break;
         case 'contact': {
           const a = this.ctl.world.boats.find((x) => x.id === e.a);
           const b = this.ctl.world.boats.find((x) => x.id === e.b);
@@ -649,6 +714,7 @@ export class BattleScene extends Phaser.Scene {
     this.stripCam.setZoom(sz);
     this.stripCam.setRotation(-p.heading);
     this.stripCam.centerOn(c.x, c.y);
+    this.stripView = { c: { x: c.x, y: c.y }, sz, SH, heading: p.heading };
     const diag = Math.hypot(W, SH) / sz;
     this.coverWithWater(this.waterStrip, c.x, c.y, diag, diag);
     // Local boat frame → CSS px, for the DOM setup grid; and world → CSS px for strip buttons.
@@ -692,6 +758,7 @@ export class BattleScene extends Phaser.Scene {
 
     this.drawRings(g, px);
     this.drawTracers(g, px);
+    drawLines(g, world, px);
     if (this.ctl.debug) this.drawDebug(g, world, px);
     if (world.phase === 'ready') this.drawRangeRing(g, world, px);
     // Minimum-range rings while your finger is on the ocean (and always in debug).
@@ -1229,6 +1296,11 @@ export class BattleScene extends Phaser.Scene {
     this.drawTracers(g, px);
     const fight = world.phase !== 'ready';
     const decks = this.stripDecks(world);
+    if (fight) {
+      drawLines(g, world, px);
+      drawOrderMarkers(g, world, px, this.clock);
+      if (this.ctl.debug) drawTargets(g, this.deckTargetsNow(), px);
+    }
     if (this.crewView) {
       this.crewView.update(world, g, px, decks, fight, this.clock, this.ctl.debug, m.heading);
       for (const p of this.crewView.splashes) {

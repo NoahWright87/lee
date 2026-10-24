@@ -297,6 +297,8 @@ export class LineSystem {
     }
     this.stepPushes(ctx, dt, out);
     this.stepPull(ctx, dt);
+    // The hook slides to the hull point nearest its rail, so a line runs straight across the gap (a lashing, not a diagonal).
+    for (const l of this.lines) l.attach = toLocal(nearestHullPoint(l.target, this.anchorWorld(l)), l.target.motion, l.target.motion.heading);
     return out;
   }
 

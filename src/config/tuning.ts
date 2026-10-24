@@ -294,6 +294,8 @@ export function defaultTuning() {
       poleSpeed: 3,
       poleTime: 1,
       poleCooldown: 4,
+      /** How long a tap on an enemy deck tile sends your boarders there before they go back to hunting, s. */
+      focusTime: 10,
       /** Seconds of hacking to cut a rope with a Lee on it. */
       ropeCutTime: 0.6,
       /** A tap that needs a ⚔️ or 🛠️ Lee (cutting, destroying) is open to any Lee after this long with none free, s. */

@@ -213,6 +213,8 @@ const FOLDER_NAMES: Record<string, string> = {
   ai: 'Enemy AI profiles',
   attach: 'Ramming & touching',
   boarding: 'Boarding',
+  lines: 'Hooks, lines, ropes, planks & poles',
+  speed: 'Game speed blend (sailing → close combat)',
   pistol: 'Pistols',
   melee: 'Swords (melee)',
   enemyAI: 'Enemy AI (steering)',
