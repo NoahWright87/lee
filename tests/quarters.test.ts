@@ -692,7 +692,7 @@ describe('breaking away and boarding rewards (§9, §10)', () => {
   });
 
   test('mid-fight surrender: when an enemy crew is down to one, its last Lee may join you on the spot', () => {
-    const d = duel({ gap: 30, myCrew: [[1, 1], [2, 1]], theirCrew: [[1, 1]], tune: (t) => (t.spoils.midSurrender = 1) });
+    const d = duel({ gap: 2, myCrew: [[1, 1], [2, 1]], theirCrew: [[1, 1]], tune: (t) => (t.spoils.midSurrender = 1) });
     const { w, e } = d;
     expect(w.defectors()).toBeNull();
     run(w, 1, d.hold);
@@ -702,19 +702,25 @@ describe('breaking away and boarding rewards (§9, §10)', () => {
     expect(lee.boat).toBe(w.player);
     expect(e.crew.lees).toHaveLength(0);
     expect(w.defectors()).toEqual({ type: 'basic', level: 1 });
+    // With nobody left, the enemy boat counts as beaten (crew lost), not as a ship that never had a crew.
+    expect(w.isOut(e)).toBe(true);
     // It's now one of your Lees: it fights for you and stays in your crew list.
     expect(w.allLees().filter((l) => l.side === 'player')).toHaveLength(3);
   });
 
   test('mid-fight surrender also happens when an enemy crew is outnumbered 3:1, and not when it is a fair fight or the roll fails', () => {
-    const outnumbered = duel({ gap: 30, myCrew: [[1, 1], [2, 1], [3, 1], [1, 0], [2, 0], [3, 0]], theirCrew: [[1, 1], [2, 1]], tune: (t) => (t.spoils.midSurrender = 1) });
+    const outnumbered = duel({ gap: 2, myCrew: [[1, 1], [2, 1], [3, 1], [1, 0], [2, 0], [3, 0]], theirCrew: [[1, 1], [2, 1]], tune: (t) => (t.spoils.midSurrender = 1) });
     run(outnumbered.w, 1, outnumbered.hold);
     expect(outnumbered.w.defectors()).not.toBeNull();
-    const fair = duel({ gap: 30, myCrew: [[1, 1], [2, 1], [3, 1]], theirCrew: [[1, 1], [2, 1]], tune: (t) => (t.spoils.midSurrender = 1) });
+    const fair = duel({ gap: 2, myCrew: [[1, 1], [2, 1], [3, 1]], theirCrew: [[1, 1], [2, 1]], tune: (t) => (t.spoils.midSurrender = 1) });
     run(fair.w, 1, fair.hold);
     expect(fair.w.defectors()).toBeNull();
-    const unlucky = duel({ gap: 30, myCrew: [[1, 1], [2, 1]], theirCrew: [[1, 1]], tune: (t) => (t.spoils.midSurrender = 0) });
+    const unlucky = duel({ gap: 2, myCrew: [[1, 1], [2, 1]], theirCrew: [[1, 1]], tune: (t) => (t.spoils.midSurrender = 0) });
     run(unlucky.w, 1, unlucky.hold);
     expect(unlucky.w.defectors()).toBeNull();
+    // Far apart there's no surrender: it only happens in close quarters.
+    const apart = duel({ gap: 60, myCrew: [[1, 1], [2, 1]], theirCrew: [[1, 1]], tune: (t) => (t.spoils.midSurrender = 1) });
+    run(apart.w, 1, apart.hold);
+    expect(apart.w.defectors()).toBeNull();
   });
 });

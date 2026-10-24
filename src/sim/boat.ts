@@ -219,7 +219,7 @@ export function createBoat(id: number, side: Side, build: BoatBuild, t: Tuning, 
     sinkingSince: null,
     waterTaken: 0,
     grid,
-    crew: { lees: [], needs: [], thinkIn: 0, focus: null },
+    crew: { lees: [], needs: [], thinkIn: 0, focus: null, departed: 0 },
     mobility: { speed: 1, turn: 1 },
     fx: { accuracy: 1, reload: 1, fix: 1, aim: 1 },
   };
@@ -504,5 +504,5 @@ export function bowTipLocal(boat: Boat): Vec {
 
 /** A boat whose crew is all dead: it can't fire, row or bail, but it floats (and floods). */
 export function isDerelict(boat: Boat): boolean {
-  return boat.crew.lees.length > 0 && !boat.crew.lees.some((l) => l.alive);
+  return (boat.crew.lees.length > 0 || boat.crew.departed > 0) && !boat.crew.lees.some((l) => l.alive);
 }

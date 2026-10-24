@@ -647,6 +647,9 @@ export class World {
       if (this.isOut(e)) continue;
       const brain = this.brains.get(e.id);
       if (!brain) continue;
+      // Only in close quarters: in contact, joined by a line, or with Lees on each other's decks.
+      const close = this.inContact(e) || this.lines.held(e) || sideAboard(e, 'player', this.allLees()) || sideAboard(this.player, 'enemy', this.allLees());
+      if (!close) continue;
       const theirs = e.crew.lees.filter((l) => l.alive);
       const mine = this.player.crew.lees.filter((l) => l.alive).length;
       if (!theirs.length || !mine) continue;
@@ -664,6 +667,7 @@ export class World {
     const from = lee.boat;
     const home = this.player;
     from.crew.lees = from.crew.lees.filter((l) => l !== lee);
+    from.crew.departed++;
     // A tile of your deck to call home (the one with the most room).
     let tile = 0;
     let best = Infinity;

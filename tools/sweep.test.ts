@@ -9,10 +9,12 @@
 // buys what it can afford that fits an empty spot (Auto-equip), and sails to
 // the first destination; at sea it follows the map's guaranteed route (the
 // fights on the way are the fights it gets). In a fight the captain plays each
-// ship's style: the Friend Ship targets the enemy (the BOARD/RAM autopilot)
-// and sends most of its crew to ⚔️ as it closes, the Long Distance Relation
-// Ship orbits at long-gun range, the rest orbit at cannon range. It never
-// dodges, kites or retreats, so a person does better: read the numbers as
+// ship's style: the Friend Ship targets the enemy (the BOARD/RAM autopilot),
+// sends most of its crew to ⚔️ as it closes, throws its hooks, lowers its
+// planks and sends Lees over its ropes; the Long Distance Relation Ship orbits
+// at long-gun range, the rest orbit at cannon range. Every other ship cuts any
+// line that holds it and mashes ⏩ to get its oars manned (it never kites or
+// dodges), so a person does better: read the numbers as
 // "how hard is this for someone not trying". A fight still going at 400 s
 // counts as a loss (usually a skirmisher it never catches); SWEEP_LOG=1 prints
 // every fight.
@@ -20,9 +22,10 @@
 import { test } from 'vitest';
 import { defaultTuning, type Tuning } from '../src/config/tuning';
 import { structureFraction } from '../src/sim/boat';
+import { railsOf } from '../src/sim/lines';
 import { rngFor } from '../src/sim/math';
 import { buy, buyHealAll, buyRepair, enterPort, makePlan } from '../src/sim/port';
-import { answerSurrender, applyFight, hullShare, autoEquipAll, cargo, discard, enemySetups, finishPost, newRun, setupFor, takeReward, type RunState } from '../src/sim/run';
+import { answerSurrender, applyFight, pickCapture, hullShare, autoEquipAll, cargo, discard, enemySetups, finishPost, newRun, setupFor, takeReward, type RunState } from '../src/sim/run';
 import { leavePort, playerValue, sailTo } from '../src/sim/seaMap';
 import { FIXED_DT } from '../src/sim/steering';
 import { World } from '../src/sim/world';
@@ -30,11 +33,28 @@ import { World } from '../src/sim/world';
 const SEEDS = Math.max(1, Number(process.env.SWEEP_SEEDS ?? 4));
 const JOURNEYS = Math.max(1, Number(process.env.SWEEP_JOURNEYS ?? 3));
 
+/** Close quarters for the scripted captain: the Friend Ship boards, everyone else cuts lines and breaks away. */
+function quarters(w: World, ship: string): void {
+  const p = w.player;
+  if (ship !== 'friend') {
+    for (const line of w.lines.linesOf(p)) if (!w.orders.find(p, 'cutLine', { line })) w.tapLine(line, p);
+    if (w.lines.held(p) && w.orders.list.some((o) => o.boat === p && o.kind === 'cutLine')) w.order('sail');
+    return;
+  }
+  for (const ref of railsOf(p, 'hook')) if (!ref.rail.out && ref.rail.readyAt <= w.time && w.lines.between(p, w.liveEnemies()[0] ?? w.enemies[0]).length < 2) w.tapRail(ref);
+  for (const ref of railsOf(p, 'planks')) if (!ref.rail.lowered && !w.orders.find(p, 'lower', { rail: ref })) w.tapRail(ref);
+  for (const ref of railsOf(p, 'rope')) {
+    const waiting = p.crew.lees.some((l) => l.alive && l.deck === p && !l.swing && l.task.type === 'board' && !l.path.length && l.tile === ref.tile.index);
+    if (waiting && ref.rail.pending === 0 && ref.rail.readyAt <= w.time) w.tapRail(ref);
+  }
+}
+
 /** Fight the set-up encounter with the scripted captain. */
 function fight(run: RunState, ship: string, seed: number, t: Tuning): { won: boolean; time: number; lost: number } {
   const w = new World(t, seed * 977 + run.fight, { player: setupFor(run, t), enemies: enemySetups(run, t), assists: false, carry: { hp: run.hull, water: run.hull.map(() => 0) } });
   w.start();
   let nextOrder = 0;
+  let nextQuarters = 0;
   while (w.phase !== 'over' && w.time < 400) {
     const e = w.liveEnemies()[0] ?? w.enemies[0];
     const p = w.player.motion;
@@ -53,10 +73,14 @@ function fight(run: RunState, ship: string, seed: number, t: Tuning): { won: boo
       const h = bearing - off;
       w.player.target = { x: p.x + Math.cos(h) * 60, y: p.y + Math.sin(h) * 60 };
     }
+    if (w.time >= nextQuarters) {
+      quarters(w, ship);
+      nextQuarters = w.time + 0.4;
+    }
     w.step(FIXED_DT);
   }
   const won = w.result?.winner === 'player';
-  applyFight(run, { won, lees: w.player.crew.lees, enemies: w.enemyOutcomes(), lastEnemy: w.lastEnemyStanding(), hull: w.player.parts.map((x) => structureFraction(x)) }, t);
+  applyFight(run, { won, lees: w.player.crew.lees, enemies: w.enemyOutcomes(), lastEnemy: w.lastEnemyStanding(), joined: w.defectors(), hull: w.player.parts.map((x) => structureFraction(x)) }, t);
   return { won, time: w.time, lost: w.stats.player.leesLost };
 }
 
@@ -109,6 +133,7 @@ test('run sweep', () => {
           }
           if (run.stage === 'post') {
             const post = run.pending!;
+            post.captures.forEach((c, i) => c.options.length && pickCapture(run, i, c.options[0]));
             if (post.surrender) answerSurrender(run, run.crew.length < t.ships[run.ship].crewMax, t);
             if (post.reward.length) takeReward(run, 0, t);
             finishPost(run);

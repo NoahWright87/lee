@@ -91,9 +91,9 @@ export function defaultGunTuning() {
     flightTimeBase: 1.9,
     flightTimePerMeter: 0.011,
     /** Extra scatter per meter of distance to the target, m (÷ accuracy). Far shots wander. */
-    spreadPerMeter: 0.02,
+    spreadPerMeter: 0.014,
     /** Extra scatter per rad/s the shooter's own boat is turning, m. A boat in a hard turn can't aim. */
-    turnScatter: 14,
+    turnScatter: 10,
     /** A shell lands on a part if within this distance of it, m. */
     impactRadius: 1.2,
     /** Gunners aim at a random point within this distance of a random part's center, m. */

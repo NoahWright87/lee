@@ -223,6 +223,8 @@ export interface CrewState {
   thinkIn: number;
   /** A tap on an enemy deck tile: where this crew's boarders over there head first (until the time runs out). */
   focus: { deck: Boat; tile: number; until: number } | null;
+  /** Lees that left this crew for the other side mid-fight (an empty crew with some departed is still a crew that was beaten). */
+  departed: number;
 }
 
 export interface CrewContext {
