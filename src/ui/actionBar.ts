@@ -1,127 +1,183 @@
-// The four action buttons at the seam between the ocean and the close-up:
-// ⏩ SAIL (RETREAT in melee), 🔫 FIRE, ⚔️ BOARD / RAM / CHARGE, 🛠️ FIX. A tap
-// moves one Lee (best fit) into that job; holding repeats. Under each button,
-// one pip per Lee in that job: color = Lee type, fill = HP, number = level,
-// ring = progress on what it's doing; hollow pips are empty seats. A pip
-// slides between buttons over the time its Lee takes to walk there. When a
-// RAM or BOARD approach is underway, the enemy ship's pips fade in above the
-// buttons, grouped the same way. Reads the world; orders go through the Controller.
+// The crew, as bars (Phase 7): for each role a square icon down the left of the
+// screen (⏩ 🔫 ⚔️ 🛠️: a tap moves one Lee, best fit, and holding repeats), and
+// beside it one column per Lee in that role. A column's height is its Lee's HP,
+// colored by type; damage flashes red and then drains away; chevrons above a
+// bar show buffs and debuffs; a highlighted border means the Lee is on an
+// order (a tap on the deck). More Lees in a role means skinnier columns that
+// still fit. Under a role's columns, a small portrait per Lee type. When a Lee
+// changes role its bar slides between the rows over the time it walks there; on
+// death it flashes and the column closes. The engaged enemy's bars appear on
+// the other side while close combat is on. Reads the world; orders go through
+// the Controller.
 
 import { JOB_INFO, JOBS, type Job } from '../config/lees';
 import type { Controller } from '../game/Controller';
 import type { Boat } from '../sim/boat';
 import type { Tuning } from '../config/tuning';
-import { activity, jobSeats, type Lee } from '../sim/crew';
+import { activity, isWet, jobSeats, type Lee } from '../sim/crew';
+import { memberFigure } from './cards';
 import { el } from './dom';
 
-const PIP = 18;
-const GAP = 3;
-/** Seconds a dead Lee's pip lingers for its death effect. */
+/** Panel geometry (CSS px): yours is big enough for a thumb, theirs is a compact read-out. */
+interface Metrics {
+  row: number;
+  gap: number;
+  icon: number;
+  bar: number;
+  /** Space above the bars for the buff chevrons, and below them for the type portraits. */
+  above: number;
+  below: number;
+  maxBar: number;
+}
+const MINE: Metrics = { row: 56, gap: 3, icon: 44, bar: 34, above: 9, below: 13, maxBar: 22 };
+const THEIRS: Metrics = { row: 44, gap: 3, icon: 26, bar: 26, above: 7, below: 10, maxBar: 14 };
+/** Seconds a dead Lee's bar lingers for its death effect. */
 const DEATH = 0.6;
+/** Seconds a hit flashes before the red trail starts to drain. */
+const FLASH = 0.18;
 
-interface PipEl {
+interface BarEl {
   el: HTMLDivElement;
-  level: HTMLSpanElement;
-  /** Seen dead since (world time), or null. */
+  chev: HTMLSpanElement;
+  lv: HTMLSpanElement;
+  /** HP share last frame, and the world time it last dropped. */
+  last: number;
+  hitAt: number;
   deadAt: number | null;
 }
 
-/** One row of pips (yours or the enemy's) over the four buttons. */
-class PipRow {
+/** One crew's bars: four rows of a role icon and its columns. */
+class BarPanel {
   readonly root: HTMLDivElement;
-  private pips = new Map<number, PipEl>();
+  readonly icons = new Map<Job, HTMLButtonElement>();
+  private rows = new Map<Job, HTMLDivElement>();
+  private bars = new Map<number, BarEl>();
   private hollow: HTMLDivElement[] = [];
+  private syms: HTMLElement[] = [];
+  private m: Metrics;
+  private mirror: boolean;
 
-  /** Extra rows stack downward (yours, under the buttons) or upward (theirs, above them). */
-  private dir: 1 | -1;
-
-  constructor(cls: string, dir: 1 | -1) {
-    this.root = el('div', `pip-row ${cls}`);
-    this.dir = dir;
+  constructor(cls: string, m: Metrics, mirror: boolean, makeIcon: (job: Job) => HTMLButtonElement) {
+    this.m = m;
+    this.mirror = mirror;
+    this.root = el('div', `crew-bars ${cls}`);
+    this.root.style.setProperty('--cb-row', `${m.row}px`);
+    this.root.style.setProperty('--cb-gap', `${m.gap}px`);
+    this.root.style.setProperty('--cb-icon', `${m.icon}px`);
+    JOBS.forEach((job, i) => {
+      const row = el('div', `cb-row job-${job}`);
+      row.style.top = `${i * (m.row + m.gap)}px`;
+      const icon = makeIcon(job);
+      this.icons.set(job, icon);
+      row.append(icon);
+      this.rows.set(job, row);
+      this.root.append(row);
+    });
+    this.root.style.height = `${JOBS.length * (m.row + m.gap) - m.gap}px`;
   }
 
   clear(): void {
-    this.root.replaceChildren();
-    this.pips.clear();
+    for (const b of this.bars.values()) b.el.remove();
+    this.bars.clear();
+    for (const d of this.hollow) d.remove();
     this.hollow = [];
+    for (const d of this.syms) d.remove();
+    this.syms = [];
   }
 
-  /**
-   * Lay out a crew's pips. `colX(job)` is the center of that button's column
-   * (px, in this row's frame). Seats (sail, fire) add hollow pips.
-   */
-  update(boat: Boat, time: number, t: Tuning, colX: (j: Job) => number, seats: (j: Job) => number): void {
-    const crew = boat.crew.lees;
+  /** Lay out a crew's bars. `avail` is the width the columns may use (px); `seats(job)` adds hollow columns for empty seats. */
+  update(boat: Boat, time: number, t: Tuning, avail: number, seats: (j: Job) => number): void {
+    const m = this.m;
     const rows: Record<Job, Lee[]> = { sail: [], fire: [], board: [], fix: [] };
-    for (const l of crew) if (l.alive) rows[l.job].push(l);
-    // Slot index of each Lee within its job's row (by id, so the order is stable).
-    const slot = new Map<number, { job: Job; i: number; n: number }>();
+    for (const l of boat.crew.lees) if (l.alive) rows[l.job].push(l);
+    // Columns within a role are grouped by Lee type (then id), so a type's portrait sits under its group.
+    const order = new Map<number, { job: Job; i: number; n: number }>();
+    const widths: Record<Job, number> = { sail: 0, fire: 0, board: 0, fix: 0 };
     for (const j of JOBS) {
-      rows[j].sort((a, b) => a.id - b.id);
-      rows[j].forEach((l, i) => slot.set(l.id, { job: j, i, n: Math.max(rows[j].length, Math.min(seats(j), 8)) }));
+      rows[j].sort((a, b) => (a.def.id < b.def.id ? -1 : a.def.id > b.def.id ? 1 : a.id - b.id));
+      const n = Math.max(rows[j].length, Math.min(seats(j), 8));
+      widths[j] = Math.max(5, Math.min(m.maxBar, Math.floor((avail - 4) / Math.max(1, n)) - 2));
+      rows[j].forEach((l, i) => order.set(l.id, { job: j, i, n }));
     }
-    const xOf = (job: Job, i: number, n: number) => {
-      const per = Math.max(1, Math.min(n, 4));
-      const col = i % per;
-      return colX(job) + (col - (per - 1) / 2) * (PIP + GAP);
+    const colX = (job: Job, i: number) => m.icon + 6 + i * (widths[job] + 2);
+    const rowY = (job: Job) => JOBS.indexOf(job) * (m.row + m.gap);
+    const place = (e: HTMLElement, x: number, y: number) => {
+      e.style.transform = `translate(${this.mirror ? -x : x}px, ${y}px)`;
     };
-    const yOf = (i: number, n: number) => this.dir * Math.floor(i / Math.max(1, Math.min(n, 4))) * (PIP + GAP);
     const live = new Set<number>();
-    for (const l of crew) {
-      let p = this.pips.get(l.id);
+    for (const l of boat.crew.lees) {
+      let b = this.bars.get(l.id);
       if (!l.alive) {
-        if (!p) continue;
-        if (p.deadAt === null) {
-          p.deadAt = time;
-          p.el.classList.add('dead');
+        if (!b) continue;
+        if (b.deadAt === null) {
+          b.deadAt = time;
+          b.el.classList.add('dead');
         }
-        if (time - p.deadAt > DEATH) {
-          p.el.remove();
-          this.pips.delete(l.id);
+        if (time - b.deadAt > DEATH) {
+          b.el.remove();
+          this.bars.delete(l.id);
         } else live.add(l.id);
         continue;
       }
       live.add(l.id);
-      if (!p) {
-        const d = el('div', 'pip');
-        const level = el('span', 'pip-lv');
-        d.append(level);
+      const frac = Math.min(1, Math.max(0, l.hp / Math.max(1, l.maxHp)));
+      if (!b) {
+        const d = el('div', 'cb-bar');
+        const chev = el('span', 'cb-chev');
+        const lag = el('div', 'cb-lag');
+        const fill = el('div', 'cb-fill');
+        const prog = el('div', 'cb-prog');
+        const lv = el('span', 'cb-lv');
+        d.append(chev, lag, fill, prog, lv);
         this.root.append(d);
-        p = { el: d, level, deadAt: null };
-        this.pips.set(l.id, p);
+        b = { el: d, chev, lv, last: frac, hitAt: -99, deadAt: null };
+        this.bars.set(l.id, b);
       }
-      const s = slot.get(l.id)!;
-      let x = xOf(s.job, s.i, s.n);
-      let y = yOf(s.i, s.n);
-      // In transit: slide from the old button to the new one over the walk.
+      const o = order.get(l.id)!;
+      const w = widths[o.job];
+      let x = colX(o.job, o.i);
+      let y = rowY(o.job);
+      // In transit: slide from the old role's row to the new one over the walk.
       const k = l.jobEta > 0 ? Math.min(1, Math.max(0, (time - l.jobSince) / l.jobEta)) : 1;
       if (k < 1 && l.jobFrom !== l.job) {
-        const from = xOf(l.jobFrom, rows[l.jobFrom].length, rows[l.jobFrom].length + 1);
         const e = k * k * (3 - 2 * k);
-        x = from + (x - from) * e;
-        y = y * e;
+        const fx = colX(l.jobFrom, rows[l.jobFrom].length);
+        x = fx + (x - fx) * e;
+        y = rowY(l.jobFrom) + (y - rowY(l.jobFrom)) * e;
       }
-      const st = p.el.style;
-      st.transform = `translate(${(x - PIP / 2).toFixed(1)}px, ${y.toFixed(1)}px)`;
+      place(b.el, x, y + m.above);
+      const st = b.el.style;
+      st.setProperty('--w', `${w}px`);
+      st.setProperty('--h', `${m.bar}px`);
       st.setProperty('--c', l.def.color);
-      st.setProperty('--hp', `${Math.round((100 * Math.max(0, l.hp)) / Math.max(1, l.maxHp))}%`);
+      if (frac < b.last - 1e-4) b.hitAt = time;
+      // A heal (or a first sight) snaps the red trail; a hit leaves it, then it drains.
+      b.el.classList.toggle('healing', frac > b.last + 1e-4);
+      b.last = frac;
+      st.setProperty('--hp', `${(frac * 100).toFixed(1)}%`);
+      st.setProperty('--lag', `${(frac * 100).toFixed(1)}%`);
       const prog = actionProgress(l, t);
-      const busy = prog !== null;
       st.setProperty('--p', `${Math.round(100 * Math.min(1, Math.max(0, prog ?? 0)))}%`);
-      p.el.classList.toggle('busy', busy);
-      p.el.classList.toggle('transit', k < 1);
-      p.el.classList.toggle('away', l.deck !== l.boat || !!l.swing);
-      p.el.classList.toggle('fighting', l.engaged);
-      p.el.title = `${l.label} · level ${l.level} · ${Math.round(l.hp)}/${Math.round(l.maxHp)} HP`;
-      const lv = String(l.level);
-      if (p.level.textContent !== lv) p.level.textContent = lv;
+      b.el.classList.toggle('busy', prog !== null);
+      b.el.classList.toggle('hit', time - b.hitAt < FLASH);
+      b.el.classList.toggle('transit', k < 1);
+      b.el.classList.toggle('away', l.deck !== l.boat || !!l.swing);
+      b.el.classList.toggle('fighting', l.engaged);
+      b.el.classList.toggle('order', l.order !== null);
+      b.el.classList.toggle('low', frac < 0.3);
+      const buff = buffOf(l, boat, t);
+      b.chev.textContent = buff > 0 ? '▲' : buff < 0 ? '▼' : '';
+      b.chev.className = `cb-chev${buff > 0 ? ' up' : buff < 0 ? ' down' : ''}`;
+      b.el.title = `${l.label} · level ${l.level} · ${Math.round(l.hp)}/${Math.round(l.maxHp)} HP${l.order !== null ? ' · answering a tap' : ''}`;
+      const lv = w >= 12 ? String(l.level) : '';
+      if (b.lv.textContent !== lv) b.lv.textContent = lv;
     }
-    for (const [id, p] of this.pips) {
+    for (const [id, b] of this.bars) {
       if (live.has(id)) continue;
-      p.el.remove();
-      this.pips.delete(id);
+      b.el.remove();
+      this.bars.delete(id);
     }
-    // Hollow pips: empty seats of sail and fire.
+    // Hollow columns: empty seats of sail and fire.
     let h = 0;
     for (const j of ['sail', 'fire'] as Job[]) {
       const n = rows[j].length;
@@ -129,16 +185,44 @@ class PipRow {
       for (let i = n; i < total; i++) {
         let d = this.hollow[h];
         if (!d) {
-          d = el('div', 'pip hollow');
+          d = el('div', 'cb-bar hollow');
           this.root.append(d);
           this.hollow.push(d);
         }
         d.style.display = '';
-        d.style.transform = `translate(${(xOf(j, i, total) - PIP / 2).toFixed(1)}px, ${yOf(i, total).toFixed(1)}px)`;
+        d.style.setProperty('--w', `${widths[j]}px`);
+        d.style.setProperty('--h', `${m.bar}px`);
+        place(d, colX(j, i), rowY(j) + m.above);
         h++;
       }
     }
     for (let i = h; i < this.hollow.length; i++) this.hollow[i].style.display = 'none';
+    // A small portrait under each group of a type, centered under its columns.
+    let sIdx = 0;
+    for (const j of JOBS) {
+      let i = 0;
+      while (i < rows[j].length) {
+        const type = rows[j][i].def.id;
+        let n = 1;
+        while (i + n < rows[j].length && rows[j][i + n].def.id === type) n++;
+        let img = this.syms[sIdx] as HTMLImageElement | undefined;
+        if (!img || img.dataset.type !== type) {
+          img?.remove();
+          img = memberFigure(type, 'cb-sym');
+          img.dataset.type = type;
+          this.root.append(img);
+          this.syms[sIdx] = img;
+        }
+        const size = m.below;
+        const center = colX(j, i) + (n * (widths[j] + 2) - 2) / 2;
+        place(img, center - size / 2, rowY(j) + m.above + m.bar + 1);
+        img.style.width = img.style.height = `${size}px`;
+        img.style.display = '';
+        sIdx++;
+        i += n;
+      }
+    }
+    for (let i = sIdx; i < this.syms.length; i++) this.syms[i].style.display = 'none';
   }
 }
 
@@ -146,8 +230,8 @@ export class ActionBar {
   readonly root: HTMLDivElement;
   private ctl: Controller;
   private buttons = new Map<Job, { btn: HTMLButtonElement; label: HTMLSpanElement }>();
-  private mine = new PipRow('mine', 1);
-  private theirs = new PipRow('theirs', -1);
+  private mine: BarPanel;
+  private theirs: BarPanel;
   private theirsFor: number | null = null;
   private theirsAlpha = 0;
   private stopped: HTMLDivElement;
@@ -157,8 +241,7 @@ export class ActionBar {
   constructor(ctl: Controller) {
     this.ctl = ctl;
     this.root = el('div', 'action-bar hidden');
-    const btns = el('div', 'action-buttons');
-    for (const job of JOBS) {
+    this.mine = new BarPanel('mine', MINE, false, (job) => {
       const btn = el('button', `action-btn job-${job}`);
       const icon = el('span', 'action-icon', JOB_INFO[job].icon);
       const label = el('span', 'action-label', JOB_INFO[job].name);
@@ -168,11 +251,12 @@ export class ActionBar {
       btn.onpointercancel = (e) => this.release(e);
       btn.onlostpointercapture = (e) => this.release(e);
       btn.oncontextmenu = (e) => e.preventDefault();
-      btns.append(btn);
       this.buttons.set(job, { btn, label });
-    }
+      return btn;
+    });
+    this.theirs = new BarPanel('theirs', THEIRS, true, (job) => el('div', `cb-icon job-${job}`, JOB_INFO[job].icon) as unknown as HTMLButtonElement);
     this.stopped = el('div', 'stopped-badge hidden', '⚓ STOPPED');
-    this.root.append(this.theirs.root, btns, this.mine.root, this.stopped);
+    this.root.append(this.theirs.root, this.mine.root, this.stopped);
   }
 
   private press(job: Job, e: PointerEvent, btn: HTMLButtonElement): void {
@@ -193,10 +277,8 @@ export class ActionBar {
 
   /** One order. A full job (or nobody to move) gives the button a little shake. */
   private fire(job: Job, btn: HTMLButtonElement): void {
-    const w = this.ctl.world;
-    const retreat = job === 'sail' && w.canRetreat();
     const lee = this.ctl.order(job);
-    if (!lee && !retreat) {
+    if (!lee) {
       btn.classList.remove('shake');
       void btn.offsetWidth;
       btn.classList.add('shake');
@@ -233,11 +315,11 @@ export class ActionBar {
       }
     }
 
-    // Labels: SAIL / RETREAT; ⚔️ BOARD / RAM / CHARGE (greyed without a target).
+    // Labels: SAIL / RETREAT (while connected or with boarders out); ⚔️ BOARD / RAM / CHARGE (greyed without a target).
     const sail = this.buttons.get('sail')!;
     const retreat = w.canRetreat();
-    setText(sail.label, w.retreating ? 'RETREATING' : retreat ? 'RETREAT' : 'SAIL');
-    sail.btn.classList.toggle('retreat', retreat || w.retreating);
+    setText(sail.label, retreat ? 'RETREAT' : 'SAIL');
+    sail.btn.classList.toggle('retreat', retreat);
     const melee = w.meleeMode();
     const board = this.buttons.get('board')!;
     setText(board.label, melee === 'ram' ? 'RAM' : melee === 'charge' ? 'CHARGE' : 'BOARD');
@@ -251,12 +333,11 @@ export class ActionBar {
     }
     this.stopped.classList.toggle('hidden', !w.player.stopped || w.player.sinkingSince !== null);
 
-    // Pips: positions are in the bar's frame; each button's column center.
+    // Bars: columns use the width of their side of the screen.
     const width = this.root.clientWidth || 360;
-    const colX = (j: Job) => ((JOBS.indexOf(j) + 0.5) / JOBS.length) * width;
-    this.mine.update(w.player, w.time, t, colX, (j) => jobSeats(w.player, j, t));
+    this.mine.update(w.player, w.time, t, Math.max(60, width * 0.58 - MINE.icon - 10), (j) => jobSeats(w.player, j, t));
 
-    // Enemy pips: the ship you're closing on (or that's closing on you), only while melee is imminent.
+    // Enemy bars: the ship you're closing on (or that's closing on you), only while melee is imminent.
     const engaged = this.engagedEnemy();
     if (engaged && this.theirsFor !== engaged.id) {
       this.theirs.clear();
@@ -265,7 +346,7 @@ export class ActionBar {
     this.theirsAlpha += ((engaged ? 1 : 0) - this.theirsAlpha) * 0.12;
     this.theirs.root.style.opacity = this.theirsAlpha.toFixed(2);
     const shown = this.theirsFor !== null ? w.enemies.find((e) => e.id === this.theirsFor) : undefined;
-    if (shown) this.theirs.update(shown, w.time, t, colX, (j) => jobSeats(shown, j, t));
+    if (shown) this.theirs.update(shown, w.time, t, Math.max(50, width * 0.38 - THEIRS.icon - 8), (j) => jobSeats(shown, j, t));
     if (!engaged && this.theirsAlpha < 0.02) {
       this.theirs.clear();
       this.theirsFor = null;
@@ -273,7 +354,7 @@ export class ActionBar {
   }
 
   /**
-   * The enemy whose pips show: in close combat with you, or on a RAM/BOARD
+   * The enemy whose bars show: in close combat with you, or on a RAM/BOARD
    * approach (yours toward it, or its own toward you) and close enough that
    * melee is imminent.
    */
@@ -317,4 +398,16 @@ function actionProgress(l: Lee, t: Tuning): number | null {
     return 1 - (part.capacity > 0 ? part.water / part.capacity : 0);
   }
   return null;
+}
+
+/** +1 while something is helping the Lee (the pit-stop bonus while stopped and fixing, a plank under a boarder), -1 while something slows it (wet feet, wounds with enemies about), else 0. */
+function buffOf(l: Lee, boat: Boat, t: Tuning): number {
+  if (!l.alive) return 0;
+  if (isWet(l, boat, t) || l.retreating) return -1;
+  if (boat.stopped && l.job === 'fix' && boat.fx.fix > 1) return 1;
+  if (l.boardBuff && l.deck !== l.boat) return 1;
+  const tile = l.deck.grid.tiles[l.tile];
+  const occ = l.deck === boat ? boat.mods.occupant[l.tile] : undefined;
+  if (tile && occ && Object.values(occ).some((v) => v > 1.001)) return 1;
+  return 0;
 }
