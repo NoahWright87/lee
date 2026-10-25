@@ -13,7 +13,7 @@
 
 import type { Job } from '../config/lees';
 import { structureFraction, type Boat } from './boat';
-import { isWounded, leeStat, setDestination, takeOrder, type Lee } from './crew';
+import { isWounded, leeStat, repairable, setDestination, takeOrder, type Lee } from './crew';
 import type { Line, RailRef } from './lines';
 import { railGap, railPoint } from './lines';
 import { dist, toLocal } from './math';
@@ -135,8 +135,7 @@ export class OrderSystem {
         return part.capacity > 0 && part.water / part.capacity > t.crewAI.bailStopAt;
       }
       case 'repair': {
-        const f = structureFraction(o.boat.parts[o.part!]);
-        return f > 0 && f < Math.min(1, Math.max(0, t.crew.repairCeiling)) - 1e-6;
+        return repairable(o.boat.parts[o.part!], t);
       }
     }
   }

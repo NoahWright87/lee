@@ -27,7 +27,7 @@ import {
   type PartState,
 } from './boat';
 import { updateEngagement, stepMelee, stepPistols, type CombatEvent } from './combat';
-import { createLee, damageCrewAt, crossingReady, foesOn, outbound, standingTile, hurtLee, inArc, jobCounts, leeStat, loseLee, orderJob, stepCrew, tilesWithin, updateMobility, wetFactor, workerAt, type CrewContext, type Lee, type LossCause } from './crew';
+import { createLee, damageCrewAt, crossingReady, foesOn, outbound, repairable, standingTile, hurtLee, inArc, jobCounts, leeStat, loseLee, orderJob, stepCrew, tilesWithin, updateMobility, wetFactor, workerAt, type CrewContext, type Lee, type LossCause } from './crew';
 import type { Job } from '../config/lees';
 import type { AiProfile } from '../config/encounters';
 import { boardOrRam, nearSide, steer, type Helm, type HelmWorld, type ManeuverKind } from './helm';
@@ -1214,8 +1214,7 @@ export class World {
       this.orders.place(this, { boat, kind: 'bail', role: 'fixer', tile, part: at.part });
       return null;
     }
-    const f = structureFraction(part);
-    if (f > 0 && f < Math.min(1, Math.max(0, t.crew.repairCeiling)) - 1e-6) {
+    if (repairable(part, t)) {
       this.orders.place(this, { boat, kind: 'repair', role: 'fixer', tile, part: at.part });
       return null;
     }

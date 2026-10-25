@@ -48,7 +48,7 @@ import {
 import { shipName } from '../config/ships';
 import { FACING_ANGLE } from '../config/slots';
 import type { LadderTier, Side, Tuning } from '../config/tuning';
-import { gunOnline, gunSpec, isWrecked, keelSegment, partHasGuns, sinkProgress, structure, structureFraction, type Boat, type GunState } from './boat';
+import { gunOnline, gunSpec, isWrecked, keelSegment, partHasGuns, sinkProgress, structure, structureFraction, type Boat, type GunState, type PartState } from './boat';
 import { sideFacing } from './contact';
 import { canCross, crossings, type Crossing, type RailRef } from './lines';
 import { pathTo, tileAt, type RailState, type Tile } from './grid';
@@ -733,6 +733,12 @@ export function jobSeats(boat: Boat, job: Job, t: Tuning): number {
   return n;
 }
 
+/** Can the crew still mend this part? Below the patch ceiling, and (when allowed) even a wrecked one. */
+export function repairable(part: PartState, t: Tuning): boolean {
+  const f = structureFraction(part);
+  return f < Math.min(1, Math.max(0, t.crew.repairCeiling)) - 1e-6 && (f > 0 || t.crew.wreckedRepairable > 0);
+}
+
 /** Living Lees of this crew in a job. */
 export function jobCrew(boat: Boat, job: Job): Lee[] {
   return boat.crew.lees.filter((l) => l.alive && l.job === job);
@@ -771,10 +777,11 @@ function jobWalk(lee: Lee, job: Job, t: Tuning): number {
 /**
  * Best fit for an order: the Lee not already in `job` with the largest
  * (skill at the new job − skill at its current job). Ties: the shortest walk,
- * then the biggest group, then the lowest id. Returns null when the job has
- * no free seat (sail and fire) or nobody can move.
+ * then the biggest group, then the lowest id. Lees moved within `jobs.reassignGrace`
+ * of `time` stay put. Returns null when the job has no free seat (sail and fire)
+ * or nobody can move.
  */
-export function bestFit(boat: Boat, job: Job, t: Tuning): Lee | null {
+export function bestFit(boat: Boat, job: Job, t: Tuning, time = Infinity): Lee | null {
   if (!jobHasSeat(boat, job, t)) return null;
   const counts: Record<Job, number> = { sail: 0, fire: 0, board: 0, fix: 0 };
   for (const l of boat.crew.lees) if (l.alive) counts[l.job]++;
@@ -782,6 +789,8 @@ export function bestFit(boat: Boat, job: Job, t: Tuning): Lee | null {
   let bestKey: number[] = [];
   for (const l of boat.crew.lees) {
     if (!l.alive || l.job === job) continue;
+    // A Lee you just moved isn't pulled straight off its new job by the next tap (no shuffling the same Lee back and forth).
+    if (time - l.jobSince < Math.max(0, t.jobs.reassignGrace)) continue;
     const key = [-(leeJobSkill(l, job, t) - leeJobSkill(l, l.job, t)), jobWalk(l, job, t), -counts[l.job], l.id];
     if (!best || lexLess(key, bestKey)) {
       best = l;
@@ -800,7 +809,7 @@ function lexLess(a: number[], b: number[]): boolean {
 
 /** One order: move the best-fit Lee into `job`. Returns the Lee moved, or null (full, or nobody to move). */
 export function orderJob(boat: Boat, job: Job, time: number, t: Tuning): Lee | null {
-  const lee = bestFit(boat, job, t);
+  const lee = bestFit(boat, job, t, time);
   if (!lee) return null;
   setJob(lee, job, time, t);
   lee.reason = `ordered to ${job}`;
@@ -906,7 +915,7 @@ export function computeNeeds(boat: Boat, ctx: CrewContext): Need[] {
     // Repair: anything below the patch ceiling that isn't (unrepairably) wrecked.
     const f = structureFraction(part);
     const ceil = Math.min(1, Math.max(0, t.crew.repairCeiling));
-    if (f < ceil - 1e-6 && (f > 0 || t.crew.wreckedRepairable > 0)) {
+    if (repairable(part, t)) {
       const offline = partHasGuns(boat, i) && f <= offlineAt;
       const gating = offline || part.def.role === 'engine';
       const tier: LadderTier = gating ? 'functionDamage' : 'otherDamage';
@@ -945,6 +954,8 @@ interface Option {
   why: string;
   /** Counts as "still needed" for stickiness. */
   needed: boolean;
+  /** A Lee of another job pitching in on repairs or bailing because its own job has nothing to do: it joins readily. */
+  idleHelp: boolean;
 }
 
 /** Seconds to walk from where the Lee is to a tile. */
@@ -1138,9 +1149,11 @@ function evaluate(lee: Lee, need: Need | null, othersOnIt: number, boat: Boat, c
     // Say so when a Lee's stats tipped the choice (debug reason strings).
     if (Math.abs(pts) >= 3) statNote = ` [${pts > 0 ? '+' : '−'}${Math.round(Math.abs(pts))} for ${STAT_LABELS[WORK_STAT[kind]]} ×${sv.toFixed(2)}]`;
   }
-  score -= helpCost(task.type, t) * othersOnIt;
+  // A Lee with nothing to do in its own job (a gunner with no target, a rower with no oars) mends and bails readily.
+  const idleHelp = pass === 2 && lee.job !== 'fix' && (task.type === 'repair' || task.type === 'bail');
+  score -= (idleHelp ? ai.idleHelpPenalty : helpCost(task.type, t)) * othersOnIt;
   // Extra hands only join a job when it's big enough to be worth it (a flood).
-  if (othersOnIt > 0 && helpCost(task.type, t) > 0 && score <= ai.helpThreshold) return null;
+  if (!idleHelp && othersOnIt > 0 && helpCost(task.type, t) > 0 && score <= ai.helpThreshold) return null;
   return {
     lee,
     need,
@@ -1153,6 +1166,7 @@ function evaluate(lee: Lee, need: Need | null, othersOnIt: number, boat: Boat, c
     label: need ? need.label : 'Stand by',
     why: why + statNote,
     needed: urgent || (isCurrent && task.type === 'station'),
+    idleHelp,
   };
 }
 
@@ -1308,9 +1322,9 @@ export function thinkCrew(boat: Boat, ctx: CrewContext): void {
       }
       const k = keep.get(lee.id)!;
       const helpers = joined.get(o.key) ?? 0;
-      const score = o.score - helpCost(o.task.type, t) * helpers;
+      const score = o.score - (o.idleHelp ? ai.idleHelpPenalty : helpCost(o.task.type, t)) * helpers;
       if (!isCurrent && score <= k.value) continue;
-      if (!isCurrent && helpers > 0 && helpCost(o.task.type, t) > 0 && score <= ai.helpThreshold) continue;
+      if (!isCurrent && !o.idleHelp && helpers > 0 && helpCost(o.task.type, t) > 0 && score <= ai.helpThreshold) continue;
       decided.add(lee.id);
       if (o.task.type === 'station') takenStations.add(o.key);
       if (isCurrent) {

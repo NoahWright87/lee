@@ -3,8 +3,9 @@
 // world answers by placing an order (orders.ts) and the best-fit Lee goes.
 // Phase 8 adds "flee this danger zone" and "stab the stunned head" as entries here.
 
-import { structureFraction, type Boat } from './boat';
+import type { Boat } from './boat';
 import { leeWorldPos } from './combat';
+import { repairable } from './crew';
 import { railPoint, railsOf, tileWorld } from './lines';
 import { dist, type Vec } from './math';
 import type { World } from './world';
@@ -80,9 +81,8 @@ export function deckTargets(w: World, decks: Boat[]): DeckTarget[] {
   me.grid.tiles.forEach((tile) => {
     const part = me.parts[tile.part];
     const fill = part.capacity > 0 ? part.water / part.capacity : 0;
-    const f = structureFraction(part);
     const flooded = fill > Math.max(ai.moderateWaterAt * 0.5, ai.bailStopAt);
-    const damaged = f > 0 && f < Math.min(1, Math.max(0, t.crew.repairCeiling)) - 1e-6;
+    const damaged = repairable(part, t);
     if (!flooded && !damaged) return;
     add({
       id: `tile:${tile.index}`,

@@ -5,7 +5,7 @@ import { defaultStopTuning } from './sea';
 import { defaultShipStats, type ShipStats } from './ships';
 
 /** Bump when the tuning shape changes incompatibly (saved tuning from another version is dropped). */
-export const TUNING_VERSION = 6;
+export const TUNING_VERSION = 7;
 
 // Every gameplay number lives here. The sim reads from a live Tuning object, so
 // most changes apply the next frame. Values marked "next run" in the tuning
@@ -311,6 +311,8 @@ export function defaultTuning() {
       holdDelay: 0.4,
       /** ...then one more Lee every this many seconds. */
       holdRepeat: 0.3,
+      /** A Lee you just moved to a job isn't pulled off it by the next order for this long, s (so tapping around doesn't shuffle the same Lee back and forth). */
+      reassignGrace: 4,
       /** Stopped (tap your own boat): fixing (repair, bailing, pumping) × this... */
       stoppedFix: 1.25,
       /** ...and gunner aim × this (one bonus pair; they don't stack). */
@@ -368,9 +370,9 @@ export function defaultTuning() {
       /** Most a crew can push speed/turning (× the ship's own numbers). */
       mobilityCap: 1.5,
       /** Repairs can only bring a part back to this fraction of its max HP. */
-      repairCeiling: 0.6,
+      repairCeiling: 0.85,
       /** 1 = parts at 0 HP can be repaired mid-fight, 0 = wrecked stays wrecked. */
-      wreckedRepairable: 0,
+      wreckedRepairable: 1,
       /** A part this full of water (fraction of capacity) slows the Lees in it. */
       wetThreshold: 0.3,
       /** Work and walking speed lost while wet (0..1). */
@@ -390,6 +392,8 @@ export function defaultTuning() {
       walkPenalty: 3,
       /** Points lost per Lee already on a repair/bail job (so extra hands help only when nothing else needs them). */
       helpPenalty: 45,
+      /** The same, for a Lee whose own job has nothing to do (an idle gunner or rower pitches in readily: it would only stand there). */
+      idleHelpPenalty: 8,
       /** A second Lee only joins a repair/bail job if it still scores above this after the help penalty (a flood does; a scratch doesn't). */
       helpThreshold: 50,
       /** Points per +1.0 of the stat a task uses: within a job, the best-qualified Lee takes the work (a tiebreaker). */
