@@ -11,7 +11,7 @@ import { defaultBuild, type BoatBuild } from '../src/sim/loadout';
 import type { Vec } from '../src/sim/math';
 import { archetypeSetup, autoArrange, type BoatSetup, type CrewSpec } from '../src/sim/setup';
 import { FIXED_DT } from '../src/sim/steering';
-import { World } from '../src/sim/world';
+import { defaultPlayerSetup, World } from '../src/sim/world';
 
 function quiet(t: Tuning): Tuning {
   t.boat.flooding.bilgeRate = 0;
@@ -722,5 +722,78 @@ describe('breaking away and boarding rewards (§9, §10)', () => {
     const apart = duel({ gap: 60, myCrew: [[1, 1], [2, 1]], theirCrew: [[1, 1]], tune: (t) => (t.spoils.midSurrender = 1) });
     run(apart.w, 1, apart.hold);
     expect(apart.w.defectors()).toBeNull();
+  });
+});
+
+describe('BOARD does the rest (Friend Ship playtest)', () => {
+  /** Your Friend Ship against a moving enemy; all you do is tap the enemy and press BOARD. */
+  function boardFight(type: string, seed: number, seconds = 100) {
+    const t = quiet(defaultTuning());
+    const w = new World(t, seed, { player: defaultPlayerSetup(t, 7, 'friend'), enemies: [archetypeSetup(type, t, seed)], assists: false });
+    w.start();
+    const e = w.enemies[0];
+    w.targetEnemy(e);
+    let pressed = 0;
+    let first = -1;
+    run(w, seconds, () => {
+      // Hold BOARD down a few times as the ships close, like a player would.
+      if (pressed < 4 && w.time > 6 + pressed * 2) {
+        w.order('board');
+        pressed++;
+      }
+      if (first < 0 && w.stats.player.boardings > 0) first = w.time;
+    });
+    return { w, e, first };
+  }
+
+  test('with no taps beyond the enemy and BOARD, a Friend Ship gets Lees across a moving ship', () => {
+    for (const type of ['standard', 'heavy']) {
+      const wins = [1, 2, 3, 4, 5].filter((seed) => boardFight(type, seed).w.stats.player.boardings > 0).length;
+      expect(wins).toBeGreaterThanOrEqual(4);
+    }
+  });
+
+  test('it hooks, lowers planks and sends ropes by itself, and a manual tap still works alongside it', () => {
+    const { w } = boardFight('standard', 2);
+    expect(w.stats.player.hooksThrown).toBeGreaterThan(0);
+    expect(w.stats.player.hooksLanded).toBeGreaterThan(0);
+  });
+
+  test('steering off turns it off: nothing keeps hooking a ship you are sailing away from', () => {
+    const d = duel({ gap: 6, mine: { ...HOOKS, ...ROPES }, myCrew: [[1, 1], [2, 2]], myJob: 'board', hooks: 0 });
+    const { w } = d;
+    w.targetEnemy(w.enemies[0]);
+    run(w, 5, d.hold);
+    expect(w.stats.player.hooksThrown).toBeGreaterThan(0);
+    for (const line of [...w.lines.lines]) w.cutLine(line);
+    w.setHelm({ kind: 'heading', h: Math.PI });
+    expect(w.boardingOn).toBe(false);
+    const thrown = w.stats.player.hooksThrown;
+    run(w, 20, d.hold);
+    expect(w.stats.player.hooksThrown).toBe(thrown);
+    // Stopping does not break it off.
+    w.targetEnemy(w.enemies[0]);
+    w.setHelm({ kind: 'stop' });
+    expect(w.boardingOn).toBe(true);
+  });
+
+  test('tap a gun to man THAT gun: the nearest Lee goes, takes the station\'s job, and stays there', () => {
+    const t = quiet(defaultTuning());
+    const mine: BoatBuild = defaultBuild('basic');
+    const w = new World(t, 3, { player: { build: mine, crew: crewAt(mine, [[1, 1], [0, 0], [2, 1]], 'sail') }, enemies: [enemy(t, 'standard', 0)], assists: false });
+    w.start();
+    const gun = w.player.grid.tiles.find((x) => x.station === 'gun' && x.fixture)!;
+    expect(w.tapStation(w.player, gun.index)).toBeNull();
+    run(w, 6, () => pin(w.enemies[0], { x: 0, y: -600 }));
+    const gunner = w.player.crew.lees.find((l) => l.task.type === 'station' && l.task.target === gun.index)!;
+    expect(gunner).toBeDefined();
+    expect(gunner.job).toBe('fire');
+    expect(gunner.working).toBe(true);
+    // Another tap on a manned station is refused; changing the Lee's job ends the hold.
+    expect(w.tapStation(w.player, gun.index)).toMatch(/already/);
+    expect(w.orders.list.filter((o) => o.kind === 'man')).toHaveLength(1);
+    gunner.job = 'sail';
+    run(w, 1, () => pin(w.enemies[0], { x: 0, y: -600 }));
+    expect(w.orders.list.filter((o) => o.kind === 'man')).toHaveLength(0);
   });
 });

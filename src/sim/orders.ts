@@ -12,14 +12,14 @@
 // "flee this danger zone" and "stab the stunned head" are more entries here.
 
 import type { Job } from '../config/lees';
-import { structureFraction, type Boat } from './boat';
-import { isWounded, leeStat, repairable, setDestination, takeOrder, type Lee } from './crew';
+import { isWrecked, structureFraction, type Boat } from './boat';
+import { isWounded, leeStat, repairable, setDestination, setJob, STATION_JOB, takeOrder, type Lee } from './crew';
 import type { Line, RailRef } from './lines';
 import { railGap, railPoint } from './lines';
 import { dist, toLocal } from './math';
 import type { World } from './world';
 
-export type OrderKind = 'throw' | 'lower' | 'push' | 'cutLine' | 'wreckPlank' | 'cutRope' | 'bail' | 'repair';
+export type OrderKind = 'throw' | 'lower' | 'push' | 'cutLine' | 'wreckPlank' | 'cutRope' | 'bail' | 'repair' | 'man';
 
 /** Who answers: a cutter is ⚔️ or 🛠️ (whichever is closer and free), a fixer is 🛠️, anyone else: whoever is nearest. */
 export type OrderRole = 'cutter' | 'fixer' | 'nearest';
@@ -39,6 +39,10 @@ export interface DeckOrder {
   swinger?: Lee;
   /** bail, repair: the hull part. */
   part?: number;
+  /** man: the job the Lee was given with the station (change its job and the order ends). */
+  job?: Job;
+  /** man: a Lee took it (so the order ends with that Lee instead of grabbing another). */
+  taken?: boolean;
   /** Lees wanted on it (repeated taps add more). */
   wanted: number;
   /** Lees assigned (ids). */
@@ -60,6 +64,7 @@ export const ORDER_LABEL: Record<OrderKind, string> = {
   cutRope: 'Cut the rope',
   bail: 'Bail here',
   repair: 'Repair here',
+  man: 'Man this station',
 };
 
 /** Jobs that answer an order of each role straight away; anyone else only after a short wait (you're never stuck). */
@@ -78,13 +83,13 @@ export class OrderSystem {
   }
 
   /** The order on this target already (so a second tap adds a Lee instead). */
-  find(boat: Boat, kind: OrderKind, target: { rail?: RailRef; line?: Line; swinger?: Lee; part?: number }): DeckOrder | undefined {
-    return this.list.find((o) => o.boat === boat && o.kind === kind && o.rail?.rail === target.rail?.rail && o.line === target.line && o.swinger === target.swinger && o.part === target.part);
+  find(boat: Boat, kind: OrderKind, target: { rail?: RailRef; line?: Line; swinger?: Lee; part?: number; tile?: number }): DeckOrder | undefined {
+    return this.list.find((o) => o.boat === boat && o.kind === kind && o.rail?.rail === target.rail?.rail && o.line === target.line && o.swinger === target.swinger && o.part === target.part && (kind !== 'man' || o.tile === target.tile));
   }
 
   /** Place an order, or add a Lee to the one already there. */
   place(w: World, order: Omit<DeckOrder, 'id' | 'lees' | 'progress' | 'since' | 'wanted' | 'left'> & { wanted?: number }): DeckOrder {
-    const old = this.find(order.boat, order.kind, order);
+    const old = this.find(order.boat, order.kind, { rail: order.rail, line: order.line, swinger: order.swinger, part: order.part, tile: order.tile });
     const cap = order.kind === 'cutLine' || order.kind === 'wreckPlank' || order.kind === 'bail' || order.kind === 'repair' ? 3 : 1;
     if (old) {
       old.wanted = Math.min(cap, old.wanted + (order.wanted ?? 1));
@@ -137,6 +142,16 @@ export class OrderSystem {
       case 'repair': {
         return repairable(o.boat.parts[o.part!], t);
       }
+      case 'man': {
+        const tile = o.boat.grid.tiles[o.tile];
+        if (!tile?.station || !tile.fixture || tile.fixture.destroyed || isWrecked(o.boat.parts[tile.part])) return false;
+        // Once a Lee has it, the order ends with that Lee (or when you change its job).
+        if (o.taken) {
+          const lee = o.lees.length ? w.findLee(o.lees[0])?.lee : undefined;
+          return !!lee && lee.alive && lee.job === o.job;
+        }
+        return true;
+      }
     }
   }
 
@@ -171,6 +186,7 @@ export class OrderSystem {
       }
       case 'bail':
       case 'repair':
+      case 'man':
         return o.tile;
     }
   }
@@ -208,7 +224,7 @@ export class OrderSystem {
       // Drop Lees that can't carry on (dead, caught in a fight, swinging).
       o.lees = o.lees.filter((id) => {
         const lee = w.findLee(id)?.lee;
-        const ok = !!lee && lee.alive && !lee.swing && lee.deck === o.boat && !lee.engaged && lee.order === o.id;
+        const ok = !!lee && lee.alive && !lee.swing && lee.deck === o.boat && (!lee.engaged || o.kind === 'man') && lee.order === o.id;
         if (!ok && lee && lee.order === o.id) lee.order = null;
         return ok;
       });
@@ -219,6 +235,12 @@ export class OrderSystem {
           if (o.lees.length >= o.wanted) break;
           o.lees.push(lee.id);
           takeOrder(lee, o.id, o.tile, `${ORDER_LABEL[o.kind]}: tapped`, w.time);
+          if (o.kind === 'man') {
+            // It takes the station's job with it, so the crew AI and the buttons agree where it belongs.
+            o.job = STATION_JOB[o.boat.grid.tiles[o.tile].station!];
+            setJob(lee, o.job, w.time, w.tuning);
+            o.taken = true;
+          }
           w.events.push({ type: 'order', boatId: o.boat.id, leeId: lee.id, job: lee.job });
         }
       }
@@ -227,6 +249,7 @@ export class OrderSystem {
       for (const id of o.lees) {
         const lee = w.findLee(id)!.lee;
         if (o.kind === 'bail' || o.kind === 'repair') lee.task = { type: o.kind, target: o.part! };
+        if (o.kind === 'man') lee.task = { type: 'station', target: o.tile };
         if (lee.dest !== o.tile) setDestination(lee, o.tile, o.boat);
         if (lee.working && lee.tile === o.tile && !lee.path.length) here.push(lee);
       }
@@ -264,6 +287,12 @@ export class OrderSystem {
             w.cutRope(o.swinger!);
             this.remove(w, o);
           }
+          break;
+        }
+        case 'man': {
+          const lee = here[0];
+          if (lee.task.type !== 'station' || lee.task.target !== o.tile) lee.task = { type: 'station', target: o.tile };
+          o.progress = 1;
           break;
         }
         case 'bail':

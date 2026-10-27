@@ -263,6 +263,11 @@ export class World {
   helm: Helm = { kind: 'drift' };
   /** The enemy you tapped: the ⚔️ target (null = none). */
   boardTargetId: number | null = null;
+  /** BOARD is on: your ⚔️ Lees throw hooks, lower planks and send ropes themselves (until you steer away). */
+  boardingOn = false;
+  private nextAuto = 0;
+  /** Taps made by the crew itself don't toast a refusal. */
+  private quietTaps = false;
   /** BOARD or RAM for the ⚔️ button (kept between frames for the hysteresis). */
   private maneuverLabel: ManeuverKind | null = null;
   readonly stats: Record<Side, SideStats> = { player: emptyStats(), enemy: emptyStats() };
@@ -475,6 +480,8 @@ export class World {
   setHelm(h: Helm): void {
     if (this.player.sinkingSince !== null) return;
     this.helm = h;
+    // Steering off breaks it off: nothing keeps hooking (or boarding) a ship you're sailing away from. Stopping doesn't.
+    if (h.kind === 'point' || h.kind === 'heading' || h.kind === 'orbit' || h.kind === 'retreat') this.boardingOn = false;
   }
 
   /** Tap an enemy: it's your ⚔️ target, and you head for it to BOARD or RAM (whichever the angle says). */
@@ -482,6 +489,7 @@ export class World {
     if (e.side === this.player.side || this.isOut(e)) return;
     if (this.boardTargetId !== e.id) this.maneuverLabel = null;
     this.boardTargetId = e.id;
+    this.boardingOn = true;
     this.startManeuver();
   }
 
@@ -504,6 +512,7 @@ export class World {
   order(job: Job, boat: Boat = this.player): Lee | null {
     if (boat === this.player && job === 'board') {
       if (!this.playerBoardTarget()) return null;
+      this.boardingOn = true;
       this.startManeuver();
     }
     const lee = orderJob(boat, job, this.time, this.tuning);
@@ -766,6 +775,7 @@ export class World {
       }
       this.orders.step(this, dt);
       this.stepRails();
+      this.autoBoard();
       this.stepSurrender();
       this.stepCombat(dt);
     }
@@ -1121,8 +1131,7 @@ export class World {
   }
 
   private refuse(boat: Boat, why: string): string {
-
-    this.events.push({ type: 'tapRefused', boatId: boat.id, why });
+    if (!this.quietTaps) this.events.push({ type: 'tapRefused', boatId: boat.id, why });
     return why;
   }
 
@@ -1221,6 +1230,16 @@ export class World {
     return this.refuse(boat, 'nothing to fix there');
   }
 
+  /** A tap on a station (a gun, oars, sails...): the nearest Lee goes and mans exactly that one, taking its job with it. */
+  tapStation(boat: Boat, tile: number): string | null {
+    if (this.result || this.isSinking(boat)) return this.refuse(boat, 'the fight is over');
+    const at = boat.grid.tiles[tile];
+    if (!at?.station || !at.fixture || at.fixture.destroyed || isWrecked(boat.parts[at.part])) return this.refuse(boat, 'nothing to man there');
+    if (workerAt(boat, tile)) return this.refuse(boat, 'someone is already there');
+    this.orders.place(this, { boat, kind: 'man', role: 'nearest', tile });
+    return null;
+  }
+
   /** A tap on an enemy deck tile: this boat's boarders over there head for it first. */
   focusDeck(boat: Boat, deck: Boat, tile: number): string | null {
     if (this.result || this.isSinking(boat)) return this.refuse(boat, 'the fight is over');
@@ -1274,6 +1293,39 @@ export class World {
   crossingsReady(boat: Boat = this.player): number {
     const target = this.boardTargetOf(boat);
     return target ? outbound(boat, target, this.tuning).filter((c) => crossingReady(c, boat, this.time)).length : 0;
+  }
+
+  /**
+   * BOARD does the rest, the way FIRE sends Lees to cannons: once you've pressed BOARD (or tapped an
+   * enemy) and have ⚔️ Lees, your crew throws hooks at the target while it's in reach and facing,
+   * lowers planks onto a hull within reach, and sends a Lee over each rope with one waiting at it.
+   * Steering off (a heading, a point, an orbit) turns it off, so breaking away stays possible.
+   * Taps on the rails are for fine control.
+   */
+  private autoBoard(): void {
+    const me = this.player;
+    if (!this.boardingOn || this.result || this.isSinking(me) || this.time < this.nextAuto) return;
+    const target = this.playerBoardTarget();
+    if (!target || this.isOut(target)) return;
+    if (jobCounts(me).board === 0) return;
+    const t = this.tuning;
+    this.nextAuto = this.time + Math.max(0.1, t.lines.autoInterval);
+    this.quietTaps = true;
+    const lined = this.lines.between(me, target).filter((l) => l.owner === me).length + this.lines.flights.filter((f) => f.owner === me && f.target === target).length + this.orders.of(me).filter((o) => o.kind === 'throw').length;
+    let hooks = lined;
+    for (const ref of railsOf(me, 'hook')) {
+      if (hooks >= Math.max(0, Math.round(t.lines.autoHooks))) break;
+      if (ref.rail.out || ref.rail.readyAt > this.time || !hookReaches(ref, target, t) || this.orders.find(me, 'throw', { rail: ref })) continue;
+      if (this.tapRail(ref) === null) hooks++;
+    }
+    for (const ref of railsOf(me, 'planks')) {
+      if (!ref.rail.lowered && railGap(me, ref.tile, target, ref.rail) <= Math.max(0, t.lines.plankReach) && !this.orders.find(me, 'lower', { rail: ref })) this.tapRail(ref);
+    }
+    for (const ref of railsOf(me, 'rope')) {
+      const waiting = me.crew.lees.some((l) => l.alive && l.deck === me && !l.swing && l.task.type === 'board' && !l.path.length && standingTile(l) === ref.tile.index);
+      if (waiting && ref.rail.pending === 0 && ref.rail.readyAt <= this.time && railGap(me, ref.tile, target, ref.rail) <= ropeReach(t, ref.rail.item)) this.tapRail(ref);
+    }
+    this.quietTaps = false;
   }
 
   // -------- enemy: close quarters

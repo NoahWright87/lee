@@ -262,6 +262,9 @@ export function defaultTuning() {
     lines: {
       /** Hook reach: × pistol range, measured from the hook's rail tile to the other hull, m (× the item's range). */
       hookRange: 1,
+      /** BOARD throws hooks itself, up to this many lines at once, checking every this many seconds. */
+      autoHooks: 2,
+      autoInterval: 0.4,
       /** Seconds a thrown hook is in the air (the throw is telegraphed). Steer away before it lands to dodge it. */
       hookFlight: 1,
       /** A hook lands if its aim point is within this many m of the other hull when it arrives. */
@@ -282,8 +285,8 @@ export function defaultTuning() {
       closeGap: 1.2,
       /** Rope swing reach, m from the rope's rail to the other hull (× the item's reach). */
       ropeRange: 4,
-      /** A plank can be lowered onto a hull this close, m. */
-      plankReach: 2,
+      /** A plank can be lowered onto a hull this close, m (BOARD lowers them for you when you're this close). */
+      plankReach: 3,
       /** A lowered plank is destroyed after this much damage. */
       plankHp: 6,
       /** Seconds between Lees stepping onto one plank. */

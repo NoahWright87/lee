@@ -3,14 +3,14 @@
 // world answers by placing an order (orders.ts) and the best-fit Lee goes.
 // Phase 8 adds "flee this danger zone" and "stab the stunned head" as entries here.
 
-import type { Boat } from './boat';
+import { isWrecked, type Boat } from './boat';
 import { leeWorldPos } from './combat';
 import { repairable } from './crew';
 import { railPoint, railsOf, tileWorld } from './lines';
 import { dist, type Vec } from './math';
 import type { World } from './world';
 
-export type TargetKind = 'enemyRope' | 'line' | 'enemyPlank' | 'hook' | 'rope' | 'planks' | 'pole' | 'bail' | 'repair' | 'foeTile';
+export type TargetKind = 'enemyRope' | 'line' | 'enemyPlank' | 'hook' | 'rope' | 'planks' | 'pole' | 'station' | 'bail' | 'repair' | 'foeTile';
 
 export interface DeckTarget {
   /** Stable while the thing exists (for markers). */
@@ -33,7 +33,7 @@ export interface DeckTarget {
   boat: Boat;
 }
 
-const PRIORITY: Record<TargetKind, number> = { enemyRope: 0, line: 1, enemyPlank: 2, hook: 3, rope: 3, planks: 3, pole: 3, bail: 4, repair: 5, foeTile: 6 };
+const PRIORITY: Record<TargetKind, number> = { enemyRope: 0, line: 1, enemyPlank: 2, hook: 3, rope: 3, planks: 3, pole: 3, station: 3.5, bail: 4, repair: 5, foeTile: 6 };
 
 /** Everything on your deck (and the enemy decks in view) that a tap can do something with, right now. */
 export function deckTargets(w: World, decks: Boat[]): DeckTarget[] {
@@ -75,6 +75,11 @@ export function deckTargets(w: World, decks: Boat[]): DeckTarget[] {
     const lee = l;
     const c = leeWorldPos(lee);
     add({ id: `rope:${lee.id}`, kind: 'enemyRope', a: c, radius: 2.4, label: 'cut the rope', role: 'board or fix', tap: () => w.tapRope(lee, me) });
+  }
+  // A station on your deck (a gun, oars, sails...): man THIS one. Fine control; the job buttons do the rest.
+  for (const tile of me.grid.tiles) {
+    if (!tile.station || !tile.fixture || tile.fixture.destroyed || isWrecked(me.parts[tile.part])) continue;
+    add({ id: `station:${tile.index}`, kind: 'station', a: tileWorld(me, tile), radius: Math.min(me.grid.tileW, me.grid.tileH) * 0.5, label: `${tile.label}: man it`, role: 'nearest', tap: () => w.tapStation(me, tile.index) });
   }
   // Flooded or damaged tiles of your own deck.
   const ai = t.crewAI;

@@ -4,6 +4,7 @@ Phase 7 ("Close Quarters", [`PRD_PHASE7.md`](PRD_PHASE7.md)) is built in its fiv
 
 ## Phase 7 open questions (PRD §16) and things to watch in playtest
 
+- [ ] **Auto-boarding scope.** BOARD hooks, lowers planks and sends ropes for you, but never cuts a line or destroys a plank (those are the taps). It also stays on after the boats part if you only stopped; check it doesn't re-hook something you meant to let go.
 - [ ] **Who cuts lines?** Built as ⚔️ or 🛠️, whichever is closer and free, with any Lee after `lines.answerFallback` (1.5 s). Is that right, or should it be whoever is nearest?
 - [ ] **Ropes** are now only a rail item (the treasure is gone). An old save with the treasure equipped just carries an inert item.
 - [ ] **No rope or plank = can't board.** There's no slow climb across once the hulls touch.

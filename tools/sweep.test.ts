@@ -10,8 +10,8 @@
 // the first destination; at sea it follows the map's guaranteed route (the
 // fights on the way are the fights it gets). In a fight the captain plays each
 // ship's style: the Friend Ship targets the enemy (the BOARD/RAM autopilot),
-// sends most of its crew to ⚔️ as it closes, throws its hooks, lowers its
-// planks and sends Lees over its ropes; the Long Distance Relation Ship orbits
+// sends most of its crew to ⚔️ as it closes (BOARD then throws its hooks,
+// lowers its planks and sends Lees over its ropes by itself); the Long Distance Relation Ship orbits
 // at long-gun range, the rest orbit at cannon range. Every other ship cuts any
 // line that holds it and mashes ⏩ to get its oars manned (it never kites or
 // dodges), so a person does better: read the numbers as
@@ -22,7 +22,6 @@
 import { test } from 'vitest';
 import { defaultTuning, type Tuning } from '../src/config/tuning';
 import { structureFraction } from '../src/sim/boat';
-import { railsOf } from '../src/sim/lines';
 import { rngFor } from '../src/sim/math';
 import { buy, buyHealAll, buyRepair, enterPort, makePlan } from '../src/sim/port';
 import { answerSurrender, applyFight, pickCapture, hullShare, autoEquipAll, cargo, discard, enemySetups, finishPost, newRun, setupFor, takeReward, type RunState } from '../src/sim/run';
@@ -33,20 +32,12 @@ import { World } from '../src/sim/world';
 const SEEDS = Math.max(1, Number(process.env.SWEEP_SEEDS ?? 4));
 const JOURNEYS = Math.max(1, Number(process.env.SWEEP_JOURNEYS ?? 3));
 
-/** Close quarters for the scripted captain: the Friend Ship boards, everyone else cuts lines and breaks away. */
+/** Close quarters for the scripted captain: the Friend Ship just presses BOARD (the crew hooks, planks and ropes itself); everyone else cuts lines and breaks away. */
 function quarters(w: World, ship: string): void {
   const p = w.player;
-  if (ship !== 'friend') {
-    for (const line of w.lines.linesOf(p)) if (!w.orders.find(p, 'cutLine', { line })) w.tapLine(line, p);
-    if (w.lines.held(p) && w.orders.list.some((o) => o.boat === p && o.kind === 'cutLine')) w.order('sail');
-    return;
-  }
-  for (const ref of railsOf(p, 'hook')) if (!ref.rail.out && ref.rail.readyAt <= w.time && w.lines.between(p, w.liveEnemies()[0] ?? w.enemies[0]).length < 2) w.tapRail(ref);
-  for (const ref of railsOf(p, 'planks')) if (!ref.rail.lowered && !w.orders.find(p, 'lower', { rail: ref })) w.tapRail(ref);
-  for (const ref of railsOf(p, 'rope')) {
-    const waiting = p.crew.lees.some((l) => l.alive && l.deck === p && !l.swing && l.task.type === 'board' && !l.path.length && l.tile === ref.tile.index);
-    if (waiting && ref.rail.pending === 0 && ref.rail.readyAt <= w.time) w.tapRail(ref);
-  }
+  if (ship === 'friend') return;
+  for (const line of w.lines.linesOf(p)) if (!w.orders.find(p, 'cutLine', { line })) w.tapLine(line, p);
+  if (w.lines.held(p) && w.orders.list.some((o) => o.boat === p && o.kind === 'cutLine')) w.order('sail');
 }
 
 /** Fight the set-up encounter with the scripted captain. */

@@ -93,7 +93,10 @@ function orderPos(world: World, o: DeckOrder): Vec | null {
       return { x: lerp(from.x, to.x, k), y: lerp(from.y, to.y, k) };
     }
     case 'bail':
-    case 'repair': {
+    case 'repair':
+    case 'man': {
+      // A man order is marked while the Lee walks there; once it's on the station the order just holds it there.
+      if (o.kind === 'man' && o.progress >= 1) return null;
       const tile = boat.grid.tiles[o.tile];
       return tile ? toWorld(tile.center, boat.motion, boat.motion.heading) : null;
     }
