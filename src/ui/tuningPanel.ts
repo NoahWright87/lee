@@ -112,6 +112,7 @@ const RANGES: Record<string, Range> = {
   mobility: [0, 150, 1],
   lookout: [0, 150, 1],
   idleCannon: [0, 150, 1],
+  cover: [0, 150, 1],
   severitySpan: [0, 50, 1],
   setupOceanFraction: [0.3, 0.75, 0.01],
   expandedOceanFraction: [0.25, 0.75, 0.01],

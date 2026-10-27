@@ -51,15 +51,15 @@ import type { LadderTier, Side, Tuning } from '../config/tuning';
 import { gunOnline, gunSpec, isWrecked, keelSegment, partHasGuns, sinkProgress, structure, structureFraction, type Boat, type GunState, type PartState } from './boat';
 import { sideFacing } from './contact';
 import { canCross, crossings, type Crossing, type RailRef } from './lines';
-import { pathTo, tileAt, type RailState, type Tile } from './grid';
+import { pathTo, tileAt, type Grid, type RailState, type Tile } from './grid';
 import { itemParam, type StatMods } from './loadout';
 import { closestOnSegment, dist, toLocal, toWorld, wrapAngle, type Vec } from './math';
 
-export type TaskType = 'station' | 'repair' | 'bail' | 'idle' | 'board' | 'repel' | 'stage';
+export type TaskType = 'station' | 'repair' | 'bail' | 'idle' | 'board' | 'repel' | 'stage' | 'cover';
 
 export interface Task {
   type: TaskType;
-  /** Station: tile index. Repair/bail: part index. Board: boat id. Repel: the boarder's Lee id. Stage: boat id. Idle: -1. */
+  /** Station: tile index. Repair/bail: part index. Board: boat id. Repel: the boarder's Lee id. Stage: boat id. Cover: -1. Idle: -1. */
   target: number;
 }
 
@@ -176,6 +176,10 @@ export interface Lee {
   order: number | null;
   /** Sharing a tile with an opposing Lee: fighting, nothing else. */
   engaged: boolean;
+  /** Outnumbered on its tile (more opposing Lees than its own side): it can't leave, retreat, or swing away. */
+  locked: boolean;
+  /** Seconds it has wanted to step somewhere it can't (a full tile, a Lee in the way). */
+  blockedFor: number;
   /** Wounded (below boarding.retreatAt) with enemies around: falling back, shooting instead of fighting. */
   retreating: boolean;
   /** Opposing Lee it is hitting (debug). */
@@ -240,7 +244,7 @@ export interface CrewContext {
   retreating?: boolean;
 }
 
-const TYPE_ORDER: Record<TaskType, number> = { station: 0, repair: 1, bail: 2, repel: 3, board: 4, stage: 5, idle: 6 };
+const TYPE_ORDER: Record<TaskType, number> = { station: 0, repair: 1, bail: 2, repel: 3, board: 4, stage: 5, cover: 6, idle: 7 };
 export const STATION_WORK: Record<StationKind, WorkKind> = { gun: 'gun', oars: 'row', sails: 'sail', lookout: 'lookout', pump: 'pump', powder: 'powder' };
 /** The job whose own work a station is. */
 export const STATION_JOB: Record<StationKind, Job> = { gun: 'fire', oars: 'sail', sails: 'sail', lookout: 'fire', pump: 'fix', powder: 'fire' };
@@ -358,6 +362,8 @@ export function createLee(id: number, number: number, def: LeeDef, side: Side, b
     defected: false,
     order: null,
     engaged: false,
+    locked: false,
+    blockedFor: 0,
     retreating: false,
     meleeTarget: null,
     meleeCd: 0.5,
@@ -911,6 +917,13 @@ export function computeNeeds(boat: Boat, ctx: CrewContext): Need[] {
     }
   }
 
+  // Close combat across a gap: 🔫 Lees with no gun that can fire take a spot on their rail within pistol range
+  // of the enemy Lees over there, and shoot (the same pistols everyone carries, but they have to be in range).
+  if (coverTiles(boat, lees, t).size) {
+    const task: Task = { type: 'cover', target: -1 };
+    out.push({ key: taskKey(task), task, tier: 'cover', base: L.cover + span * 0.5, label: 'Firing line', why: 'enemy Lees across the gap: shoot them', job: 'fire', useful: true });
+  }
+
   boat.parts.forEach((part, i) => {
     // Repair: anything below the patch ceiling that isn't (unrepairably) wrecked.
     const f = structureFraction(part);
@@ -999,6 +1012,22 @@ function destFor(lee: Lee, task: Task, boat: Boat, t: Tuning, ctx: CrewContext):
     if (!target) return -1;
     return stagingTile(lee, boat, target, lees, t);
   }
+  if (task.type === 'cover') {
+    // Where it already is, if a pistol still reaches from there; else the nearest tile with room, closest to the enemy.
+    const spots = coverTiles(boat, lees, t);
+    if (lee.task.type === 'cover' && spots.has(lee.dest) && hasRoom(boat, lee.dest, lees, t, lee)) return lee.dest;
+    let best = -1;
+    let bestCost = Infinity;
+    for (const [i, near] of spots) {
+      if (!hasRoom(boat, i, lees, t, lee)) continue;
+      const cost = near + walkTime(lee, i, boat, t) * 2 + (boat.grid.tiles[i].station ? 1.5 : 0);
+      if (cost < bestCost - 1e-9) {
+        bestCost = cost;
+        best = i;
+      }
+    }
+    return best;
+  }
   if (task.type === 'repel') {
     const e = lees.find((l) => l.id === task.target);
     if (!e || !e.alive || e.deck !== boat || e.swing) return -1;
@@ -1045,6 +1074,31 @@ function destFor(lee: Lee, task: Task, boat: Boat, t: Tuning, ctx: CrewContext):
   return best;
 }
 
+/** Opposing Lees standing on a deck other than this boat's, with their world positions. */
+function foesAcross(boat: Boat, lees: Lee[]): { lee: Lee; at: Vec }[] {
+  const out: { lee: Lee; at: Vec }[] = [];
+  for (const o of lees) {
+    if (!o.alive || o.swing || o.side === boat.side || o.deck === boat || o.deck.sinkingSince !== null) continue;
+    out.push({ lee: o, at: toWorld(o.pos, o.deck.motion, o.deck.motion.heading) });
+  }
+  return out;
+}
+
+/** Tiles of this deck from which a pistol reaches an enemy Lee across the gap, with the distance to the nearest one. */
+export function coverTiles(boat: Boat, lees: Lee[], t: Tuning): Map<number, number> {
+  const out = new Map<number, number>();
+  const foes = foesAcross(boat, lees);
+  if (!foes.length) return out;
+  const reach = Math.max(0, t.pistol.range) * 0.9;
+  for (const tile of boat.grid.tiles) {
+    const w = toWorld(tile.center, boat.motion, boat.motion.heading);
+    let near = Infinity;
+    for (const f of foes) near = Math.min(near, dist(w, f.at));
+    if (near <= reach) out.set(tile.index, near);
+  }
+  return out;
+}
+
 /** The boarding party's spot: a tile on the edge facing the target (plain deck first, nearest the target), with room. */
 function stagingTile(lee: Lee, boat: Boat, target: Boat, lees: Lee[], t: Tuning): number {
   const side = sideFacing(boat, target.motion);
@@ -1068,7 +1122,7 @@ function stagingTile(lee: Lee, boat: Boat, target: Boat, lees: Lee[], t: Tuning)
 
 /** Points lost per other Lee already on this kind of job. Boarding has none; fighting boarders little (ganging up works). */
 function helpCost(type: TaskType, t: Tuning): number {
-  if (type === 'board' || type === 'stage' || type === 'idle' || type === 'station') return 0;
+  if (type === 'board' || type === 'stage' || type === 'idle' || type === 'station' || type === 'cover') return 0;
   if (type === 'repel') return Math.max(0, t.boarding.repelHelpPenalty);
   return t.crewAI.helpPenalty;
 }
@@ -1201,6 +1255,7 @@ function endedWhy(lee: Lee, boat: Boat, t: Tuning): string {
   if (task.type === 'bail') return 'dry';
   if (task.type === 'board') return 'nobody to board';
   if (task.type === 'stage') return 'no target';
+  if (task.type === 'cover') return 'nobody in pistol range';
   if (task.type === 'repel') return 'boarder gone';
   return 'done';
 }
@@ -1217,6 +1272,8 @@ function describeTask(task: Task, boat: Boat): string {
       return 'Board';
     case 'stage':
       return 'Boarding party';
+    case 'cover':
+      return 'Firing line';
     case 'repel':
       return 'Repel boarder';
     default:
@@ -1441,8 +1498,9 @@ export function stepCrew(boat: Boat, ctx: CrewContext, dt: number): CrewStepResu
       lee.progress = 0;
       continue;
     }
-    // Fighters hold their tile; the wounded break away.
-    if (!lee.engaged || lee.retreating) walk(lee, lee.deck, t, dt, ctx.lees ?? boat.crew.lees);
+    // Fighters hold their tile; the wounded break away, unless they're outnumbered (then they're locked in).
+    if (lee.locked) lee.working = false;
+    else if (!lee.engaged || lee.retreating) walk(lee, lee.deck, t, dt, ctx.lees ?? boat.crew.lees);
     else lee.working = false;
     const act = activity(lee, boat);
     lee.stats.time[act] += dt;
@@ -1605,7 +1663,7 @@ function stepSwing(lee: Lee, ctx: CrewContext, dt: number, out: CrewStepResult):
   }
   // Land (somewhere close with room, if the spot filled up meanwhile).
   let at = s.toTile;
-  if (settledOn(s.to, at, lees, lee) >= Math.max(1, Math.round(ctx.tuning.boarding.tileCap))) {
+  if (occupantsOf(s.to, at, lees, lee).length >= Math.max(1, Math.round(ctx.tuning.boarding.tileCap))) {
     const alt = nearestRoom(s.to, at, lees, ctx.tuning, lee);
     if (alt >= 0) at = alt;
   }
@@ -1685,7 +1743,7 @@ export function thinkBoarders(boat: Boat, ctx: CrewContext): void {
       if (way) {
         lee.retreating = true;
         const here = standingTile(lee);
-        if (way.departTile === here && !lee.path.length && ctx.time >= way.ref.rail.readyAt) {
+        if (way.departTile === here && !lee.path.length && ctx.time >= way.ref.rail.readyAt && !lee.locked) {
           if (startSwing(lee, boat, true, why, ctx.tuning, lees, way, ctx.time)) {
             lee.reason = `recall: ${why} → swinging home`;
             continue;
@@ -1738,26 +1796,58 @@ export function thinkBoarders(boat: Boat, ctx: CrewContext): void {
   }
 }
 
-/** Lees standing still on a tile (either side): what the tile cap counts on arrival. */
-function settledOn(deck: Boat, tile: number, lees: Lee[], except: Lee): number {
-  let n = 0;
-  for (const l of lees) if (l !== except && l.alive && !l.swing && l.deck === deck && !l.path.length && l.tile === tile) n++;
-  return n;
+/** The shortest walk from `from` to `to` (excluding `from`) over tiles that aren't `full`, or [] if there isn't one. */
+function routeAround(g: Grid, from: number, to: number, full: (tile: number) => boolean): number[] {
+  const d = g.tiles.map(() => Infinity);
+  const prev = g.tiles.map(() => -1);
+  const done = g.tiles.map(() => false);
+  d[from] = 0;
+  for (;;) {
+    let u = -1;
+    for (let i = 0; i < d.length; i++) if (!done[i] && d[i] < Infinity && (u < 0 || d[i] < d[u])) u = i;
+    if (u < 0 || u === to) break;
+    done[u] = true;
+    for (const n of g.tiles[u].neighbors) {
+      if (done[n] || (n !== to && full(n)) || (n === to && full(n))) continue;
+      const nd = d[u] + dist(g.tiles[u].center, g.tiles[n].center);
+      if (nd < d[n]) {
+        d[n] = nd;
+        prev[n] = u;
+      }
+    }
+  }
+  if (d[to] === Infinity) return [];
+  const out: number[] = [];
+  for (let at = to; at !== from; at = prev[at]) out.unshift(at);
+  return out;
 }
 
+/** Has the Lee started its step (it is between tile centers)? Until then it's still standing on its tile. */
+export function departed(l: Lee): boolean {
+  return l.path.length > 0 && dist(l.pos, l.deck.grid.tiles[l.tile].center) > 1e-6;
+}
+
+/** The tile a Lee occupies for crowding: its own, or the one it has started stepping onto. */
+function occupies(l: Lee): number {
+  return departed(l) ? l.path[0] : l.tile;
+}
+
+/** Living Lees physically on (or stepping onto) a tile, either side. */
+export function occupantsOf(deck: Boat, tile: number, lees: Lee[], except?: Lee): Lee[] {
+  return lees.filter((l) => l !== except && l.alive && !l.swing && l.deck === deck && occupies(l) === tile);
+}
+
+/**
+ * Lees block each other. A Lee steps onto a tile only if it has room (`boarding.tileCap`, both sides
+ * count), allies never get shoved aside, and two Lees may slide past each other only as a mutual swap
+ * (each is leaving for the other's tile). A Lee outnumbered on its tile is locked: it can't take a
+ * step at all, swap or not. Stepping onto a tile with an opposing Lee ends the walk there (you stop to
+ * fight). Blocked for a while, it sidesteps onto an equally short route if one is open, and gives up
+ * the walk after a few seconds.
+ */
 function walk(lee: Lee, boat: Boat, t: Tuning, dt: number, lees: Lee[] = boat.crew.lees): void {
   const g = boat.grid;
-  // Don't step onto a full tile to stop there: wait where you are until there's room.
   const cap = Math.max(1, Math.round(t.boarding.tileCap));
-  if (lee.path.length === 1 && settledOn(boat, lee.path[0], lees, lee) >= cap) {
-    const c = g.tiles[lee.tile].center;
-    if (dist(lee.pos, c) < 1e-6) {
-      lee.working = false;
-      return;
-    }
-    // Step back onto the tile it came from.
-    lee.path = [lee.tile];
-  }
   let budget = Math.max(0.1, t.crew.walkSpeed * leeStat(lee, 'walkSpeed', boat, t) * wetFactor(lee, boat, t)) * dt;
   // Finish settling onto the current tile if no path is left.
   if (!lee.path.length) {
@@ -1768,14 +1858,48 @@ function walk(lee: Lee, boat: Boat, t: Tuning, dt: number, lees: Lee[] = boat.cr
       lee.pos.x += (c.x - lee.pos.x) * k;
       lee.pos.y += (c.y - lee.pos.y) * k;
     }
+    lee.blockedFor = 0;
   }
   while (lee.path.length && budget > 0) {
+    // About to start a step: is the way open?
+    if (!departed(lee)) {
+      let next = lee.path[0];
+      const here = lee.tile;
+      const there = occupantsOf(boat, next, lees, lee);
+      const swap = there.some((p) => p.side === lee.side && !p.locked && !departed(p) && p.path.length > 0 && p.path[0] === here);
+      let open = !lee.locked && (there.length < cap || swap);
+      if (!open && !lee.locked && lee.blockedFor > 0.4) {
+        // Another way round, if one is open: the shortest route over tiles that have room.
+        const route = routeAround(g, here, lee.dest, (i) => occupantsOf(boat, i, lees, lee).length >= cap);
+        if (route.length && route[0] !== next) {
+          lee.path = route;
+          next = route[0];
+          open = true;
+        }
+      }
+      if (!open) {
+        lee.blockedFor += dt;
+        if (lee.blockedFor > 2.5) {
+          // Give up this walk; the crew AI picks something else next think.
+          lee.path = [];
+          lee.dest = lee.tile;
+          lee.blockedFor = 0;
+        }
+        break;
+      }
+    }
+    lee.blockedFor = 0;
     const c = g.tiles[lee.path[0]].center;
     const d = dist(lee.pos, c);
     if (d <= budget) {
       lee.pos = { ...c };
       budget -= d;
       lee.tile = lee.path.shift()!;
+      // Stepping onto an opposing Lee's tile ends the walk: you stop and fight.
+      if (lee.path.length && occupantsOf(boat, lee.tile, lees, lee).some((o) => o.side !== lee.side)) {
+        lee.path = [];
+        lee.dest = lee.tile;
+      }
     } else {
       lee.pos.x += ((c.x - lee.pos.x) / d) * budget;
       lee.pos.y += ((c.y - lee.pos.y) / d) * budget;

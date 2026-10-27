@@ -641,7 +641,7 @@ export class BattleScene extends Phaser.Scene {
     const needH = Math.max(2 * (dy + t.padding), 2 * (dx + t.padding) * (H / W));
     const visH = setup
       ? Math.max(20, world.player.layout.length * Math.max(1, t.refitView))
-      : clamp(needH, t.minVisibleHeight, Math.max(t.minVisibleHeight, t.maxVisibleHeight));
+      : clamp(needH, t.minVisibleHeight, Math.max(t.minVisibleHeight, t.maxVisibleHeight)) * this.ctl.zoomMul('ocean');
     const zoom = H / visH;
     if (this.snapCamera) {
       this.cam = { x: cx, y: cy, zoom };
@@ -694,6 +694,8 @@ export class BattleScene extends Phaser.Scene {
       fx = lerp(0, (x0 + x1) / 2, s);
       fy = lerp(0, (y0 + y1) / 2, s);
     }
+    // The player's chosen deck zoom ("normal" is the framing above).
+    fightZ *= this.ctl.zoomMul('deck');
     // Smooth the framing so the strip doesn't jump when a deck arrives or leaves.
     const k = this.stripFrame ? 1 - Math.exp(-6 * dt) : 1;
     const f = this.stripFrame ?? { x: fx, y: fy, zoom: fightZ };

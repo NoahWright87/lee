@@ -251,8 +251,8 @@ export function defaultTuning() {
       evacuateAt: 0.9,
       /** Points lost per Lee already fighting a boarder (low, so ganging up happens). */
       repelHelpPenalty: 8,
-      /** Most Lees (either side) that can stand on one tile. Swings and moves wait for room. */
-      tileCap: 2,
+      /** Most Lees (either side) that can stand on one tile. Swings and moves wait for room; Lees block each other, outnumbered Lees are locked in place, and only a mutual swap lets two slide past. */
+      tileCap: 3,
       /** A Lee below this fraction of its HP falls back (boarders swing home) and fights with its pistol instead. */
       retreatAt: 0.25,
       /** Seconds between Lees leaving one boat for the same enemy boat (one at a time over the rail). */
@@ -428,6 +428,8 @@ export function defaultTuning() {
       board: 35,
       /** Empty oars or sails → man them. */
       mobility: 30,
+      /** 🔫 Lees with no gun that can fire, with enemy Lees across the gap in pistol range → take a firing spot on the rail. */
+      cover: 20,
       /** Empty support station (lookout, powder store) → man it. */
       lookout: 15,
       /** Cannons with nothing to shoot at. */

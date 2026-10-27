@@ -385,7 +385,8 @@ describe('boarding: only ⚔️ Lees go', () => {
       hold();
       fill(0.95);
     });
-    for (const l of w.player.crew.lees.filter((x) => x.alive)) expect(l.deck).toBe(w.player);
+    // Everyone who could leave did; anyone still over there is locked in a fight they're outnumbered in.
+    for (const l of w.player.crew.lees.filter((x) => x.alive && x.deck !== w.player)) expect(l.locked || l.engaged).toBe(true);
     expect(w.drainEvents().some((ev) => ev.type === 'swing' && ev.back)).toBe(true);
     expect(e.sinkingSince).toBeNull();
   });
@@ -420,9 +421,10 @@ describe('boarding: only ⚔️ Lees go', () => {
 
   test('RETREAT: your boat waits beside your boarders until they are home, then sails away; their boarders stay and fight', () => {
     const t = quiet(defaultTuning());
-    size.standard = 4;
+    // Fewer of them than of you: outnumbered Lees can't run, so a retreat only works for the ones who aren't.
+    size.standard = 2;
     enemyJob = 'board';
-    const { w, e, hold } = alongside(t, [[T.portCannon2, 'board'], [T.portOars, 'board'], T.sails], ['standard']);
+    const { w, e, hold } = alongside(t, [[T.portCannon2, 'board'], [T.portOars, 'board'], T.sails, T.midDeck], ['standard']);
     run(w, 6, hold);
     expect(w.canRetreat()).toBe(true);
     const theirsOnUs = () => e.crew.lees.filter((l) => l.alive && (l.deck === w.player || l.swing?.to === w.player)).length;

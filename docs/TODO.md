@@ -5,6 +5,9 @@ Phase 7 ("Close Quarters", [`PRD_PHASE7.md`](PRD_PHASE7.md)) is built in its fiv
 ## Phase 7 open questions (PRD §16) and things to watch in playtest
 
 - [ ] **Auto-boarding scope.** BOARD hooks, lowers planks and sends ropes for you, but never cuts a line or destroys a plank (those are the taps). It also stays on after the boats part if you only stopped; check it doesn't re-hook something you meant to let go.
+- [ ] **Melee is slow by numbers.** A sword does 4 × 0.6/s (2.4 dps) against 70 HP, so a duel takes ~30 s and even a 2v1 ~15 s. Crowding no longer wastes the numbers, but if big boarding fights should be quicker, `melee.damage` / `melee.rate` are the levers.
+- [ ] **Locked-in rules.** Equal numbers can leave (so a lone wounded Lee in a 1v1 can walk away, and the enemy follows). Check that feels right; "outnumbered" could also mean "not more than".
+- [ ] **Firing line and pistol hits.** Pistols scatter with distance (`pistol.spreadPerMeter`), so a shot across the gap hits a minority of the time. If FIRE across the gap should matter more, tune that.
 - [ ] **Who cuts lines?** Built as ⚔️ or 🛠️, whichever is closer and free, with any Lee after `lines.answerFallback` (1.5 s). Is that right, or should it be whoever is nearest?
 - [ ] **Ropes** are now only a rail item (the treasure is gone). An old save with the treasure equipped just carries an inert item.
 - [ ] **No rope or plank = can't board.** There's no slow climb across once the hulls touch.

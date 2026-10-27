@@ -69,10 +69,11 @@ import { difficulty, DIFFICULTIES } from '../config/difficulty';
 const STORAGE_KEY = 'lee.tuning.current';
 const PRESETS_KEY = 'lee.tuning.presets';
 const SPEED_KEY = 'lee.speeds';
+const ZOOM_KEY = 'lee.zoom';
 const RUN_KEY = 'lee.run';
 const SANDBOX_KEY = 'lee.sandbox';
 /** Everything Reset All Saved Data removes (named tuning presets are kept). */
-const RESET_KEYS = [STORAGE_KEY, SPEED_KEY, RUN_KEY, SANDBOX_KEY, 'lee.crew.arrangement', 'lee.crew.noteSeen'];
+const RESET_KEYS = [STORAGE_KEY, SPEED_KEY, ZOOM_KEY, RUN_KEY, SANDBOX_KEY, 'lee.crew.arrangement', 'lee.crew.noteSeen'];
 
 export type SpeedMode = 'ranged' | 'melee';
 export type Mode = 'run' | 'sandbox';
@@ -96,6 +97,40 @@ function loadSpeeds(): Record<SpeedMode, Speed> {
     const saved = JSON.parse(safeGet(SPEED_KEY) ?? '{}');
     // Pause is never remembered across reloads.
     for (const k of ['ranged', 'melee'] as const) if (SPEEDS.includes(saved[k]) && saved[k] > 0) out[k] = saved[k];
+  } catch {
+    /* defaults */
+  }
+  return out;
+}
+
+/** Zoom choices for the two views (the ocean on top, the deck below). "Normal" is the original framing; the rest scale it. */
+export interface ZoomChoice {
+  id: string;
+  label: string;
+  mul: number;
+}
+/** Ocean: a multiplier on how much sea is shown (bigger = further out). */
+export const OCEAN_ZOOMS: ZoomChoice[] = [
+  { id: 'closer', label: 'Closer', mul: 0.75 },
+  { id: 'normal', label: 'Normal', mul: 1 },
+  { id: 'wider', label: 'Wider', mul: 1.4 },
+  { id: 'widest', label: 'Widest', mul: 2 },
+];
+/** Deck: a multiplier on how big the deck is drawn (bigger = closer; the ends of a long ship can run off the screen). */
+export const DECK_ZOOMS: ZoomChoice[] = [
+  { id: 'wider', label: 'Wider', mul: 0.8 },
+  { id: 'normal', label: 'Normal', mul: 1 },
+  { id: 'closer', label: 'Closer', mul: 1.3 },
+  { id: 'closest', label: 'Closest', mul: 1.7 },
+];
+export type ZoomKind = 'ocean' | 'deck';
+
+function loadZoom(): Record<ZoomKind, string> {
+  const out: Record<ZoomKind, string> = { ocean: 'normal', deck: 'normal' };
+  try {
+    const saved = JSON.parse(safeGet(ZOOM_KEY) ?? '{}');
+    if (OCEAN_ZOOMS.some((z) => z.id === saved.ocean)) out.ocean = saved.ocean;
+    if (DECK_ZOOMS.some((z) => z.id === saved.deck)) out.deck = saved.deck;
   } catch {
     /* defaults */
   }
@@ -148,6 +183,8 @@ export class Controller {
    * (the close-up open): 3× for the sailing doesn't carry into a boarding fight.
    */
   speeds: Record<SpeedMode, Speed> = loadSpeeds();
+  /** Which zoom the top (ocean) and bottom (deck) views use; remembered. */
+  zoom: Record<ZoomKind, string> = loadZoom();
   debug = false;
   /** True while the rotate-your-phone overlay is up. */
   blocked = false;
@@ -719,6 +756,20 @@ export class Controller {
     if (set === 0) return 0;
     const k = this.world.speedBlend();
     return this.speeds.ranged + (this.speeds.melee - this.speeds.ranged) * k;
+  }
+
+  /** The multiplier for a view's chosen zoom. */
+  zoomMul(kind: ZoomKind): number {
+    const list = kind === 'ocean' ? OCEAN_ZOOMS : DECK_ZOOMS;
+    return list.find((z) => z.id === this.zoom[kind])?.mul ?? 1;
+  }
+
+  setZoom(kind: ZoomKind, id: string): void {
+    const list = kind === 'ocean' ? OCEAN_ZOOMS : DECK_ZOOMS;
+    if (!list.some((z) => z.id === id)) return;
+    this.zoom[kind] = id;
+    safeSet(ZOOM_KEY, JSON.stringify(this.zoom));
+    this.notify();
   }
 
   /** The speed button: Pause → 0.5× → 1× → 3× → Pause… */

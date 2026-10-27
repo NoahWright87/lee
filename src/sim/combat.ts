@@ -6,7 +6,7 @@
 
 import type { Tuning } from '../config/tuning';
 import { applyDamage, partAt, type Boat, type PartState } from './boat';
-import { hurtLee, leeStat, standingTile, type Lee } from './crew';
+import { departed, hurtLee, leeStat, standingTile, type Lee } from './crew';
 import { itemParam } from './loadout';
 import { dist, lerp, toWorld, type Rng, type Vec } from './math';
 
@@ -38,6 +38,7 @@ export function updateEngagement(lees: Lee[]): void {
   const byTile = new Map<string, Lee[]>();
   for (const l of lees) {
     l.engaged = false;
+    l.locked = false;
     l.meleeTarget = null;
     if (!l.alive || l.swing) continue;
     const k = `${l.deck.id}:${standingTile(l)}`;
@@ -45,9 +46,16 @@ export function updateEngagement(lees: Lee[]): void {
     byTile.get(k)!.push(l);
   }
   for (const group of byTile.values()) {
+    const count = { player: 0, enemy: 0 };
+    for (const l of group) count[l.side]++;
     for (const l of group) {
-      // Walking through a tile isn't a fight; the wounded fall back instead of swinging a sword.
-      if (l.path.length || l.retreating) continue;
+      // Walking through a tile isn't a fight.
+      if (departed(l)) continue;
+      const foes = count[l.side === 'player' ? 'enemy' : 'player'];
+      // Outnumbered on its tile: locked in. It can't leave, and it fights whatever else it was doing.
+      l.locked = foes > count[l.side];
+      // The wounded fall back instead of swinging a sword (a retreat that's stuck behind someone is a fight).
+      if (l.retreating && !l.locked && !l.path.length) continue;
       const target = meleeTarget(l, group);
       if (!target) continue;
       l.engaged = true;

@@ -3603,3 +3603,35 @@ h3.warn {
 .item-icon.small {
   font-size: 13px;
 }
+
+/* The ⚙️ menu's view zoom pickers. */
+.zoom-picks {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 4px 0;
+}
+
+.zoom-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.zoom-title {
+  font: 700 11px/1 system-ui, sans-serif;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.8;
+}
+
+.zoom-group {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+}
+
+.zoom-btn.on {
+  background: #f2c14e;
+  color: #1a120a;
+}

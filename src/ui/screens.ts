@@ -9,7 +9,7 @@ import { ITEMS } from '../config/items';
 import { LEE_DEFS, STAT_LABELS } from '../config/lees';
 import { SHIP_ORDER, SHIPS } from '../config/ships';
 import { countTags, tagName } from '../config/tags';
-import type { Controller } from '../game/Controller';
+import { DECK_ZOOMS, OCEAN_ZOOMS, type Controller, type ZoomChoice, type ZoomKind } from '../game/Controller';
 import { bonusLabel } from '../sim/levels';
 import { DIFFICULTIES, DIFFICULTY_ORDER } from '../config/difficulty';
 import { STOP_TYPES } from '../config/sea';
@@ -58,6 +58,25 @@ export class Screens {
     const resume = button('Resume', 'big-btn primary', () => this.closeMenu());
     const buttons = el('div', 'modal-buttons');
     buttons.append(resume);
+    // How close each view is. "Normal" is the original framing.
+    const view = el('div', 'zoom-picks');
+    const pick = (kind: ZoomKind, title: string, list: ZoomChoice[]) => {
+      const row = el('div', 'zoom-row');
+      row.append(el('span', 'zoom-title', title));
+      const group = el('div', 'zoom-group');
+      for (const z of list) {
+        const b = button(z.label, `hud-btn zoom-btn${this.ctl.zoom[kind] === z.id ? ' on' : ''}`, () => {
+          this.ctl.setZoom(kind, z.id);
+          for (const sib of group.querySelectorAll('.zoom-btn')) sib.classList.toggle('on', sib === b);
+        });
+        group.append(b);
+      }
+      row.append(group);
+      view.append(row);
+    };
+    pick('ocean', 'Ocean view (top)', OCEAN_ZOOMS);
+    pick('deck', 'Deck view (bottom)', DECK_ZOOMS);
+    buttons.append(view);
     if (this.ctl.mode === 'run') {
       buttons.append(
         button('Restart Run', 'big-btn', () => {
