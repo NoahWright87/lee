@@ -108,20 +108,24 @@ export interface ZoomChoice {
   id: string;
   label: string;
   mul: number;
+  /** The camera frames what's in play by itself (the multiplier is not used). */
+  fit?: boolean;
 }
-/** Ocean: a multiplier on how much sea is shown (bigger = further out). */
+/** Ocean: a multiplier on how much sea is shown (bigger = further out), or Fit: every boat that could be fighting you. */
 export const OCEAN_ZOOMS: ZoomChoice[] = [
   { id: 'closer', label: 'Closer', mul: 0.75 },
   { id: 'normal', label: 'Normal', mul: 1 },
   { id: 'wider', label: 'Wider', mul: 1.4 },
   { id: 'widest', label: 'Widest', mul: 2 },
+  { id: 'fit', label: 'Fit', mul: 1, fit: true },
 ];
-/** Deck: a multiplier on how big the deck is drawn (bigger = closer; the ends of a long ship can run off the screen). */
+/** Deck: a multiplier on how big the deck is drawn (bigger = closer; the ends of a long ship can run off the screen), or Fit: every deck with Lees in play. */
 export const DECK_ZOOMS: ZoomChoice[] = [
   { id: 'wider', label: 'Wider', mul: 0.8 },
   { id: 'normal', label: 'Normal', mul: 1 },
   { id: 'closer', label: 'Closer', mul: 1.3 },
   { id: 'closest', label: 'Closest', mul: 1.7 },
+  { id: 'fit', label: 'Fit', mul: 1, fit: true },
 ];
 export type ZoomKind = 'ocean' | 'deck';
 
@@ -762,6 +766,12 @@ export class Controller {
   zoomMul(kind: ZoomKind): number {
     const list = kind === 'ocean' ? OCEAN_ZOOMS : DECK_ZOOMS;
     return list.find((z) => z.id === this.zoom[kind])?.mul ?? 1;
+  }
+
+  /** Is this view on "Fit": the camera frames everything in play by itself? */
+  zoomFit(kind: ZoomKind): boolean {
+    const list = kind === 'ocean' ? OCEAN_ZOOMS : DECK_ZOOMS;
+    return list.find((z) => z.id === this.zoom[kind])?.fit === true;
   }
 
   setZoom(kind: ZoomKind, id: string): void {

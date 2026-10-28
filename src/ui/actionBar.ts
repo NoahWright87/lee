@@ -338,7 +338,7 @@ export class ActionBar {
     this.mine.update(w.player, w.time, t, Math.max(60, width * 0.58 - MINE.icon - 10), (j) => jobSeats(w.player, j, t));
 
     // Enemy bars: the ship you're closing on (or that's closing on you), only while melee is imminent.
-    const engaged = this.engagedEnemy();
+    const engaged = w.engagedEnemy();
     if (engaged && this.theirsFor !== engaged.id) {
       this.theirs.clear();
       this.theirsFor = engaged.id;
@@ -353,28 +353,6 @@ export class ActionBar {
     }
   }
 
-  /**
-   * The enemy whose bars show: in close combat with you, or on a RAM/BOARD
-   * approach (yours toward it, or its own toward you) and close enough that
-   * melee is imminent.
-   */
-  private engagedEnemy(): Boat | null {
-    const w = this.ctl.world;
-    const touching = w.touching(w.player).find((e) => !w.isOut(e));
-    if (touching) return touching;
-    const near = (e: Boat) => w.closeness(w.player) > 0 && w.closeBoats().includes(e);
-    const h = w.helm;
-    if (h.kind === 'board' || h.kind === 'ram') {
-      const e = w.enemies.find((x) => x.id === h.boatId && !w.isOut(x));
-      if (e && (near(e) || Math.hypot(e.motion.x - w.player.motion.x, e.motion.y - w.player.motion.y) < 90)) return e;
-    }
-    for (const e of w.enemies) {
-      if (w.isOut(e)) continue;
-      const mode = w.brains.get(e.id)?.mode;
-      if ((mode === 'alongside' || mode === 'ram' || mode === 'hold') && Math.hypot(e.motion.x - w.player.motion.x, e.motion.y - w.player.motion.y) < 90) return e;
-    }
-    return null;
-  }
 }
 
 function setText(e: HTMLElement, text: string): void {

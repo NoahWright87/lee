@@ -637,6 +637,22 @@ export function defaultTuning() {
       smoothing: 1.2,
       /** Fraction of the strip's width the close-up boat fills. */
       stripBoatFill: 0.9,
+      /** "Fit" ocean view: room around the boats being framed, as a share of how big the framed area is, kept between these limits (m). */
+      fitPaddingShare: 0.2,
+      fitPaddingMin: 10,
+      fitPadding: 28,
+      /** "Fit" ocean view: the closest and furthest it will go, as the height of sea shown, m. */
+      fitMinHeight: 50,
+      fitMaxHeight: 1400,
+      /** "Fit" ocean view: how quickly the framing (center and zoom) catches up, 1/s. */
+      fitSmoothing: 2.2,
+      /** "Fit" deck view: the share of the width and height the decks may fill. */
+      deckFitWidth: 0.94,
+      deckFitHeight: 0.86,
+      /** "Fit" deck view: how far it may zoom out from your deck alone (a share of that zoom). */
+      deckFitMinScale: 0.3,
+      /** "Fit" deck view: how quickly the framing catches up, 1/s. */
+      deckFitSmoothing: 2.5,
     },
     input: {
       /** 0 = the target is pinned in the water where you touched (preview stays exact). 1 = target stays under a still finger as the camera moves. */

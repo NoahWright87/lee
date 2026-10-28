@@ -28,6 +28,7 @@ import {
 } from '../sim/boat';
 import { leeWorldPos } from '../sim/combat';
 import { activity, workerAt } from '../sim/crew';
+import { deckFitBoats, oceanFitBoats } from '../sim/framing';
 import { clamp, DEG, dist, lerp, rotate, toLocal, toWorld, type Vec } from '../sim/math';
 import { FIXED_DT, predictPath } from '../sim/steering';
 import { TelegraphSystem } from '../sim/telegraph';
@@ -49,8 +50,30 @@ import {
 /** Fraction of the screen height given to the ocean view during a fight (setup mode uses tuning.layout). */
 export const OCEAN_FRACTION = 0.75;
 const WATER_TILE_M = 48;
+/** World bounding box of the hulls of some boats. */
+function boundsOf(boats: Boat[]): { x0: number; y0: number; x1: number; y1: number } {
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  for (const b of boats) {
+    const hl = b.layout.length / 2;
+    const hb = b.layout.beam / 2;
+    for (const c of [{ x: -hl, y: -hb }, { x: hl, y: -hb }, { x: hl, y: hb }, { x: -hl, y: hb }]) {
+      const w = toWorld(c, b.motion, b.motion.heading);
+      x0 = Math.min(x0, w.x);
+      x1 = Math.max(x1, w.x);
+      y0 = Math.min(y0, w.y);
+      y1 = Math.max(y1, w.y);
+    }
+  }
+  return { x0, y0, x1, y1 };
+}
+
 /** Height of the HUD's top bar, CSS px. The ocean camera frames boats below it. */
 const TOP_INSET_CSS = 52;
+/** Width of the role icons pinned down the left of the ocean, CSS px: the "Fit" camera keeps boats clear of them. */
+const LEFT_INSET_CSS = 60;
 
 const COLOR = {
   threat: 0xff2b2b,
@@ -148,6 +171,8 @@ export class BattleScene extends Phaser.Scene {
   private dragSteers = false;
   /** Enemies the ocean camera keeps in view (in gun range, with hysteresis). */
   private inView = new Set<number>();
+  /** Enemies the "Fit" ocean camera is framing (with hysteresis). */
+  private fitSet = new Set<number>();
   private clock = 0;
 
   constructor() {
@@ -440,6 +465,7 @@ export class BattleScene extends Phaser.Scene {
     this.pointerScreen = null;
     this.dragSteers = false;
     this.inView.clear();
+    this.fitSet.clear();
     this.snapCamera = true;
     for (const e of [this.chips, this.spray, this.smoke, this.bubbles]) e.killAll();
 
@@ -479,6 +505,7 @@ export class BattleScene extends Phaser.Scene {
   /** Decks the strip shows: yours, then the enemies closing in (nearest two). */
   private stripDecks(world: World): Boat[] {
     if (world.phase === 'ready') return [world.player];
+    if (this.ctl.zoomFit('deck')) return deckFitBoats(world);
     return [world.player, ...world.closeBoats().slice(0, 2)];
   }
 
@@ -611,41 +638,60 @@ export class BattleScene extends Phaser.Scene {
     const p = world.player.motion;
     // Mostly centered on you, leading the way you're moving. Refit: your boat alone (its gun arcs are what matter there).
     const setup = world.phase === 'ready';
-    const lead = setup ? 0 : Math.max(0, t.lookAhead);
-    const cx = p.x + p.vx * lead;
-    const cy = p.y + p.vy * lead;
-    // Keep in view every enemy within gun range (yours or theirs), with hysteresis so the zoom doesn't pump.
-    const mine = maxGunRange(world.player, world.tuning);
-    const shown: Vec[] = [];
-    for (const e of world.enemies) {
-      if (setup || world.sinkAnim(e) >= 1) {
-        this.inView.delete(e.id);
-        continue;
-      }
-      const range = Math.max(mine, maxGunRange(e, world.tuning), 60);
-      const d = dist(e.motion, p);
-      if (d <= range) this.inView.add(e.id);
-      else if (d > range * (1 + Math.max(0, t.rangeHysteresis))) this.inView.delete(e.id);
-      if (this.inView.has(e.id)) shown.push(e.motion);
-    }
+    const fit = !setup && this.ctl.zoomFit('ocean');
+    const lead = setup || fit ? 0 : Math.max(0, t.lookAhead);
+    let cx = p.x + p.vx * lead;
+    let cy = p.y + p.vy * lead;
     const W = this.W;
-    // Keep the top bar (buttons) clear: frame the boats in the area below it.
+    // Keep the top bar (buttons) clear: frame the boats in the area below it (and, on Fit, right of the role icons).
     const inset = TOP_INSET_CSS * this.dpr;
+    const leftInset = fit ? LEFT_INSET_CSS * this.dpr : 0;
     const H = this.oceanH - inset;
-    let dx = Math.abs(p.x - cx);
-    let dy = Math.abs(p.y - cy);
-    for (const m of shown) {
-      dx = Math.max(dx, Math.abs(m.x - cx));
-      dy = Math.max(dy, Math.abs(m.y - cy));
+    let visH: number;
+    if (fit) {
+      // Fit: your boat and every boat that could be fighting you (or all of them, while none is). Centered in the free area.
+      const box = boundsOf(oceanFitBoats(world, this.fitSet));
+      const pad = clamp(Math.max(box.x1 - box.x0, box.y1 - box.y0) * t.fitPaddingShare, t.fitPaddingMin, Math.max(t.fitPaddingMin, t.fitPadding));
+      cx = (box.x0 + box.x1) / 2;
+      cy = (box.y0 + box.y1) / 2;
+      const needH = Math.max(box.y1 - box.y0 + 2 * pad, (box.x1 - box.x0 + 2 * pad) * (H / Math.max(1, W - leftInset)));
+      visH = clamp(needH, t.fitMinHeight, Math.max(t.fitMinHeight, t.fitMaxHeight));
+    } else {
+      // Keep in view every enemy within gun range (yours or theirs), with hysteresis so the zoom doesn't pump.
+      const mine = maxGunRange(world.player, world.tuning);
+      const shown: Vec[] = [];
+      for (const e of world.enemies) {
+        if (setup || world.sinkAnim(e) >= 1) {
+          this.inView.delete(e.id);
+          continue;
+        }
+        const range = Math.max(mine, maxGunRange(e, world.tuning), 60);
+        const d = dist(e.motion, p);
+        if (d <= range) this.inView.add(e.id);
+        else if (d > range * (1 + Math.max(0, t.rangeHysteresis))) this.inView.delete(e.id);
+        if (this.inView.has(e.id)) shown.push(e.motion);
+      }
+      let dx = Math.abs(p.x - cx);
+      let dy = Math.abs(p.y - cy);
+      for (const m of shown) {
+        dx = Math.max(dx, Math.abs(m.x - cx));
+        dy = Math.max(dy, Math.abs(m.y - cy));
+      }
+      const needH = Math.max(2 * (dy + t.padding), 2 * (dx + t.padding) * (H / W));
+      visH = setup
+        ? Math.max(20, world.player.layout.length * Math.max(1, t.refitView))
+        : clamp(needH, t.minVisibleHeight, Math.max(t.minVisibleHeight, t.maxVisibleHeight)) * this.ctl.zoomMul('ocean');
     }
-    const needH = Math.max(2 * (dy + t.padding), 2 * (dx + t.padding) * (H / W));
-    const visH = setup
-      ? Math.max(20, world.player.layout.length * Math.max(1, t.refitView))
-      : clamp(needH, t.minVisibleHeight, Math.max(t.minVisibleHeight, t.maxVisibleHeight)) * this.ctl.zoomMul('ocean');
     const zoom = H / visH;
     if (this.snapCamera) {
       this.cam = { x: cx, y: cy, zoom };
       this.snapCamera = false;
+    } else if (fit) {
+      // Position and zoom move together, so a boat never outruns the frame while the zoom catches up.
+      const k = 1 - Math.exp(-Math.max(0.01, t.fitSmoothing) * dt);
+      this.cam.x += (cx - this.cam.x) * k;
+      this.cam.y += (cy - this.cam.y) * k;
+      this.cam.zoom = Math.exp(lerp(Math.log(this.cam.zoom), Math.log(zoom), k));
     } else {
       const k = 1 - Math.exp(-Math.max(0.01, t.smoothing) * dt);
       this.cam.x += (cx - this.cam.x) * k;
@@ -654,9 +700,10 @@ export class BattleScene extends Phaser.Scene {
     }
     // Refit: the boat sits a little high, clear of the selection card at the bottom of the ocean.
     const shiftY = inset / 2 / this.cam.zoom - (setup ? (0.12 * H) / this.cam.zoom : 0);
+    const shiftX = leftInset / 2 / this.cam.zoom;
     this.oceanCam.setZoom(this.cam.zoom);
-    this.oceanCam.centerOn(this.cam.x, this.cam.y - shiftY);
-    this.coverWithWater(this.waterOcean, this.cam.x, this.cam.y - shiftY, W / this.cam.zoom, this.oceanH / this.cam.zoom);
+    this.oceanCam.centerOn(this.cam.x - shiftX, this.cam.y - shiftY);
+    this.coverWithWater(this.waterOcean, this.cam.x - shiftX, this.cam.y - shiftY, W / this.cam.zoom, this.oceanH / this.cam.zoom);
 
     // Strip: player boat, bow right. Fight: centered. Setup: larger (tiles at touch size)
     // and near the top, leaving room for the tray below. Attached: zoomed out to frame
@@ -669,8 +716,9 @@ export class BattleScene extends Phaser.Scene {
     let fx = 0;
     let fy = 0;
     const decks = this.stripDecks(world);
-    // The close-up eases from your deck alone to every close deck as they close in.
-    const closeK = clamp(this.expandK, 0, 1);
+    // The close-up eases from your deck alone to every close deck as they close in. Fit: whenever another deck is in play.
+    const deckFit = !setup && this.ctl.zoomFit('deck');
+    const closeK = deckFit ? 1 : clamp(this.expandK, 0, 1);
     if (decks.length > 1 && closeK > 0) {
       // Bounding box of every deck in your boat's frame.
       let x0 = Infinity;
@@ -688,16 +736,19 @@ export class BattleScene extends Phaser.Scene {
           y1 = Math.max(y1, l.y);
         }
       }
-      const zoom = Math.min(fightZ, (W * 0.94) / (x1 - x0), (SH * 0.86) / (y1 - y0));
+      const zoom = Math.max(
+        deckFit ? fightZ * clamp(t.deckFitMinScale, 0.05, 1) : 0,
+        Math.min(fightZ, (W * (deckFit ? t.deckFitWidth : 0.94)) / (x1 - x0), (SH * (deckFit ? t.deckFitHeight : 0.86)) / (y1 - y0)),
+      );
       const s = closeK * closeK * (3 - 2 * closeK);
       fightZ = Math.exp(lerp(Math.log(fightZ), Math.log(zoom), s));
       fx = lerp(0, (x0 + x1) / 2, s);
       fy = lerp(0, (y0 + y1) / 2, s);
     }
     // The player's chosen deck zoom ("normal" is the framing above).
-    fightZ *= this.ctl.zoomMul('deck');
-    // Smooth the framing so the strip doesn't jump when a deck arrives or leaves.
-    const k = this.stripFrame ? 1 - Math.exp(-6 * dt) : 1;
+    if (!deckFit) fightZ *= this.ctl.zoomMul('deck');
+    // Smooth the framing so the strip doesn't jump when a deck arrives or leaves (Fit glides more slowly).
+    const k = this.stripFrame ? 1 - Math.exp(-(deckFit ? Math.max(0.1, t.deckFitSmoothing) : 6) * dt) : 1;
     const f = this.stripFrame ?? { x: fx, y: fy, zoom: fightZ };
     f.x += (fx - f.x) * k;
     f.y += (fy - f.y) * k;

@@ -2002,13 +2002,13 @@ body {
 
 /* ------------------------------------------------------------ Phase 7: role icons and crew bars */
 
-/* Down the left of the screen, resting on the seam between the ocean and the close-up: a role icon per row (a tap moves a Lee), a column per Lee beside it.
-   The engaged enemy's smaller panel mirrors it on the right. */
+/* Pinned to the top left, just under the top bar: a role icon per row (a tap moves a Lee), a column per Lee beside it.
+   They never move with the split between the views, so a thumb can rest on them. The engaged enemy's smaller panel mirrors it on the right. */
 .action-bar {
   position: absolute;
   left: 0;
   right: 0;
-  top: calc(var(--ocean-frac) - 250px);
+  top: calc(max(8px, env(safe-area-inset-top)) + 46px);
   height: 250px;
   z-index: 5;
   pointer-events: none;
@@ -2016,7 +2016,7 @@ body {
 
 .crew-bars {
   position: absolute;
-  bottom: 6px;
+  top: 0;
   pointer-events: none;
 }
 

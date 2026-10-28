@@ -436,6 +436,28 @@ export class World {
       .sort((x, y) => hullGap(b, x).gap - hullGap(b, y).gap || x.id - y.id);
   }
 
+  /**
+   * The enemy whose crew bars show (and the deck view frames): in close combat with you, or on a
+   * RAM/BOARD approach (yours toward it, or its own toward you) and close enough that melee is imminent.
+   */
+  engagedEnemy(): Boat | null {
+    const touching = this.touching(this.player).find((e) => !this.isOut(e));
+    if (touching) return touching;
+    const p = this.player.motion;
+    const near = (e: Boat) => this.closeness(this.player) > 0 && this.closeBoats().includes(e);
+    const h = this.helm;
+    if (h.kind === 'board' || h.kind === 'ram') {
+      const e = this.enemies.find((x) => x.id === h.boatId && !this.isOut(x));
+      if (e && (near(e) || Math.hypot(e.motion.x - p.x, e.motion.y - p.y) < 90)) return e;
+    }
+    for (const e of this.enemies) {
+      if (this.isOut(e)) continue;
+      const mode = this.brains.get(e.id)?.mode;
+      if ((mode === 'alongside' || mode === 'ram' || mode === 'hold') && Math.hypot(e.motion.x - p.x, e.motion.y - p.y) < 90) return e;
+    }
+    return null;
+  }
+
   /** Your ⚔️ target if it's still in the fight, else whoever you're in close combat with. */
   playerBoardTarget(): Boat | null {
     const id = this.boardTargetId;
