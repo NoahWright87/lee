@@ -213,8 +213,8 @@ export class Hud {
     this.waterFill.classList.toggle('danger', s > 0.7);
     this.waterText.textContent = `${Math.round(s * 100)}%`;
     this.sinkBanner.classList.toggle('hidden', p.sinkingSince === null);
-    const live = w.liveEnemies().length;
-    this.fightPill.textContent = `${this.ctl.mode === 'sandbox' ? 'Sandbox' : `Fight ${w.fight}`} · ${live}/${w.enemies.length} left`;
+    const live = w.foesLeft();
+    this.fightPill.textContent = `${this.ctl.mode === 'sandbox' ? 'Sandbox' : `Fight ${w.fight}`} · ${live}/${w.enemies.length + w.nesses.list.length} left`;
   }
 
   private showResult(): void {
@@ -247,13 +247,14 @@ export class Hud {
         'Ships sunk / crew killed',
         `${w.enemies.filter((x) => x.sinkingSince !== null).length} / ${w.enemies.filter((x) => x.sinkingSince === null && w.isOut(x)).length} of ${w.enemies.length}`,
       ],
+      ...(w.nesses.list.length ? ([['Nesses slain', `${w.nesses.list.filter((n) => n.state === 'dead').length} of ${w.nesses.list.length}`]] as [string, string][]) : []),
       ['Shells fired / hit', `${s.shellsFired} / ${s.shellsHit} (${pct}%)`],
       ['Shells dodged', `${s.shellsDodged} of ${e.shellsFired}`],
       ['Water taken / bailed', `${Math.round(s.waterTaken)} / ${Math.round(s.waterBailed)}`],
       ['HP repaired', `${Math.round(s.hpRepaired)}`],
     ];
     const lost = (x: SideStats) =>
-      (['cannon', 'gatling', 'melee', 'pistol', 'sank', 'spikes', 'explosion', 'fall'] as const)
+      (['cannon', 'gatling', 'melee', 'pistol', 'sank', 'spikes', 'explosion', 'fall', 'ness'] as const)
         .filter((k) => x.lostBy[k] > 0)
         .map((k) => `${x.lostBy[k]} ${k === 'sank' ? 'sank' : k}`)
         .join(', ') || 'none';

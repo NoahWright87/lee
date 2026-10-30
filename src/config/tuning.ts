@@ -1,4 +1,5 @@
 import { defaultAiProfiles, type AiProfile } from './encounters';
+import { defaultNessTuning } from './ness';
 import { defaultItemParams } from './items';
 import { defaultTraits, LEE_DEFS, type LeeStats } from './lees';
 import { defaultStopTuning } from './sea';
@@ -148,6 +149,8 @@ export function defaultTuning() {
     items: defaultItemParams(),
     /** Enemy AI profiles, chosen by the encounter (src/config/encounters.ts). */
     ai: defaultAiProfiles() as Record<string, AiProfile>,
+    /** Nesses (Phase 8): shared numbers, and one entry per kind. */
+    ness: defaultNessTuning(),
     enemyAI: {
       /** Degrees the enemy bends its course per meter it is off its preferred range. */
       rangeCorrection: 1,

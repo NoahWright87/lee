@@ -64,7 +64,7 @@ export interface Task {
 }
 
 /** How a Lee was lost (result screen). */
-export type LossCause = 'cannon' | 'gatling' | 'melee' | 'pistol' | 'sank' | 'spikes' | 'explosion' | 'fall';
+export type LossCause = 'cannon' | 'gatling' | 'melee' | 'pistol' | 'sank' | 'spikes' | 'explosion' | 'fall' | 'ness';
 
 /** A Lee in the air between two decks. */
 export interface Swing {
@@ -236,6 +236,8 @@ export interface CrewContext {
   time: number;
   /** Boats this crew's guns may shoot at. */
   foes: Boat[];
+  /** Other things its guns may shoot at: surfaced Ness parts (world points). */
+  marks?: Vec[];
   /** Every Lee in the world (boarders on our deck, enemies on other decks). Defaults to this boat's crew. */
   lees?: Lee[];
   /** Where this crew's ⚔️ Lees are headed: the boat they gather toward and board (null = none). */
@@ -712,6 +714,7 @@ export function gunEngages(boat: Boat, g: GunState, ctx: CrewContext, at: number
     const p = { x: f.motion.x + f.motion.vx * at, y: f.motion.y + f.motion.vy * at };
     if (inArc(muzzle, face, p, spec.arcHalf, spec.minRange, spec.range)) return true;
   }
+  for (const m of ctx.marks ?? []) if (inArc(muzzle, face, m, spec.arcHalf, spec.minRange, spec.range)) return true;
   return false;
 }
 
@@ -859,7 +862,7 @@ export function computeNeeds(boat: Boat, ctx: CrewContext): Need[] {
   const offlineAt = t.boat.function.gunOfflineAt;
   let maxFill = 0;
   for (const p of boat.parts) maxFill = Math.max(maxFill, p.capacity > 0 ? p.water / p.capacity : 0);
-  const spotting = ctx.foes.length > 0;
+  const spotting = ctx.foes.length > 0 || (ctx.marks?.length ?? 0) > 0;
   const stopped = boat.stopped;
 
   // Stations, in tile order.

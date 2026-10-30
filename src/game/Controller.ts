@@ -63,6 +63,7 @@ import type { BonusKey } from '../sim/levels';
 import { enemySetup } from '../sim/setup';
 import type { Job } from '../config/lees';
 import type { Lee } from '../sim/crew';
+import type { NessSpec } from '../sim/ness';
 import { World } from '../sim/world';
 import { difficulty, DIFFICULTIES } from '../config/difficulty';
 
@@ -85,6 +86,8 @@ export type RefitFor = 'fight' | 'map' | 'port';
 export interface SandboxState {
   run: RunState;
   enemies: EnemySpec[];
+  /** Sea monsters to fight alongside (or instead of) the ships. */
+  nesses: NessSpec[];
 }
 
 /** The speed button cycles Pause → 0.5× → 1× → 3×. */
@@ -260,6 +263,7 @@ export class Controller {
         fight: run.fight,
         player: setupFor(run, this.tuning),
         enemies,
+        nesses: sandbox ? this.sandbox!.nesses : undefined,
         assists: sandbox,
         hesitation: difficulty(run.difficulty).hesitation,
         surrender: difficulty(run.difficulty).surrender,
@@ -347,7 +351,7 @@ export class Controller {
       try {
         const s = JSON.parse(safeGet(SANDBOX_KEY) ?? 'null') as SandboxState | null;
         const ok = s && loadRun(saveRun(s.run));
-        if (s && ok && ok.ok) this.sandbox = { run: ok.run, enemies: Array.isArray(s.enemies) ? s.enemies : [] };
+        if (s && ok && ok.ok) this.sandbox = { run: ok.run, enemies: Array.isArray(s.enemies) ? s.enemies : [], nesses: Array.isArray(s.nesses) ? s.nesses : [] };
       } catch {
         /* start fresh */
       }
@@ -531,6 +535,13 @@ export class Controller {
   generateSandbox(budget: number, chassis?: string): void {
     if (!this.sandbox) return;
     this.sandbox.enemies = generateEnemies(budget, (Math.random() * 2 ** 31) >>> 0, this.tuning, { chassis });
+    this.changed();
+  }
+
+  /** Sandbox: the sea monsters to fight. */
+  setSandboxNesses(nesses: NessSpec[]): void {
+    if (!this.sandbox) return;
+    this.sandbox.nesses = nesses;
     this.changed();
   }
 
@@ -863,7 +874,7 @@ function freshSandbox(t: Tuning): SandboxState {
   const run = newRun('basic', 12345, t);
   for (const type of ['hard', 'loud']) addCrew(run, type, 1, t);
   autoEquipAll(run, t);
-  return { run, enemies: [{ ship: 'basic', ai: 'standard', crew: [{ type: 'basic', count: 4 }] }] };
+  return { run, enemies: [{ ship: 'basic', ai: 'standard', crew: [{ type: 'basic', count: 4 }] }], nesses: [] };
 }
 
 function assignDeep(target: Record<string, any>, source: Record<string, any>): void {

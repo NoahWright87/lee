@@ -27,8 +27,9 @@ import {
   type GunState,
 } from '../sim/boat';
 import { leeWorldPos } from '../sim/combat';
+import type { Ness } from '../sim/ness';
 import { activity, workerAt } from '../sim/crew';
-import { deckFitBoats, oceanFitBoats } from '../sim/framing';
+import { deckFitBoats, oceanFit } from '../sim/framing';
 import { clamp, DEG, dist, lerp, rotate, toLocal, toWorld, type Vec } from '../sim/math';
 import { FIXED_DT, predictPath } from '../sim/steering';
 import { TelegraphSystem } from '../sim/telegraph';
@@ -36,6 +37,7 @@ import type { World, WorldEvent } from '../sim/world';
 import { deckTargets, pickTarget } from '../sim/targets';
 import { BoatView, lerpColor } from './BoatView';
 import { drawLines, drawOrderMarkers, drawTargets } from './QuartersView';
+import { drawEmergeRing, drawNessBodies, drawNessShadows } from './NessView';
 import type { Controller } from './Controller';
 import { CrewView } from './CrewView';
 import {
@@ -51,7 +53,7 @@ import {
 export const OCEAN_FRACTION = 0.75;
 const WATER_TILE_M = 48;
 /** World bounding box of the hulls of some boats. */
-function boundsOf(boats: Boat[]): { x0: number; y0: number; x1: number; y1: number } {
+function boundsOf(boats: Boat[], nesses: Ness[] = []): { x0: number; y0: number; x1: number; y1: number } {
   let x0 = Infinity;
   let y0 = Infinity;
   let x1 = -Infinity;
@@ -65,6 +67,22 @@ function boundsOf(boats: Boat[]): { x0: number; y0: number; x1: number; y1: numb
       x1 = Math.max(x1, w.x);
       y0 = Math.min(y0, w.y);
       y1 = Math.max(y1, w.y);
+    }
+  }
+  for (const n of nesses) {
+    for (const p of n.parts) {
+      x0 = Math.min(x0, p.pos.x - p.radius);
+      x1 = Math.max(x1, p.pos.x + p.radius);
+      y0 = Math.min(y0, p.pos.y - p.radius);
+      y1 = Math.max(y1, p.pos.y + p.radius);
+    }
+    // A rising Ness: the whole ring.
+    if (n.emergeAt) {
+      const r = 12;
+      x0 = Math.min(x0, n.emergeAt.x - r);
+      x1 = Math.max(x1, n.emergeAt.x + r);
+      y0 = Math.min(y0, n.emergeAt.y - r);
+      y1 = Math.max(y1, n.emergeAt.y + r);
     }
   }
   return { x0, y0, x1, y1 };
@@ -138,6 +156,8 @@ export class BattleScene extends Phaser.Scene {
   private waterOcean!: Phaser.GameObjects.TileSprite;
   private waterStrip!: Phaser.GameObjects.TileSprite;
   private gOcean!: Phaser.GameObjects.Graphics;
+  private gShadow!: Phaser.GameObjects.Graphics;
+  private gNess!: Phaser.GameObjects.Graphics;
   private gStrip!: Phaser.GameObjects.Graphics;
   private views: BoatView[] = [];
   private crewView: CrewView | null = null;
@@ -212,6 +232,11 @@ export class BattleScene extends Phaser.Scene {
     this.onlyOcean(this.waterOcean);
     this.onlyStrip(this.waterStrip);
 
+    // Nesses: the shadow of one that is down sits under the hulls; one that is up is drawn over them.
+    this.gShadow = this.add.graphics().setDepth(9);
+    this.gNess = this.add.graphics().setDepth(20);
+    this.onlyOcean(this.gShadow);
+    this.onlyOcean(this.gNess);
     this.gOcean = this.add.graphics().setDepth(40);
     this.gStrip = this.add.graphics().setDepth(40);
     this.onlyOcean(this.gOcean);
@@ -486,6 +511,17 @@ export class BattleScene extends Phaser.Scene {
         this.labels.set(boat.id, label);
       }
     }
+    for (const n of this.ctl.world.nesses.list) {
+      const label = this.add.text(0, 0, n.def.name, {
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: `${Math.round(11 * this.dpr)}px`,
+        color: '#c9f2cf',
+        stroke: '#06180c',
+        strokeThickness: Math.round(3 * this.dpr),
+      }).setOrigin(0.5, 1).setDepth(45);
+      this.onlyOcean(label);
+      this.labels.set(n.id, label);
+    }
     this.rebuildCrew();
   }
 
@@ -599,6 +635,25 @@ export class BattleScene extends Phaser.Scene {
           }
           break;
         }
+        case 'nessSurface':
+          // It breaks the surface: a burst of spray and a wave out from the ring.
+          this.spray.explode(40, e.pos.x, e.pos.y);
+          this.rings.push({ x: e.pos.x, y: e.pos.y, t: this.clock, dur: 0.9, r: e.radius * 1.6, color: 0xe0f4ff });
+          this.rings.push({ x: e.pos.x, y: e.pos.y, t: this.clock, dur: 0.5, r: e.radius * 0.8, color: 0xffffff });
+          this.cameras.main.shake(320, 0.012);
+          break;
+        case 'nessDive':
+          this.spray.explode(20, e.pos.x, e.pos.y);
+          this.rings.push({ x: e.pos.x, y: e.pos.y, t: this.clock, dur: 0.8, r: 8, color: 0xe0f4ff });
+          break;
+        case 'nessHit':
+          this.chips.explode(8, e.pos.x, e.pos.y);
+          this.rings.push({ x: e.pos.x, y: e.pos.y, t: this.clock, dur: 0.3, r: 3, color: 0xffd28a });
+          break;
+        case 'nessDown':
+          this.spray.explode(40, e.pos.x, e.pos.y);
+          this.rings.push({ x: e.pos.x, y: e.pos.y, t: this.clock, dur: 1.2, r: 16, color: 0xe0f4ff });
+          break;
         case 'tapRefused':
           if (this.ctl.world.boats.find((x) => x.id === e.boatId)?.side === 'player') this.ctl.toast(e.why[0].toUpperCase() + e.why.slice(1));
           break;
@@ -650,7 +705,8 @@ export class BattleScene extends Phaser.Scene {
     let visH: number;
     if (fit) {
       // Fit: your boat and every boat that could be fighting you (or all of them, while none is). Centered in the free area.
-      const box = boundsOf(oceanFitBoats(world, this.fitSet));
+      const inPlay = oceanFit(world, this.fitSet);
+      const box = boundsOf(inPlay.boats, inPlay.nesses);
       const pad = clamp(Math.max(box.x1 - box.x0, box.y1 - box.y0) * t.fitPaddingShare, t.fitPaddingMin, Math.max(t.fitPaddingMin, t.fitPadding));
       cx = (box.x0 + box.x1) / 2;
       cy = (box.y0 + box.y1) / 2;
@@ -670,6 +726,17 @@ export class BattleScene extends Phaser.Scene {
         if (d <= range) this.inView.add(e.id);
         else if (d > range * (1 + Math.max(0, t.rangeHysteresis))) this.inView.delete(e.id);
         if (this.inView.has(e.id)) shown.push(e.motion);
+      }
+      for (const n of world.nesses.list) {
+        if (setup || n.state === 'dead') {
+          this.inView.delete(n.id);
+          continue;
+        }
+        const range = Math.max(mine, 60);
+        const d = dist({ x: n.x, y: n.y }, p);
+        if (d <= range || n.state !== 'submerged') this.inView.add(n.id);
+        else if (d > range * (1 + Math.max(0, t.rangeHysteresis))) this.inView.delete(n.id);
+        if (this.inView.has(n.id)) shown.push({ x: n.x, y: n.y }, n.parts[n.parts.length - 1].pos);
       }
       let dx = Math.abs(p.x - cx);
       let dy = Math.abs(p.y - cy);
@@ -808,6 +875,10 @@ export class BattleScene extends Phaser.Scene {
     const cam = this.oceanCam;
     const px = (n: number) => this.px(cam, n);
     g.clear();
+    this.gShadow.clear();
+    this.gNess.clear();
+    drawNessShadows(this.gShadow, world, px, this.clock);
+    drawNessBodies(this.gNess, world, px, this.clock);
 
     this.drawRings(g, px);
     this.drawTracers(g, px);
@@ -860,6 +931,17 @@ export class BattleScene extends Phaser.Scene {
       if (label.text !== text) label.setText(text);
       label.setScale(1 / this.oceanCam.zoom).setPosition(e.motion.x, e.motion.y - e.layout.length / 2 - px(23));
       label.setAlpha(1 - world.sinkAnim(e));
+    }
+    // Ness names over the ones that are up (a shadow stays unnamed).
+    for (const n of world.nesses.list) {
+      const label = this.labels.get(n.id);
+      if (!label) continue;
+      const show = n.state === 'surfaced' || n.state === 'emerging';
+      label.setVisible(show);
+      if (!show) continue;
+      const h = n.parts[0];
+      label.setScale(1 / this.oceanCam.zoom).setPosition(h.pos.x, h.pos.y - h.radius - px(20));
+      label.setAlpha(n.state === 'emerging' ? 0.5 : 1);
     }
   }
 
@@ -1075,6 +1157,10 @@ export class BattleScene extends Phaser.Scene {
       const fadeIn = clamp(t.elapsed / Math.max(0.01, tt.fadeInTime), 0, 1);
       const fadeOut = t.impacted ? clamp(t.linger / Math.max(0.01, tt.lingerTime), 0, 1) : 1;
       const a = fadeIn * fadeOut;
+      if (t.kind === 'emerge') {
+        drawEmergeRing(g, t, k, a, px, this.clock);
+        continue;
+      }
       if (t.kind === 'area') {
         // A burst of pellets: one shaded disk where they'll land, a ring closing in for timing.
         const r = Math.max(t.size, px(10));

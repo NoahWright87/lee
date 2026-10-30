@@ -23,12 +23,14 @@
 import { ARCHETYPE_NAMES, ARCHETYPES, crewCount, type EnemySpec } from '../config/encounters';
 import { ITEMS, type ItemCategory } from '../config/items';
 import { JOB_INFO, LEE_DEFS, STAT_LABELS } from '../config/lees';
+import { NESS, NESS_ORDER } from '../config/ness';
 import { SHIP_ORDER, SHIPS } from '../config/ships';
 import { FACING_ARROW, type Facing } from '../config/slots';
 import type { Controller } from '../game/Controller';
 import type { Tuning } from '../config/tuning';
 import { BAR_KEYS, BAR_NAMES, boatBars, boatCard, type BoatBars, type BoatCard } from '../sim/boatStats';
 import { startingJob } from '../sim/crew';
+import type { NessSpec } from '../sim/ness';
 import { bonusLabel } from '../sim/levels';
 import { slotById, slotFacing } from '../sim/loadout';
 import { addItem, ashore, autoEquipAll, buildFor, cargo, cargoLimit, cargoOver, crewMax, encounterSummary, itemOf, setupFor, type CrewMember, type RunState } from '../sim/run';
@@ -375,7 +377,7 @@ export class RefitPanel {
   private render(cheap = false): void {
     if (!this.on) return;
     const run = this.run!;
-    const sig = JSON.stringify([run.loadout, run.facings, run.crew.map((m) => [m.uid, m.home, m.trinkets, m.level]), run.items.length, run.gold, this.ctl.refitFor, this.sel, this.preview?.dest, this.tab, this.statsOpen, this.sheetFor, this.sandboxOpen, this.ctl.runId, this.ctl.sandbox?.enemies]);
+    const sig = JSON.stringify([run.loadout, run.facings, run.crew.map((m) => [m.uid, m.home, m.trinkets, m.level]), run.items.length, run.gold, this.ctl.refitFor, this.sel, this.preview?.dest, this.tab, this.statsOpen, this.sheetFor, this.sandboxOpen, this.ctl.runId, this.ctl.sandbox?.enemies, this.ctl.sandbox?.nesses]);
     if (cheap && sig === this.lastSig) return;
     this.lastSig = sig;
     const nowKey = JSON.stringify([run.loadout, run.facings, run.crew.map((m) => [m.uid, m.home, m.trinkets, m.level, m.job]), this.ctl.runId]);
@@ -669,8 +671,9 @@ export class RefitPanel {
 
   private sandboxSummary(): string {
     const e = this.ctl.sandbox?.enemies ?? [];
-    if (!e.length) return 'no enemies';
-    return e.map((s) => `${SHIPS[s.ship]?.name ?? s.ship} (${crewCount(s)} Lees)`).join(' + ');
+    const n = this.ctl.sandbox?.nesses ?? [];
+    if (!e.length && !n.length) return 'no enemies';
+    return [...e.map((s) => `${SHIPS[s.ship]?.name ?? s.ship} (${crewCount(s)} Lees)`), ...n.map((s) => `${NESS[s.kind]?.name ?? s.kind}${(s.level ?? 1) > 1 ? ` Lv ${s.level}` : ''}`)].join(' + ');
   }
 
   // ------------------------------------------------------------ the selection card
@@ -937,6 +940,29 @@ export class RefitPanel {
       list.append(card);
     });
     box.append(list, button('+ Enemy boat', 'hud-btn', () => update((e) => e.push({ ship: 'basic', ai: 'standard', crew: [{ type: 'basic', count: 4 }] }))));
+    // Sea monsters: any number, any kind, alone or with the ships.
+    const monsters = el('div', 'enc-list');
+    const updateNess = (fn: (n: NessSpec[]) => void) => {
+      const next = structuredClone(sb.nesses);
+      fn(next);
+      ctl.setSandboxNesses(next);
+    };
+    sb.nesses.forEach((spec, ni) => {
+      const row = el('div', 'row enc-boat');
+      const kind = el('select');
+      for (const id of NESS_ORDER) kind.append(new Option(NESS[id].name, id));
+      kind.value = spec.kind;
+      kind.onchange = () => updateNess((n) => (n[ni].kind = kind.value));
+      const lvl = el('input');
+      lvl.type = 'number';
+      lvl.min = '1';
+      lvl.max = '10';
+      lvl.value = String(spec.level ?? 1);
+      lvl.onchange = () => updateNess((n) => (n[ni].level = Math.max(1, Math.round(Number(lvl.value) || 1))));
+      row.append(kind, el('span', '', 'Lv'), lvl, button('✕', 'hud-btn', () => updateNess((n) => n.splice(ni, 1))));
+      monsters.append(row);
+    });
+    box.append(monsters, button('+ Ness', 'hud-btn', () => updateNess((n) => n.push({ kind: NESS_ORDER[0], level: 1 }))));
     box.append(el('div', 'setup-hint', 'Enemies sail their ship’s standard fit (generated ones their own parts). Sandbox assists (Tune → Global) apply here, never in a run. The cargo is the whole catalog.'));
   }
 }
