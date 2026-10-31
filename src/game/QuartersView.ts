@@ -6,9 +6,11 @@
 import Phaser from 'phaser';
 import type { DeckOrder } from '../sim/orders';
 import { railPoint } from '../sim/lines';
+import { headOf } from '../sim/ness';
 import { clamp, dist, lerp, toWorld, type Vec } from '../sim/math';
 import type { DeckTarget } from '../sim/targets';
 import type { World } from '../sim/world';
+import { ZoneSystem } from '../sim/zones';
 
 const ROPE = 0xd9c08a;
 const ENEMY_ROPE = 0xff9a6a;
@@ -92,6 +94,12 @@ function orderPos(world: World, o: DeckOrder): Vec | null {
       const k = clamp(s.t / Math.max(1e-6, s.dur), 0, 1);
       return { x: lerp(from.x, to.x, k), y: lerp(from.y, to.y, k) };
     }
+    case 'stab':
+      return o.ness ? headOf(o.ness).pos : null;
+    case 'flee': {
+      const tile = boat.grid.tiles[o.tile];
+      return tile ? toWorld(tile.center, boat.motion, boat.motion.heading) : null;
+    }
     case 'bail':
     case 'repair':
     case 'man': {
@@ -141,5 +149,68 @@ export function drawTargets(g: G, targets: DeckTarget[], px: (n: number) => numb
     g.lineStyle(px(1), HINT, 0.6);
     if (t.b) g.lineBetween(t.a.x, t.a.y, t.b.x, t.b.y);
     g.strokeCircle(t.a.x, t.a.y, t.radius);
+  }
+}
+
+const RED = 0xff2b2b;
+const BLUE = 0x3aa0ff;
+
+/** Danger zones on a deck: the tiles flash (red for a bite or a smash, blue for a tail slap), fill in as the blow nears, and show a mark in the middle to tap. */
+export function drawZones(g: G, world: World, px: (n: number) => number, clock: number): void {
+  for (const z of world.zones.list) {
+    const boat = z.boat;
+    const k = ZoneSystem.progress(z);
+    const color = z.kind === 'slap' ? BLUE : RED;
+    const flash = 0.5 + 0.5 * Math.sin(clock * (8 + 10 * k));
+    let cx = 0;
+    let cy = 0;
+    for (const i of z.tiles) {
+      const t = boat.grid.tiles[i];
+      const corners = [
+        toWorld({ x: t.x0, y: t.y0 }, boat.motion, boat.motion.heading),
+        toWorld({ x: t.x1, y: t.y0 }, boat.motion, boat.motion.heading),
+        toWorld({ x: t.x1, y: t.y1 }, boat.motion, boat.motion.heading),
+        toWorld({ x: t.x0, y: t.y1 }, boat.motion, boat.motion.heading),
+      ];
+      const c = toWorld(t.center, boat.motion, boat.motion.heading);
+      cx += c.x;
+      cy += c.y;
+      if (z.impacted) {
+        // The blow: a white flash that fades with the linger.
+        g.fillStyle(0xffffff, 0.55 * clamp(z.linger / 0.45, 0, 1));
+      } else {
+        g.fillStyle(color, 0.14 + 0.3 * k * (0.6 + 0.4 * flash));
+      }
+      g.fillPoints(corners, true);
+      if (!z.impacted) {
+        g.lineStyle(px(1.8), color, 0.55 + 0.4 * flash);
+        g.strokePoints(corners, true);
+      }
+    }
+    if (z.impacted) continue;
+    // The mark to tap: a warning triangle (a droplet for the slap), sized for a finger.
+    const n = Math.max(1, z.tiles.length);
+    const x = cx / n;
+    const y = cy / n;
+    const r = Math.max(px(11), 0.9);
+    if (z.kind === 'slap') {
+      g.fillStyle(0xcfe8ff, 0.95);
+      g.fillTriangle(x, y - r, x - r * 0.75, y + r * 0.15, x + r * 0.75, y + r * 0.15);
+      g.fillCircle(x, y + r * 0.2, r * 0.75);
+      g.lineStyle(px(1.4), 0x0b3a72, 1);
+      g.strokeCircle(x, y + r * 0.2, r * 0.75);
+    } else {
+      g.fillStyle(0xffd24a, 1);
+      g.fillTriangle(x, y - r, x - r * 1.05, y + r * 0.8, x + r * 1.05, y + r * 0.8);
+      g.lineStyle(px(1.6), 0x3a0000, 1);
+      g.strokeTriangle(x, y - r, x - r * 1.05, y + r * 0.8, x + r * 1.05, y + r * 0.8);
+      g.lineStyle(px(2.2), 0x3a0000, 1);
+      g.lineBetween(x, y - r * 0.4, x, y + r * 0.2);
+      g.fillStyle(0x3a0000, 1);
+      g.fillCircle(x, y + r * 0.5, px(1.3));
+    }
+    // A thin ring closing in: time left.
+    g.lineStyle(px(1.4), color, 0.6);
+    g.strokeCircle(x, y, r * (1.2 + 1.6 * (1 - k)));
   }
 }

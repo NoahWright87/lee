@@ -91,8 +91,10 @@ export function drawNessBodies(g: G, world: World, px: (n: number) => number, cl
     }
     for (let i = n.parts.length - 1; i >= 0; i--) {
       const p = n.parts[i];
-      const r = p.radius * (0.6 + 0.4 * up);
-      const c = color(p.hp, p.maxHp);
+      // Rearing back for a blow: the head swells and flushes red; a tail slap lifts the tail.
+      const rearing = p.role === 'head' ? n.rear : n.act?.kind === 'slap' && p.role === 'tail' ? n.rear : 0;
+      const r = p.radius * (0.6 + 0.4 * up) * (1 + 0.3 * rearing);
+      const c = mix(color(p.hp, p.maxHp), n.act?.kind === 'slap' ? 0x3aa0ff : 0xff3a2a, 0.55 * rearing * (0.5 + 0.5 * Math.sin(clock * 16)));
       g.fillStyle(0x07121a, 0.35 * a);
       g.fillCircle(p.pos.x + 0.5, p.pos.y + 0.7, r * 1.05);
       g.fillStyle(c, 0.97 * a);
@@ -109,13 +111,34 @@ export function drawNessBodies(g: G, world: World, px: (n: number) => number, cl
     const h = headOf(n);
     const f = { x: Math.cos(n.heading), y: Math.sin(n.heading) };
     const s = { x: -f.y, y: f.x };
-    for (const side of [-1, 1]) {
+    const stunned = n.stunUntil !== null;
+    for (const side of stunned ? [] : [-1, 1]) {
       const ex = h.pos.x + f.x * h.radius * 0.45 + s.x * side * h.radius * 0.5;
       const ey = h.pos.y + f.y * h.radius * 0.45 + s.y * side * h.radius * 0.5;
       g.fillStyle(0xfdfdf2, a);
       g.fillCircle(ex, ey, h.radius * 0.26);
       g.fillStyle(0x10131a, a);
       g.fillCircle(ex + f.x * h.radius * 0.1, ey + f.y * h.radius * 0.1, h.radius * 0.13);
+    }
+    if (stunned) {
+      // Eyes crossed out, and stars circling its head.
+      for (const side of [-1, 1]) {
+        const ex = h.pos.x + f.x * h.radius * 0.45 + s.x * side * h.radius * 0.5;
+        const ey = h.pos.y + f.y * h.radius * 0.45 + s.y * side * h.radius * 0.5;
+        const q = h.radius * 0.22;
+        g.lineStyle(px(1.8), 0x10131a, a);
+        g.lineBetween(ex - q, ey - q, ex + q, ey + q);
+        g.lineBetween(ex - q, ey + q, ex + q, ey - q);
+      }
+      for (let i = 0; i < 3; i++) {
+        const ang = clock * 3 + (i * Math.PI * 2) / 3;
+        const sx = h.pos.x + Math.cos(ang) * h.radius * 1.5;
+        const sy = h.pos.y + Math.sin(ang) * h.radius * 0.8 - h.radius * 0.9;
+        g.fillStyle(0xffe45a, a);
+        g.fillCircle(sx, sy, Math.max(px(2.4), h.radius * 0.18));
+        g.lineStyle(px(1), 0xfff6b0, a);
+        g.strokeCircle(sx, sy, Math.max(px(3.6), h.radius * 0.3));
+      }
     }
     if (n.state === 'surfaced') drawHealth(g, n, h.pos, h.radius, px, a);
   }

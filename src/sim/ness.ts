@@ -7,10 +7,11 @@
 // A kind is data (config/ness.ts and the tuning numbers); the behavior here is
 // written against "a Ness with a state" so later kinds add attacks, not code paths.
 
-import { NESS, type NessDef, type NessKindTuning } from '../config/ness';
+import { NESS, type NessAttack, type NessDef, type NessKindTuning } from '../config/ness';
 import type { Tuning } from '../config/tuning';
-import { distanceToHull, type Boat } from './boat';
-import { clamp, dist, wrapAngle, type Rng, type Vec } from './math';
+import { distanceToHull, keelSegment, type Boat } from './boat';
+import { clamp, closestOnSegment, dist, wrapAngle, type Rng, type Vec } from './math';
+import { blockTiles, circleTiles, pushAway, ZoneSystem, type DangerZone } from './zones';
 import type { World } from './world';
 
 export type NessState = 'submerged' | 'emerging' | 'surfaced' | 'dead';
@@ -64,6 +65,15 @@ export interface Ness {
   circle: number;
   /** World time it died, or null. */
   diedAt: number | null;
+  /** Seconds until its next deck attack. */
+  cool: number;
+  /** The attack it is making (the zone it put on your deck), or null; how far along its rear-back is (0..1, drawn). */
+  act: { kind: NessAttack; zone: DangerZone } | null;
+  rear: number;
+  /** Which of its attacks is next. */
+  attackIdx: number;
+  /** After a smash: its head rests on your deck until this world time (stunned), or null. */
+  stunUntil: number | null;
 }
 
 const TRAIL = 1;
@@ -107,6 +117,11 @@ export function createNess(id: number, spec: NessSpec, t: Tuning, pos: Vec, head
     hurtSince: 0,
     circle: rng.next() < 0.5 ? -1 : 1,
     diedAt: null,
+    cool: k.firstAttack,
+    act: null,
+    rear: 0,
+    attackIdx: 0,
+    stunUntil: null,
   };
   // The body starts stretched straight out behind the head.
   const length = bodyLength(n);
@@ -200,6 +215,9 @@ export class NessSystem {
         n.diedAt = w.time;
         n.vx = 0;
         n.vy = 0;
+        n.act = null;
+        n.stunUntil = null;
+        w.zones.cancel(n.id);
         w.events.push({ type: 'nessDown', nessId: n.id, pos: { ...part.pos } });
       }
     }
@@ -290,14 +308,73 @@ export class NessSystem {
     w.nessSurfaced(n, at, k);
   }
 
-  /** Up: it swims at your hull and keeps its distance, until its time is up or it is hurt enough to dive. */
+  /**
+   * Up: a Ness with deck attacks comes alongside your hull and uses them in turn (a warning zone on your deck,
+   * then the blow). One without keeps its distance. It dives when its time is up or it is hurt enough, never mid-blow.
+   */
   private surfaced(w: World, n: Ness, k: NessKindTuning, dt: number): void {
     const me = w.player;
     const head = { x: n.x, y: n.y };
-    const goal = standoffPoint(me, head, k.standoff, n.circle);
-    swim(n, goal, k, dt);
     const hurtEnough = n.hurtSince >= headOf(n).maxHp * Math.max(0, k.diveHurt);
-    if (n.stateT >= n.hold || hurtEnough || w.isSinking(me)) this.dive(w, n, k);
+    // A smash leaves its head resting on your deck, stunned. It can't move or attack until it lifts.
+    if (n.stunUntil !== null) {
+      n.vx = 0;
+      n.vy = 0;
+      n.rear = 0;
+      if (w.time < n.stunUntil && !w.isSinking(me)) return;
+      n.stunUntil = null;
+      n.cool = Math.max(n.cool, 0.8);
+      w.events.push({ type: 'nessLift', nessId: n.id });
+    }
+    const attacks = n.def.attacks;
+    const gap = distanceToHull(me, head);
+    const goal = attacks.length ? alongsidePoint(me, head, k.standoff, n.circle) : standoffPoint(me, head, Math.max(k.standoff, 12), n.circle);
+    swim(n, goal, k, dt);
+    if (n.act) {
+      n.rear = ZoneSystem.progress(n.act.zone);
+      if (n.act.zone.impacted) {
+        n.cool = k[`${n.act.kind}Cooldown` as const] * w.rng.range(0.85, 1.15);
+        n.act = null;
+        n.rear = 0;
+      }
+    } else {
+      // Between blows: dive if its time is up or it is hurt enough (never mid-blow), else wait out the cooldown and strike.
+      n.rear = 0;
+      if (n.stateT >= n.hold || hurtEnough || w.isSinking(me)) {
+        this.dive(w, n, k);
+        return;
+      }
+      n.cool -= dt;
+      if (attacks.length && n.cool <= 0 && gap <= k.attackRange && !w.result) this.beginAttack(w, n, k, attacks[n.attackIdx++ % attacks.length]);
+    }
+  }
+
+  /** Rear back: put the warning on your deck where the blow will land. */
+  private beginAttack(w: World, n: Ness, k: NessKindTuning, kind: NessAttack): void {
+    const me = w.player;
+    const head = { x: n.x, y: n.y };
+    const area =
+      kind === 'bite' ? circleTiles(me, head, k.biteRadius) : kind === 'smash' ? blockTiles(me, head, k.smashDepth, k.smashWidth) : blockTiles(me, head, k.slapDepth, k.slapWidth);
+    const warn = kind === 'bite' ? k.biteWarn : kind === 'smash' ? k.smashWarn : k.slapWarn;
+    const zone = w.zones.add({ boat: me, kind, tiles: area.tiles, warn, source: n.id, push: pushAway(area.side), side: area.side });
+    n.act = { kind, zone };
+    w.events.push({ type: 'zoneWarn', boatId: me.id, zoneId: zone.id, kind, nessId: n.id, warn });
+  }
+
+  /** A smash lands: the head comes down and rests on the deck there, body trailing out over the rail. */
+  rest(w: World, n: Ness, at: Vec, outward: Vec, seconds: number): void {
+    n.x = at.x;
+    n.y = at.y;
+    n.heading = Math.atan2(outward.y, outward.x);
+    n.vx = 0;
+    n.vy = 0;
+    n.path = [{ x: at.x, y: at.y }];
+    const length = bodyLength(n);
+    for (let d = TRAIL; d <= length + TRAIL; d += TRAIL) n.path.push({ x: at.x + outward.x * d, y: at.y + outward.y * d });
+    n.stunUntil = w.time + seconds;
+    n.act = null;
+    n.rear = 0;
+    layOut(n);
   }
 
   private dive(w: World, n: Ness, k: NessKindTuning): void {
@@ -306,6 +383,10 @@ export class NessSystem {
     n.since = w.time;
     n.hold = w.rng.range(k.submergedMin, k.submergedMax);
     n.circle = w.rng.next() < 0.5 ? -1 : 1;
+    n.act = null;
+    n.rear = 0;
+    n.stunUntil = null;
+    w.zones.cancel(n.id);
     w.events.push({ type: 'nessDive', nessId: n.id, pos: { x: n.x, y: n.y } });
   }
 }
@@ -347,6 +428,23 @@ function lurkPoint(me: Boat, from: Vec, range: number, circle: number): Vec {
   const a = Math.atan2(from.y - c.y, from.x - c.x);
   const r = range + Math.max(me.layout.length, me.layout.beam) / 2;
   return { x: c.x + Math.cos(a + circle * 0.5) * r, y: c.y + Math.sin(a + circle * 0.5) * r };
+}
+
+/** Alongside: `standoff` m off the hull's edge, on the side the head is already on. */
+function alongsidePoint(me: Boat, from: Vec, standoff: number, circle: number): Vec {
+  const [a, b] = keelSegment(me);
+  const c = closestOnSegment(from, a, b);
+  let dx = from.x - c.x;
+  let dy = from.y - c.y;
+  let d = Math.hypot(dx, dy);
+  if (d < 1e-6) {
+    const h = me.motion.heading + (circle > 0 ? Math.PI / 2 : -Math.PI / 2);
+    dx = Math.cos(h);
+    dy = Math.sin(h);
+    d = 1;
+  }
+  const out = me.layout.beam / 2 + standoff;
+  return { x: c.x + (dx / d) * out, y: c.y + (dy / d) * out };
 }
 
 /** Surfaced: head for the ring `standoff` m off your hull, then slide around it. */

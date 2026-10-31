@@ -36,7 +36,7 @@ import { TelegraphSystem } from '../sim/telegraph';
 import type { World, WorldEvent } from '../sim/world';
 import { deckTargets, pickTarget } from '../sim/targets';
 import { BoatView, lerpColor } from './BoatView';
-import { drawLines, drawOrderMarkers, drawTargets } from './QuartersView';
+import { drawLines, drawOrderMarkers, drawTargets, drawZones } from './QuartersView';
 import { drawEmergeRing, drawNessBodies, drawNessShadows } from './NessView';
 import type { Controller } from './Controller';
 import { CrewView } from './CrewView';
@@ -158,6 +158,7 @@ export class BattleScene extends Phaser.Scene {
   private gOcean!: Phaser.GameObjects.Graphics;
   private gShadow!: Phaser.GameObjects.Graphics;
   private gNess!: Phaser.GameObjects.Graphics;
+  private gNessStrip!: Phaser.GameObjects.Graphics;
   private gStrip!: Phaser.GameObjects.Graphics;
   private views: BoatView[] = [];
   private crewView: CrewView | null = null;
@@ -237,6 +238,8 @@ export class BattleScene extends Phaser.Scene {
     this.gNess = this.add.graphics().setDepth(20);
     this.onlyOcean(this.gShadow);
     this.onlyOcean(this.gNess);
+    this.gNessStrip = this.add.graphics().setDepth(20);
+    this.onlyStrip(this.gNessStrip);
     this.gOcean = this.add.graphics().setDepth(40);
     this.gStrip = this.add.graphics().setDepth(40);
     this.onlyOcean(this.gOcean);
@@ -642,6 +645,13 @@ export class BattleScene extends Phaser.Scene {
           this.rings.push({ x: e.pos.x, y: e.pos.y, t: this.clock, dur: 0.5, r: e.radius * 0.8, color: 0xffffff });
           this.cameras.main.shake(320, 0.012);
           break;
+        case 'zoneImpact': {
+          this.chips.explode(e.kind === 'smash' ? 26 : 8, e.pos.x, e.pos.y);
+          if (e.kind === 'slap') this.spray.explode(24, e.pos.x, e.pos.y);
+          this.rings.push({ x: e.pos.x, y: e.pos.y, t: this.clock, dur: 0.5, r: e.kind === 'smash' ? 7 : 5, color: e.kind === 'slap' ? 0x9fd0ff : 0xffd28a });
+          if (e.kind === 'smash') this.cameras.main.shake(220, 0.012);
+          break;
+        }
         case 'nessDive':
           this.spray.explode(20, e.pos.x, e.pos.y);
           this.rings.push({ x: e.pos.x, y: e.pos.y, t: this.clock, dur: 0.8, r: 8, color: 0xe0f4ff });
@@ -786,7 +796,8 @@ export class BattleScene extends Phaser.Scene {
     // The close-up eases from your deck alone to every close deck as they close in. Fit: whenever another deck is in play.
     const deckFit = !setup && this.ctl.zoomFit('deck');
     const closeK = deckFit ? 1 : clamp(this.expandK, 0, 1);
-    if (decks.length > 1 && closeK > 0) {
+    const monsters = setup ? [] : world.nessesAtRail();
+    if ((decks.length > 1 || monsters.length) && closeK > 0) {
       // Bounding box of every deck in your boat's frame.
       let x0 = Infinity;
       let y0 = Infinity;
@@ -801,6 +812,16 @@ export class BattleScene extends Phaser.Scene {
           x1 = Math.max(x1, l.x);
           y0 = Math.min(y0, l.y);
           y1 = Math.max(y1, l.y);
+        }
+      }
+      // A Ness alongside: every part of it is part of the picture.
+      for (const n of monsters) {
+        for (const part of n.parts) {
+          const l = toLocal(part.pos, p, p.heading);
+          x0 = Math.min(x0, l.x - part.radius);
+          x1 = Math.max(x1, l.x + part.radius);
+          y0 = Math.min(y0, l.y - part.radius);
+          y1 = Math.max(y1, l.y + part.radius);
         }
       }
       const zoom = Math.max(
@@ -883,6 +904,7 @@ export class BattleScene extends Phaser.Scene {
     this.drawRings(g, px);
     this.drawTracers(g, px);
     drawLines(g, world, px);
+    drawZones(g, world, px, this.clock);
     if (this.ctl.debug) this.drawDebug(g, world, px);
     if (world.phase === 'ready') this.drawRangeRing(g, world, px);
     // Minimum-range rings while your finger is on the ocean (and always in debug).
@@ -1410,6 +1432,8 @@ export class BattleScene extends Phaser.Scene {
     const cam = this.stripCam;
     const px = (n: number) => this.px(cam, n);
     g.clear();
+    this.gNessStrip.clear();
+    drawNessBodies(this.gNessStrip, world, px, this.clock);
     this.drawRings(g, px);
 
     const b = world.player;
@@ -1437,6 +1461,7 @@ export class BattleScene extends Phaser.Scene {
     const decks = this.stripDecks(world);
     if (fight) {
       drawLines(g, world, px);
+      drawZones(g, world, px, this.clock);
       drawOrderMarkers(g, world, px, this.clock);
       if (this.ctl.debug) drawTargets(g, this.deckTargetsNow(), px);
     }

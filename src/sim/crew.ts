@@ -180,6 +180,9 @@ export interface Lee {
   locked: boolean;
   /** Seconds it has wanted to step somewhere it can't (a full tile, a Lee in the way). */
   blockedFor: number;
+  /** Knocked off its post (a push): seconds it can't act or walk, and the slide it is making over the deck. */
+  stagger: number;
+  slide: { from: Vec; to: Vec; t: number; dur: number } | null;
   /** Wounded (below boarding.retreatAt) with enemies around: falling back, shooting instead of fighting. */
   retreating: boolean;
   /** Opposing Lee it is hitting (debug). */
@@ -366,6 +369,8 @@ export function createLee(id: number, number: number, def: LeeDef, side: Side, b
     engaged: false,
     locked: false,
     blockedFor: 0,
+    stagger: 0,
+    slide: null,
     retreating: false,
     meleeTarget: null,
     meleeCd: 0.5,
@@ -501,6 +506,62 @@ export function leesOn(deck: Boat, lees: Lee[]): Lee[] {
 /** Living Lees of `side`'s opponents standing on a deck. */
 export function foesOn(deck: Boat, side: Side, lees: Lee[]): Lee[] {
   return lees.filter((l) => l.alive && !l.swing && l.deck === deck && l.side !== side);
+}
+
+/**
+ * Shove a Lee along its deck: up to `tiles` tiles in the local direction `dir`, a step at a time to the
+ * neighbor that lies that way. It slides there, is knocked off whatever it was doing for `stagger`
+ * seconds (its job and task are kept: it walks back after), and if it hit the edge of the deck first, the
+ * push is a hard surface. Returns the tiles moved and whether it hit something hard.
+ */
+export function pushLee(lee: Lee, dir: Vec, tiles: number, stagger: number): { moved: number; hard: boolean } {
+  const g = lee.deck.grid;
+  const len = Math.hypot(dir.x, dir.y) || 1;
+  const d = { x: dir.x / len, y: dir.y / len };
+  let cur = standingTile(lee);
+  let moved = 0;
+  for (let i = 0; i < Math.round(tiles); i++) {
+    let best = -1;
+    let bestDot = 0.6;
+    for (const n of g.tiles[cur].neighbors) {
+      const dx = g.tiles[n].center.x - g.tiles[cur].center.x;
+      const dy = g.tiles[n].center.y - g.tiles[cur].center.y;
+      const dot = (dx * d.x + dy * d.y) / (Math.hypot(dx, dy) || 1);
+      if (dot > bestDot) {
+        bestDot = dot;
+        best = n;
+      }
+    }
+    if (best < 0) break;
+    cur = best;
+    moved++;
+  }
+  const hard = moved < Math.round(tiles);
+  const to = { ...g.tiles[cur].center };
+  lee.slide = { from: { ...lee.pos }, to, t: 0, dur: 0.22 };
+  lee.tile = cur;
+  lee.path = [];
+  lee.working = false;
+  lee.progress = 0;
+  lee.stagger = Math.max(lee.stagger, stagger);
+  lee.stuckSince = null;
+  lee.deck.crew.thinkIn = 0;
+  return { moved, hard };
+}
+
+/** A knocked Lee: slide to where it landed, then lie there until the stagger is over. */
+function stepKnock(lee: Lee, dt: number): void {
+  lee.working = false;
+  const s = lee.slide;
+  if (s) {
+    s.t += dt;
+    const k = Math.min(1, s.t / Math.max(1e-6, s.dur));
+    lee.pos = { x: s.from.x + (s.to.x - s.from.x) * k, y: s.from.y + (s.to.y - s.from.y) * k };
+    if (k >= 1) lee.slide = null;
+    return;
+  }
+  lee.stagger = Math.max(0, lee.stagger - dt);
+  if (lee.stagger <= 0) lee.deck.crew.thinkIn = 0;
 }
 
 /** The tile a Lee is standing on (by position, falling back to its last tile). */
@@ -1498,6 +1559,12 @@ export function stepCrew(boat: Boat, ctx: CrewContext, dt: number): CrewStepResu
       lee.stats.time.swing += dt;
       lee.stats.awayFromHome += dt;
       if (landed) (lee.deck === boat ? out.returned : out.boarded).push(lee);
+      lee.progress = 0;
+      continue;
+    }
+    // Knocked down by a push: slides, then can't act for a moment.
+    if (lee.slide || lee.stagger > 0) {
+      stepKnock(lee, dt);
       lee.progress = 0;
       continue;
     }

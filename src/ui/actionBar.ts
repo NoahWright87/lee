@@ -86,7 +86,7 @@ class BarPanel {
   }
 
   /** Lay out a crew's bars. `avail` is the width the columns may use (px); `seats(job)` adds hollow columns for empty seats. */
-  update(boat: Boat, time: number, t: Tuning, avail: number, seats: (j: Job) => number): void {
+  update(boat: Boat, time: number, t: Tuning, avail: number, seats: (j: Job) => number, danger: (l: Lee) => boolean = () => false): void {
     const m = this.m;
     const rows: Record<Job, Lee[]> = { sail: [], fire: [], board: [], fix: [] };
     for (const l of boat.crew.lees) if (l.alive) rows[l.job].push(l);
@@ -164,6 +164,7 @@ class BarPanel {
       b.el.classList.toggle('away', l.deck !== l.boat || !!l.swing);
       b.el.classList.toggle('fighting', l.engaged);
       b.el.classList.toggle('order', l.order !== null);
+      b.el.classList.toggle('danger', danger(l));
       b.el.classList.toggle('low', frac < 0.3);
       const buff = buffOf(l, boat, t);
       b.chev.textContent = buff > 0 ? '▲' : buff < 0 ? '▼' : '';
@@ -335,7 +336,7 @@ export class ActionBar {
 
     // Bars: columns use the width of their side of the screen.
     const width = this.root.clientWidth || 360;
-    this.mine.update(w.player, w.time, t, Math.max(60, width * 0.58 - MINE.icon - 10), (j) => jobSeats(w.player, j, t));
+    this.mine.update(w.player, w.time, t, Math.max(60, width * 0.58 - MINE.icon - 10), (j) => jobSeats(w.player, j, t), (l) => w.zones.inDanger(l));
 
     // Enemy bars: the ship you're closing on (or that's closing on you), only while melee is imminent.
     const engaged = w.engagedEnemy();

@@ -13,13 +13,17 @@
 
 import type { Job } from '../config/lees';
 import { isWrecked, structureFraction, type Boat } from './boat';
-import { isWounded, leeStat, repairable, setDestination, setJob, STATION_JOB, takeOrder, type Lee } from './crew';
+import { isWounded, leeStat, repairable, setDestination, setJob, standingTile, STATION_JOB, takeOrder, type Lee } from './crew';
+import { nessKind } from './ness';
 import type { Line, RailRef } from './lines';
 import { railGap, railPoint } from './lines';
 import { dist, toLocal } from './math';
+import type { Ness } from './ness';
+import { headOf } from './ness';
+import type { DangerZone } from './zones';
 import type { World } from './world';
 
-export type OrderKind = 'throw' | 'lower' | 'push' | 'cutLine' | 'wreckPlank' | 'cutRope' | 'bail' | 'repair' | 'man';
+export type OrderKind = 'throw' | 'lower' | 'push' | 'cutLine' | 'wreckPlank' | 'cutRope' | 'bail' | 'repair' | 'man' | 'flee' | 'stab';
 
 /** Who answers: a cutter is ⚔️ or 🛠️ (whichever is closer and free), a fixer is 🛠️, anyone else: whoever is nearest. */
 export type OrderRole = 'cutter' | 'fixer' | 'nearest';
@@ -37,6 +41,10 @@ export interface DeckOrder {
   line?: Line;
   /** cutRope: the Lee swinging on the rope. */
   swinger?: Lee;
+  /** flee: the danger zone to get out of. */
+  zone?: DangerZone;
+  /** stab: the Ness whose head is down. */
+  ness?: Ness;
   /** bail, repair: the hull part. */
   part?: number;
   /** man: the job the Lee was given with the station (change its job and the order ends). */
@@ -65,6 +73,8 @@ export const ORDER_LABEL: Record<OrderKind, string> = {
   bail: 'Bail here',
   repair: 'Repair here',
   man: 'Man this station',
+  flee: 'Step out of the way',
+  stab: 'Stab the head',
 };
 
 /** Jobs that answer an order of each role straight away; anyone else only after a short wait (you're never stuck). */
@@ -83,14 +93,14 @@ export class OrderSystem {
   }
 
   /** The order on this target already (so a second tap adds a Lee instead). */
-  find(boat: Boat, kind: OrderKind, target: { rail?: RailRef; line?: Line; swinger?: Lee; part?: number; tile?: number }): DeckOrder | undefined {
-    return this.list.find((o) => o.boat === boat && o.kind === kind && o.rail?.rail === target.rail?.rail && o.line === target.line && o.swinger === target.swinger && o.part === target.part && (kind !== 'man' || o.tile === target.tile));
+  find(boat: Boat, kind: OrderKind, target: { rail?: RailRef; line?: Line; swinger?: Lee; part?: number; tile?: number; ness?: Ness }): DeckOrder | undefined {
+    return this.list.find((o) => o.boat === boat && o.kind === kind && o.rail?.rail === target.rail?.rail && o.line === target.line && o.swinger === target.swinger && o.part === target.part && o.ness === target.ness && (kind !== 'man' || o.tile === target.tile));
   }
 
   /** Place an order, or add a Lee to the one already there. */
   place(w: World, order: Omit<DeckOrder, 'id' | 'lees' | 'progress' | 'since' | 'wanted' | 'left'> & { wanted?: number }): DeckOrder {
-    const old = this.find(order.boat, order.kind, { rail: order.rail, line: order.line, swinger: order.swinger, part: order.part, tile: order.tile });
-    const cap = order.kind === 'cutLine' || order.kind === 'wreckPlank' || order.kind === 'bail' || order.kind === 'repair' ? 3 : 1;
+    const old = this.find(order.boat, order.kind, { rail: order.rail, line: order.line, swinger: order.swinger, part: order.part, tile: order.tile, ness: order.ness });
+    const cap = order.kind === 'cutLine' || order.kind === 'wreckPlank' || order.kind === 'bail' || order.kind === 'repair' || order.kind === 'stab' ? 3 : 1;
     if (old) {
       old.wanted = Math.min(cap, old.wanted + (order.wanted ?? 1));
       return old;
@@ -98,6 +108,46 @@ export class OrderSystem {
     const o: DeckOrder = { ...order, id: this.nextId++, wanted: Math.min(cap, order.wanted ?? 1), lees: [], progress: 0, since: w.time, left: workTime(w, order.kind) };
     this.list.push(o);
     return o;
+  }
+
+  /**
+   * Send every Lee standing in a danger zone to the nearest tile that is safe (in no zone about to land).
+   * Danger comes before any other order: a Lee answering one is pulled off it. Returns how many moved.
+   */
+  flee(w: World, zone: DangerZone): number {
+    const boat = zone.boat;
+    const grid = boat.grid;
+    const danger = new Set<number>();
+    for (const z of w.zones.pending(boat)) for (const i of z.tiles) danger.add(i);
+    let sent = 0;
+    for (const lee of boat.crew.lees) {
+      if (!lee.alive || lee.swing || lee.deck !== boat || lee.locked || lee.engaged) continue;
+      const here = standingTile(lee);
+      if (!zone.tiles.includes(here)) continue;
+      if (lee.order !== null) {
+        const old = this.byId(lee.order);
+        if (old?.kind === 'flee' && old.zone === zone) continue;
+        if (old) old.lees = old.lees.filter((id) => id !== lee.id);
+        lee.order = null;
+      }
+      let safe = -1;
+      let bestD = Infinity;
+      for (const tile of grid.tiles) {
+        if (danger.has(tile.index)) continue;
+        const d = grid.dist[here][tile.index];
+        if (d < bestD - 1e-9) {
+          bestD = d;
+          safe = tile.index;
+        }
+      }
+      if (safe < 0 || !Number.isFinite(bestD)) continue;
+      const o: DeckOrder = { id: this.nextId++, boat, kind: 'flee', role: 'nearest', tile: safe, zone, wanted: 1, lees: [lee.id], progress: 0, since: w.time, left: 0 };
+      this.list.push(o);
+      takeOrder(lee, o.id, safe, 'Out of the way: tapped', w.time);
+      w.events.push({ type: 'order', boatId: boat.id, leeId: lee.id, job: lee.job });
+      sent++;
+    }
+    return sent;
   }
 
   remove(w: World, o: DeckOrder): void {
@@ -142,6 +192,10 @@ export class OrderSystem {
       case 'repair': {
         return repairable(o.boat.parts[o.part!], t);
       }
+      case 'flee':
+        return w.zones.list.includes(o.zone!);
+      case 'stab':
+        return w.nesses.list.includes(o.ness!) && o.ness!.state === 'surfaced' && o.ness!.stunUntil !== null;
       case 'man': {
         const tile = o.boat.grid.tiles[o.tile];
         if (!tile?.station || !tile.fixture || tile.fixture.destroyed || isWrecked(o.boat.parts[tile.part])) return false;
@@ -184,9 +238,12 @@ export class OrderSystem {
         const s = o.swinger!.swing;
         return s ? s.toTile : o.tile;
       }
+      case 'stab':
+        return nearest(headOf(o.ness!).pos);
       case 'bail':
       case 'repair':
       case 'man':
+      case 'flee':
         return o.tile;
     }
   }
@@ -228,8 +285,13 @@ export class OrderSystem {
         if (!ok && lee && lee.order === o.id) lee.order = null;
         return ok;
       });
+      // Out of the way: nobody left to move means the order is done.
+      if (o.kind === 'flee' && !o.lees.length) {
+        this.remove(w, o);
+        continue;
+      }
       // Send more.
-      if (o.lees.length < o.wanted) {
+      if (o.kind !== 'flee' && o.lees.length < o.wanted) {
         const free = this.candidates(w, o, w.time);
         for (const lee of free) {
           if (o.lees.length >= o.wanted) break;
@@ -287,6 +349,25 @@ export class OrderSystem {
             w.cutRope(o.swinger!);
             this.remove(w, o);
           }
+          break;
+        }
+        case 'flee':
+          o.progress = 1;
+          break;
+        case 'stab': {
+          // Each Lee's sword swings at its own rate; every swing at the resting head is worth stabMul times a sword hit.
+          const head = headOf(o.ness!);
+          const k = nessKind(t, o.ness!.kind);
+          for (const lee of here) o.left += dt * Math.max(0, t.melee.rate) * leeStat(lee, 'meleeRate', lee.boat, t);
+          lee_stats(here, dt);
+          while (o.left >= 1 && head.hp > 0) {
+            o.left -= 1;
+            const lee = here[Math.floor(w.rng.next() * here.length)];
+            const dealt = w.nesses.hurt(w, o.ness!, head, Math.max(0, t.melee.damage) * leeStat(lee, 'meleeDamage', lee.boat, t) * Math.max(0, k.stabMul)).dealt;
+            lee.stats.meleeDealt += dealt;
+            w.stats[lee.side].meleeDealt += dealt;
+          }
+          o.progress = 1 - head.hp / Math.max(1e-6, head.maxHp);
           break;
         }
         case 'man': {

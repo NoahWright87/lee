@@ -29,8 +29,9 @@ import {
   type PartState,
 } from './boat';
 import { updateEngagement, stepMelee, stepPistols, type CombatEvent, type PistolMark } from './combat';
-import { createLee, damageCrewAt, crossingReady, foesOn, outbound, repairable, standingTile, hurtLee, inArc, jobCounts, leeStat, loseLee, orderJob, stepCrew, tilesWithin, updateMobility, wetFactor, workerAt, type CrewContext, type Lee, type LossCause } from './crew';
+import { createLee, damageCrewAt, crossingReady, foesOn, outbound, pushLee, repairable, standingTile, hurtLee, inArc, jobCounts, leeStat, loseLee, orderJob, stepCrew, tilesWithin, updateMobility, wetFactor, workerAt, type CrewContext, type Lee, type LossCause } from './crew';
 import type { Job } from '../config/lees';
+import { zoneCenter, ZoneSystem, type DangerZone, type ZoneKind } from './zones';
 import type { AiProfile } from '../config/encounters';
 import { boardOrRam, nearSide, steer, type Helm, type HelmWorld, type ManeuverKind } from './helm';
 import { tileAt, tileAtCell } from './grid';
@@ -103,7 +104,11 @@ export type WorldEvent =
   | { type: 'nessSurface'; nessId: number; pos: Vec; radius: number }
   | { type: 'nessDive'; nessId: number; pos: Vec }
   | { type: 'nessHit'; nessId: number; part: number; pos: Vec; damage: number }
-  | { type: 'nessDown'; nessId: number; pos: Vec };
+  | { type: 'nessDown'; nessId: number; pos: Vec }
+  | { type: 'nessLift'; nessId: number }
+  | { type: 'zoneWarn'; boatId: number; zoneId: number; kind: ZoneKind; nessId: number; warn: number }
+  | { type: 'zoneImpact'; boatId: number; kind: ZoneKind; pos: Vec; tiles: number[] }
+  | { type: 'pushed'; boatId: number; leeId: number; hard: boolean };
 
 export interface SideStats {
   shellsFired: number;
@@ -302,6 +307,8 @@ export class World {
   readonly assists: boolean;
   /** Sea monsters: a shadow, a ring where it rises, a body to shoot while it's up. */
   readonly nesses = new NessSystem();
+  /** Tiles of a deck that will be hit in a moment (Ness bites, smashes and slaps). */
+  readonly zones = new ZoneSystem();
   /** Hooks in the air and the lines between hulls. */
   readonly lines = new LineSystem();
   /** Taps on a deck waiting for, or being worked by, a Lee. */
@@ -424,6 +431,7 @@ export class World {
       if (e.side === b.side || this.isOut(e)) continue;
       gap = Math.min(gap, hullGap(b, e).gap);
     }
+    gap = Math.min(gap, this.nessGap(b));
     const near = Math.max(0, t.boarding.range);
     const far = Math.max(near + 1, t.layout.closeViewStart);
     return clamp01((far - gap) / (far - near));
@@ -461,6 +469,11 @@ export class World {
       else if (n.state === 'surfaced') for (const p of n.parts) gap = Math.min(gap, distanceToHull(b, p.pos) - p.radius);
     }
     return gap;
+  }
+
+  /** Nesses up and close enough to your hull that the deck view should show them. */
+  nessesAtRail(b: Boat = this.player): Ness[] {
+    return this.nesses.list.filter((n) => n.state === 'surfaced' && distanceToHull(b, { x: n.x, y: n.y }) <= nessKind(this.tuning, n.kind).attackRange + 6);
   }
 
   /** Enemies close enough to show in the close-up, nearest first. */
@@ -848,6 +861,7 @@ export class World {
       this.nesses.step(this, dt);
       this.stepCombat(dt);
     }
+    this.zones.step(this, dt);
     for (const e of this.enemies) this.thinkEnemy(e);
     this.steerPlayer();
     for (const b of this.boats) {
@@ -1335,6 +1349,32 @@ export class World {
   }
 
   /** A Lee has reached the rail and finished the work of a throw, a lower or a shove. */
+  /** Tap a flashing zone: the Lees standing in it step out to the nearest safe tiles. */
+  tapZone(zone: DangerZone, boat: Boat = this.player): string | null {
+    if (zone.boat !== boat || zone.impacted) return 'too late';
+    const sent = this.orders.flee(this, zone);
+    return sent > 0 ? null : this.refuse(boat, 'no one to move');
+  }
+
+  /** Tap the stunned head: Lees go to it and stab it. */
+  tapHead(n: Ness, boat: Boat = this.player): string | null {
+    if (n.state !== 'surfaced' || n.stunUntil === null) return this.refuse(boat, 'its head is up again');
+    const head = n.parts[0];
+    const l = toLocal(head.pos, boat.motion, boat.motion.heading);
+    let tile = 0;
+    let best = Infinity;
+    for (const t of boat.grid.tiles) {
+      const d = dist(t.center, l);
+      if (d < best) {
+        best = d;
+        tile = t.index;
+      }
+    }
+    this.orders.place(this, { boat, kind: 'stab', role: 'cutter', tile, ness: n });
+    boat.crew.thinkIn = 0;
+    return null;
+  }
+
   doRail(o: DeckOrder): void {
     const t = this.tuning;
     const ref = o.rail!;
@@ -1824,6 +1864,71 @@ export class World {
       this.hurtOnTiles(boat, under, k.emergeLeeDamage, 'ness');
       for (const ti of under.keys()) this.damageTile(boat, ti, k.emergeTileDamage);
     }
+  }
+
+  /** A danger zone lands. */
+  zoneImpact(z: DangerZone): void {
+    const boat = z.boat;
+    const n = this.nesses.list.find((x) => x.id === z.source);
+    const k = nessKind(this.tuning, n?.kind ?? 'weak');
+    const tiles = new Map<number, number>(z.tiles.map((i) => [i, 0]));
+    const center = zoneCenter(z);
+    this.events.push({ type: 'zoneImpact', boatId: boat.id, kind: z.kind, pos: center, tiles: z.tiles });
+    const parts = new Set(z.tiles.map((i) => boat.grid.tiles[i].part));
+    const wreck = (share: number) => {
+      for (const pi of parts) {
+        const part = boat.parts[pi];
+        const dealt = applyDamage(part, structure(part).maxHp * share).dealt;
+        this.stats.enemy.damageDealt += dealt;
+        this.stats[boat.side].damageTaken += dealt;
+        this.events.push({ type: 'hit', boatId: boat.id, part: pi, pos: center, damage: dealt });
+      }
+    };
+    switch (z.kind) {
+      case 'bite':
+        this.hurtOnTiles(boat, tiles, k.biteLeeDamage, 'ness');
+        for (const ti of z.tiles) this.damageTile(boat, ti, k.biteTileDamage);
+        break;
+      case 'smash': {
+        this.hurtOnTiles(boat, tiles, k.smashLeeDamage, 'ness');
+        for (const ti of z.tiles) this.damageTile(boat, ti, k.smashTileDamage);
+        wreck(k.smashPartDamage);
+        if (n && n.state === 'surfaced') {
+          // Its head comes down and rests on your deck there, body trailing out over the rail.
+          const out = rotate({ x: -z.push.x, y: -z.push.y }, boat.motion.heading);
+          this.nesses.rest(this, n, center, out, k.smashStun);
+        }
+        break;
+      }
+      case 'slap': {
+        // Everyone standing in the band is shoved away from the Ness, and knocked off their post.
+        const hit = this.allLees().filter((l) => l.alive && !l.swing && l.deck === boat && tiles.has(standingTile(l)));
+        for (const l of hit) {
+          const dmg = k.slapLeeDamage * Math.max(0, leeStat(l, 'impactTaken', l.boat, this.tuning));
+          if (hurtLee(l, dmg, this.time, 'ness')) {
+            this.events.push({ type: 'leeHurt', boatId: boat.id, leeId: l.id, damage: dmg });
+            this.noteLost(l);
+            continue;
+          }
+          this.events.push({ type: 'leeHurt', boatId: boat.id, leeId: l.id, damage: dmg });
+          this.pushAndHurt(l, z.push, k.slapPush, k.slapStagger);
+        }
+        for (const pi of parts) this.stats[boat.side].waterTaken += floodPart(boat, boat.parts[pi], k.slapWater);
+        for (const ti of z.tiles) this.damageTile(boat, ti, 2);
+        break;
+      }
+    }
+    boat.crew.thinkIn = 0;
+  }
+
+  /** Shove a Lee along its deck. Into the edge of the deck (a hard surface) it takes extra damage. */
+  pushAndHurt(lee: Lee, dir: Vec, tiles: number, stagger: number): void {
+    const r = pushLee(lee, dir, tiles, stagger);
+    this.events.push({ type: 'pushed', boatId: lee.deck.id, leeId: lee.id, hard: r.hard });
+    if (!r.hard) return;
+    const dmg = Math.max(0, this.tuning.lines.hardSurfaceDamage) * Math.max(0, leeStat(lee, 'impactTaken', lee.boat, this.tuning));
+    this.events.push({ type: 'leeHurt', boatId: lee.deck.id, leeId: lee.id, damage: dmg });
+    if (hurtLee(lee, dmg, this.time, 'fall')) this.noteLost(lee);
   }
 
   // ------------------------------------------------------------ shells
