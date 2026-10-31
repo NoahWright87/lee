@@ -137,6 +137,10 @@ export class RefitPanel {
   private genBudget = 400;
   private genChassis = '';
   private genNess = 0;
+  /** Sandbox: points and chassis for a random ship of your own, and the level new sea monsters get. */
+  private myBudget = 400;
+  private myChassis = '';
+  private nessLevel = 1;
   private builtFor: unknown = null;
   private lastSig = '';
   private now: { bars: BoatBars; card: BoatCard } | null = null;
@@ -858,6 +862,24 @@ export class RefitPanel {
     ship.onchange = () => ctl.setShip(ship.value);
     shipRow.append(el('b', '', 'Your ship'), ship);
     box.append(shipRow);
+    // A random ship and crew of your own: points for parts and people, built the way the sea builds enemies.
+    const mine = el('div', 'row');
+    const myBudget = el('input');
+    myBudget.type = 'number';
+    myBudget.min = '50';
+    myBudget.step = '50';
+    myBudget.value = String(this.myBudget);
+    myBudget.onchange = () => (this.myBudget = Math.max(1, Math.round(Number(myBudget.value) || 400)));
+    const myChassis = el('select');
+    myChassis.append(new Option('Any ship', ''));
+    for (const id of SHIP_ORDER) myChassis.append(new Option(SHIPS[id].name, id));
+    myChassis.value = this.myChassis;
+    myChassis.onchange = () => (this.myChassis = myChassis.value);
+    mine.append(el('span', '', 'Points'), myBudget, myChassis, button('🎲 Random ship', 'hud-btn', () => {
+      this.clearSel();
+      ctl.randomizeShip(this.myBudget, this.myChassis || undefined);
+    }));
+    box.append(mine);
     const add = el('div', 'row add-lee');
     const type = el('select');
     for (const d of Object.values(LEE_DEFS)) type.append(new Option(d.name, d.id));
@@ -865,6 +887,28 @@ export class RefitPanel {
     for (let l = 1; l <= Math.round(t.leveling.levelCap); l++) level.append(new Option(`Level ${l}`, String(l)));
     add.append(type, level, button('+ Add Lee', 'hud-btn', () => ctl.addLee(type.value, Number(level.value))));
     box.append(add);
+
+    // Sea monsters first: one tap each, any number, alone or with ships.
+    box.append(el('div', 'cargo-head', 'Sea monsters'));
+    const monsterRow = el('div', 'row ness-row');
+    const lvl = el('select');
+    for (let l = 1; l <= 6; l++) lvl.append(new Option(`Lv ${l}`, String(l)));
+    lvl.value = String(this.nessLevel);
+    lvl.onchange = () => (this.nessLevel = Number(lvl.value));
+    monsterRow.append(lvl);
+    for (const id of NESS_ORDER) {
+      monsterRow.append(
+        button(`+ ${NESS[id].name.replace(' Ness', '')}`, 'hud-btn', () => ctl.setSandboxNesses([...sb.nesses, { kind: id, level: this.nessLevel }])),
+      );
+    }
+    box.append(monsterRow);
+    const monsterActs = el('div', 'row');
+    monsterActs.append(
+      button('Nesses only', 'hud-btn', () => ctl.setSandboxEncounter([], sb.nesses.length ? sb.nesses : [{ kind: NESS_ORDER[0], level: this.nessLevel }])),
+      button('Clear Nesses', 'hud-btn', () => ctl.setSandboxNesses([])),
+      el('span', 'card-sub', sb.nesses.length ? sb.nesses.map((n) => `${NESS[n.kind]?.name ?? n.kind}${(n.level ?? 1) > 1 ? ` Lv ${n.level}` : ''}`).join(' + ') : 'none yet'),
+    );
+    box.append(monsterActs);
 
     box.append(el('div', 'cargo-head', 'Encounter builder'));
     // Generate: a budget (and optionally a chassis), built the way the sea builds enemies.

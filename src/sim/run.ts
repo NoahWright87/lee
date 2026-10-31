@@ -18,7 +18,8 @@ import type { Lee } from './crew';
 import type { NessSpec } from './ness';
 import { allSlots, fits, presetBuild, slotById, trinketMods, type BoatBuild } from './loadout';
 import { autoBonuses, bonusLabel, bonusMods, bonusOffers, combineMods, xpToNext, type BonusKey } from './levels';
-import { drawDistinct, rngFor as seededRng, type Rng } from './math';
+import { drawDistinct, Rng, rngFor as seededRng } from './math';
+import { buildShip } from './budget';
 import { autoArrange, enemySetup, fitFor, postsFor, type BoatSetup, type CrewSpec } from './setup';
 import type { PortState } from './port';
 import type { SeaMap } from './seaMap';
@@ -251,6 +252,27 @@ export function blankRun(ship: string, seed: number, diff: string): RunState {
     noHull: false,
     totals: { goldEarned: 0, ports: 0, sunk: 0, captured: 0 },
   };
+}
+
+/**
+ * Sandbox: swap your ship, its parts and your crew for a random build of this many points, made the way the sea
+ * makes enemies (a chassis it can afford, then crew and parts spent by weight). Everything you had is replaced.
+ * Returns the points actually spent.
+ */
+export function randomizeRun(run: RunState, budget: number, seed: number, t: Tuning, chassis?: string): number {
+  const spec = buildShip(Math.max(1, budget), new Rng(seed >>> 0), t, chassis);
+  run.ship = spec.ship;
+  run.items = [];
+  run.loadout = {};
+  run.facings = {};
+  run.crew = [];
+  run.counters = {};
+  run.hull = freshHull(spec.ship);
+  for (const [slot, item] of Object.entries(spec.fullLoadout ?? {})) run.loadout[slot] = addItem(run, item).uid;
+  (spec.treasures ?? []).slice(0, treasureSlots(run, t)).forEach((item, i) => (run.loadout[treasureSlot(i)] = addItem(run, item).uid));
+  for (const c of spec.crew) for (let i = 0; i < Math.max(1, c.count ?? 1); i++) addCrew(run, c.type, c.level ?? 1, t);
+  autoArrangeRun(run, t);
+  return spec.budget ?? 0;
 }
 
 /** An undamaged hull for a ship: every part at full structure. */

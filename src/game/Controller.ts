@@ -42,6 +42,7 @@ import {
   fixHomes,
   loadRun,
   newRun,
+  randomizeRun,
   release,
   saveRun,
   setFacing,
@@ -531,12 +532,27 @@ export class Controller {
     this.changed();
   }
 
+  /** Sandbox: swap your ship and crew for a random build of this many points (the way enemies are made). */
+  randomizeShip(budget: number, chassis?: string): void {
+    if (this.mode !== 'sandbox' || !this.sandbox) return;
+    randomizeRun(this.sandbox.run, budget, (Math.random() * 2 ** 31) >>> 0, this.tuning, chassis);
+    this.changed();
+  }
+
   /** Sandbox: generate an enemy from a budget (optionally on a given chassis), the way the sea does. */
   generateSandbox(budget: number, chassis?: string, nessShare = 0): void {
     if (!this.sandbox) return;
     const gen = generateEncounter(budget, (Math.random() * 2 ** 31) >>> 0, this.tuning, { chassis, nessShare });
     this.sandbox.enemies = gen.enemies;
     this.sandbox.nesses = gen.nesses;
+    this.changed();
+  }
+
+  /** Sandbox: the whole encounter at once: ships and sea monsters. */
+  setSandboxEncounter(enemies: EnemySpec[], nesses: NessSpec[]): void {
+    if (!this.sandbox) return;
+    this.sandbox.enemies = enemies;
+    this.sandbox.nesses = nesses;
     this.changed();
   }
 
