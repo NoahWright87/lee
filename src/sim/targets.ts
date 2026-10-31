@@ -47,7 +47,9 @@ export function deckTargets(w: World, decks: Boat[]): DeckTarget[] {
 
   // A flashing danger zone on your deck: tap it to get the Lees in it out of the way.
   for (const z of w.zones.pending(me)) {
-    add({ id: `zone:${z.id}`, kind: 'zone', a: zoneCenter(z), radius: zoneRadius(z), label: z.kind === 'slap' ? 'tail slap: step out' : z.kind === 'smash' ? 'head smash: step out' : 'bite: step out', role: 'anyone in it', tap: () => w.tapZone(z, me) });
+    if (z.kind === 'rain') continue; // nothing to step away from: the water just comes in
+    const what = { slap: 'tail slap', smash: 'head smash', bite: 'bite', drag: 'drag', ink: 'ink', rain: 'rain' }[z.kind];
+    add({ id: `zone:${z.id}`, kind: 'zone', a: zoneCenter(z), radius: zoneRadius(z), label: `${what}: step out`, role: 'anyone in it', tap: () => w.tapZone(z, me) });
   }
   // A Ness head resting on your deck, stunned: tap it to stab it.
   for (const n of w.nesses.list) {

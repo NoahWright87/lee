@@ -15,12 +15,17 @@ export interface NessDef {
   coils: number;
   /** Its deck attacks, in the order it uses them (it cycles through). */
   attacks: NessAttack[];
+  /** How solid it looks when it is up (1 = fully; a Quiet Ness is a little see-through). */
+  solid?: number;
 }
 
-/** A bite is a circle of tiles; a smash a block of tiles (and leaves its head resting on your deck); a slap a band of tiles that pushes. */
-export type NessAttack = 'bite' | 'smash' | 'slap';
+/**
+ * A bite is a circle of tiles; a smash a block of tiles (and leaves its head resting on your deck); a slap a band of tiles that pushes;
+ * a drag pulls the Lee standing furthest from the others toward the Ness; rain floods the tiles under a cloud for a while; ink blinds the gunners in it.
+ */
+export type NessAttack = 'bite' | 'smash' | 'slap' | 'drag' | 'rain' | 'ink';
 
-export const NESS_ORDER = ['weak', 'mad'] as const;
+export const NESS_ORDER = ['weak', 'lonely', 'sad', 'mad', 'quiet', 'dark'] as const;
 
 export const NESS: Record<string, NessDef> = {
   weak: {
@@ -38,6 +43,39 @@ export const NESS: Record<string, NessDef> = {
     color: '#c46a5a',
     coils: 3,
     attacks: ['smash', 'slap', 'smash', 'bite'],
+  },
+  lonely: {
+    id: 'lonely',
+    name: 'Lonely Ness',
+    blurb: 'Goes for the Lee standing furthest from the others, and drags it away.',
+    color: '#8a90cf',
+    coils: 3,
+    attacks: ['drag', 'bite', 'drag'],
+  },
+  sad: {
+    id: 'sad',
+    name: 'Sad Ness',
+    blurb: 'Cries a raincloud over your deck. The water comes in; the bailing begins.',
+    color: '#5f95cc',
+    coils: 3,
+    attacks: ['rain', 'bite', 'rain'],
+  },
+  quiet: {
+    id: 'quiet',
+    name: 'Quiet Ness',
+    blurb: 'A faint shadow and almost no warning, unless a Lookout is manned.',
+    color: '#a9b4bd',
+    coils: 2,
+    attacks: ['bite', 'slap'],
+    solid: 0.72,
+  },
+  dark: {
+    id: 'dark',
+    name: 'Dark Ness',
+    blurb: 'Squirts ink. Gunners in it can’t see, and it hides the warnings under it.',
+    color: '#4a3f5e',
+    coils: 3,
+    attacks: ['ink', 'bite', 'ink', 'slap'],
   },
 };
 
@@ -106,6 +144,29 @@ export function defaultNessKind() {
     slapStagger: 1.2,
     slapWater: 6,
     slapCooldown: 4,
+    /** Drag: the Lee furthest from the others is hauled toward the Ness (tiles), hurt, and knocked down; into the edge of the deck it takes more. */
+    dragWarn: 1.3,
+    dragPush: 4,
+    dragLeeDamage: 6,
+    dragStagger: 1.4,
+    dragCooldown: 3.5,
+    /** Rain: a cloud over a block of tiles (depth × width in tiles; 0 width = the whole side) pours water into the parts under it for this many seconds. */
+    rainWarn: 1.6,
+    rainDepth: 3,
+    rainWidth: 0,
+    rainTime: 9,
+    rainWater: 1.2,
+    rainCooldown: 6,
+    /** Ink: a cloud of ink over a block of tiles for a while. Lees in it aim at this share of their usual accuracy, and the warnings under it can't be seen. */
+    inkWarn: 1,
+    inkDepth: 3,
+    inkWidth: 5,
+    inkTime: 8,
+    inkBlind: 0.35,
+    inkCooldown: 4.5,
+    /** Quiet: 1 = a faint shadow, and the ring only goes up this many seconds before it rises, unless a Lookout is manned. */
+    stealth: 0,
+    quietWarn: 0.9,
   };
 }
 
@@ -130,6 +191,59 @@ export function defaultNessTuning() {
     },
     kinds: {
       weak: defaultNessKind(),
+      lonely: {
+        ...defaultNessKind(),
+        cost: 40,
+        headHp: 45,
+        coilHp: 30,
+        tailHp: 24,
+        segment: 4.2,
+        coilRadius: 2.2,
+        speed: 9,
+        dragCooldown: 3,
+      },
+      sad: {
+        ...defaultNessKind(),
+        cost: 50,
+        headHp: 55,
+        coilHp: 40,
+        tailHp: 30,
+        headRadius: 3.5,
+        coilRadius: 3,
+        speed: 6.5,
+        turnRate: 1,
+        warn: 2.4,
+        surfacedMin: 12,
+        surfacedMax: 16,
+        biteLeeDamage: 6,
+      },
+      quiet: {
+        ...defaultNessKind(),
+        cost: 55,
+        headHp: 38,
+        coilHp: 28,
+        tailHp: 22,
+        speed: 9,
+        stealth: 1,
+        warn: 2.2,
+        quietWarn: 0.9,
+        surfacedMin: 6,
+        surfacedMax: 9,
+        slapCooldown: 2.5,
+        biteCooldown: 2,
+      },
+      dark: {
+        ...defaultNessKind(),
+        cost: 60,
+        headHp: 60,
+        coilHp: 40,
+        tailHp: 30,
+        headRadius: 3.6,
+        coilRadius: 3,
+        speed: 8,
+        surfacedMin: 11,
+        surfacedMax: 15,
+      },
       mad: {
         ...defaultNessKind(),
         cost: 60,

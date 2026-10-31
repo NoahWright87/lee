@@ -10,8 +10,9 @@
 import { NESS, type NessAttack, type NessDef, type NessKindTuning } from '../config/ness';
 import type { Tuning } from '../config/tuning';
 import { distanceToHull, keelSegment, type Boat } from './boat';
+import { sideFacing, type ContactSide } from './contact';
 import { clamp, closestOnSegment, dist, wrapAngle, type Rng, type Vec } from './math';
-import { blockTiles, circleTiles, pushAway, ZoneSystem, type DangerZone } from './zones';
+import { blockTiles, circleTiles, loneTile, pushAway, ZoneSystem, type DangerZone } from './zones';
 import type { World } from './world';
 
 export type NessState = 'submerged' | 'emerging' | 'surfaced' | 'dead';
@@ -56,6 +57,8 @@ export interface Ness {
   parts: NessPart[];
   /** How long it means to stay in this state (submerged, surfaced), s. */
   hold: number;
+  /** Whether the warning ring is up yet (a Quiet Ness holds it back). */
+  ringShown: boolean;
   /** Where it is rising and from where it came (emerging). */
   emergeAt: Vec | null;
   emergeFrom: Vec | null;
@@ -112,6 +115,7 @@ export function createNess(id: number, spec: NessSpec, t: Tuning, pos: Vec, head
     path: [],
     parts,
     hold: rng.range(k.submergedMin, k.submergedMax),
+    ringShown: false,
     emergeAt: null,
     emergeFrom: null,
     hurtSince: 0,
@@ -272,8 +276,21 @@ export class NessSystem {
     n.since = w.time;
     n.emergeAt = at;
     n.emergeFrom = { x: n.x, y: n.y };
-    w.telegraphs.add('emerge', at, k.warn, w.tuning.ness.common.ringLinger, k.ringRadius);
-    w.events.push({ type: 'nessWarn', nessId: n.id, pos: { ...at }, radius: k.ringRadius, warn: k.warn });
+    n.ringShown = false;
+    this.showRing(w, n, k);
+  }
+
+  /**
+   * Put up the ring. A Quiet Ness (stealth) gives only its last `quietWarn` seconds of warning, unless a
+   * Lookout is manned, which sees it coming the whole way.
+   */
+  private showRing(w: World, n: Ness, k: NessKindTuning): void {
+    if (n.ringShown || !n.emergeAt) return;
+    const left = Math.max(0.05, k.warn - n.stateT);
+    if (k.stealth > 0 && left > k.quietWarn && !w.lookoutManned()) return;
+    n.ringShown = true;
+    w.telegraphs.add('emerge', n.emergeAt, left, w.tuning.ness.common.ringLinger, k.ringRadius);
+    w.events.push({ type: 'nessWarn', nessId: n.id, pos: { ...n.emergeAt }, radius: k.ringRadius, warn: left });
   }
 
   /** The shadow glides onto the ring and, when the warning is over, breaks the surface there. */
@@ -292,6 +309,7 @@ export class NessSystem {
     n.x = nx;
     n.y = ny;
     trail(n);
+    this.showRing(w, n, k);
     if (n.stateT < k.warn) return;
     n.vx = 0;
     n.vy = 0;
@@ -353,10 +371,45 @@ export class NessSystem {
   private beginAttack(w: World, n: Ness, k: NessKindTuning, kind: NessAttack): void {
     const me = w.player;
     const head = { x: n.x, y: n.y };
-    const area =
-      kind === 'bite' ? circleTiles(me, head, k.biteRadius) : kind === 'smash' ? blockTiles(me, head, k.smashDepth, k.smashWidth) : blockTiles(me, head, k.slapDepth, k.slapWidth);
-    const warn = kind === 'bite' ? k.biteWarn : kind === 'smash' ? k.smashWarn : k.slapWarn;
-    const zone = w.zones.add({ boat: me, kind, tiles: area.tiles, warn, source: n.id, push: pushAway(area.side), side: area.side });
+    let area: { tiles: number[]; side: ContactSide };
+    let warn: number;
+    let lasting = 0;
+    switch (kind) {
+      case 'bite':
+        area = circleTiles(me, head, k.biteRadius);
+        warn = k.biteWarn;
+        break;
+      case 'smash':
+        area = blockTiles(me, head, k.smashDepth, k.smashWidth);
+        warn = k.smashWarn;
+        break;
+      case 'slap':
+        area = blockTiles(me, head, k.slapDepth, k.slapWidth);
+        warn = k.slapWarn;
+        break;
+      case 'drag': {
+        // The loneliest Lee: the one standing furthest from everyone else.
+        const tile = loneTile(me, w.allLees());
+        if (tile < 0) {
+          n.cool = 1;
+          return;
+        }
+        area = { tiles: [tile], side: sideFacing(me, head) };
+        warn = k.dragWarn;
+        break;
+      }
+      case 'rain':
+        area = blockTiles(me, head, k.rainDepth, k.rainWidth);
+        warn = k.rainWarn;
+        lasting = k.rainTime;
+        break;
+      case 'ink':
+        area = blockTiles(me, head, k.inkDepth, k.inkWidth);
+        warn = k.inkWarn;
+        lasting = k.inkTime;
+        break;
+    }
+    const zone = w.zones.add({ boat: me, kind, tiles: area.tiles, warn, source: n.id, push: pushAway(area.side), side: area.side, lasting });
     n.act = { kind, zone };
     w.events.push({ type: 'zoneWarn', boatId: me.id, zoneId: zone.id, kind, nessId: n.id, warn });
   }

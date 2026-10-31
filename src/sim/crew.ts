@@ -180,6 +180,8 @@ export interface Lee {
   locked: boolean;
   /** Seconds it has wanted to step somewhere it can't (a full tile, a Lee in the way). */
   blockedFor: number;
+  /** Standing in ink: × its accuracy (1 = clear sight). Reset and set every step by the zones. */
+  inkMul: number;
   /** Knocked off its post (a push): seconds it can't act or walk, and the slide it is making over the deck. */
   stagger: number;
   slide: { from: Vec; to: Vec; t: number; dur: number } | null;
@@ -369,6 +371,7 @@ export function createLee(id: number, number: number, def: LeeDef, side: Side, b
     engaged: false,
     locked: false,
     blockedFor: 0,
+    inkMul: 1,
     stagger: 0,
     slide: null,
     retreating: false,
@@ -441,6 +444,8 @@ function abilityMul(def: LeeDef, a: LeeDef['abilities'][number], key: LeeStatKey
 export function leeStat(lee: Lee, key: LeeStatKey, _boat: Boat, t: Tuning): number {
   let v = baseStat(lee.def, key, t, lee.mods);
   for (const a of lee.def.abilities) if (a.target === 'self') v *= abilityMul(lee.def, a, key, t);
+  // Ink in its eyes: it can't aim.
+  if ((key === 'accuracy' || key === 'pistolAccuracy') && lee.inkMul < 1) v *= lee.inkMul;
   if (lee.swing) return v;
   const here = lee.deck.grid.tiles[lee.tile];
   if (!here) return v;

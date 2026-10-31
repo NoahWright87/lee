@@ -47,7 +47,9 @@ export function drawNessShadows(g: G, world: World, px: (n: number) => number, c
     if (n.state === 'surfaced' || n.state === 'dead') continue;
     const rising = n.state === 'emerging' ? clamp(n.stateT / Math.max(0.1, world.tuning.ness.kinds[n.kind]?.warn ?? 2), 0, 1) : 0;
     const fadeIn = n.state === 'submerged' ? since(world, n) : 1;
-    const alpha = (0.28 + 0.3 * rising) * (0.4 + 0.6 * fadeIn);
+    // A Quiet Ness is a faint shadow, unless a Lookout is manned.
+    const faint = (world.tuning.ness.kinds[n.kind]?.stealth ?? 0) > 0 && !world.lookoutManned() ? 0.3 : 1;
+    const alpha = (0.28 + 0.3 * rising) * (0.4 + 0.6 * fadeIn) * faint;
     const swell = 1 + 0.25 * rising;
     for (let i = n.parts.length - 1; i >= 0; i--) {
       const p = n.parts[i];
@@ -75,7 +77,7 @@ export function drawNessBodies(g: G, world: World, px: (n: number) => number, cl
     if (up <= 0) continue;
     const base = hex(n.def.color);
     const bob = Math.sin(clock * 2.2 + n.id) * 0.25;
-    const a = clamp(up * 1.4, 0, 1);
+    const a = clamp(up * 1.4, 0, 1) * (n.def.solid ?? 1);
     // Water around the body where it breaks the surface.
     for (const p of n.parts) {
       g.lineStyle(px(1.2), 0xe6f6ff, 0.35 * a);

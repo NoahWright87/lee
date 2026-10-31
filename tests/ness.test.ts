@@ -260,7 +260,7 @@ describe('levels', () => {
 // ------------------------------------------------------------ slice 2: deck attacks
 
 /** A Ness of this kind, up and alongside the player's starboard rail, with its first attack due now. */
-function alongside(t: Tuning, kind: 'weak' | 'mad', crew: number[] = [5, 6, 7, 8, 9, 10]): { w: World; n: Ness } {
+function alongside(t: Tuning, kind: string, crew: number[] = [5, 6, 7, 8, 9, 10]): { w: World; n: Ness } {
   const w = new World(t, 1, { enemies: [], nesses: [{ kind }], crew });
   w.start();
   pin(w.player, { x: 0, y: 0 });
@@ -464,5 +464,150 @@ describe('deck attacks', () => {
     const head = pickTarget(deckTargets(w, [w.player]), headOf(n).pos, 0);
     expect(head?.kind).toBe('head');
     expect(head?.tap()).toBeNull();
+  });
+});
+
+// ------------------------------------------------------------ slice 3: the roster
+
+import { NESS, NESS_ORDER } from '../src/config/ness';
+
+describe('the roster', () => {
+  test('every kind has a body, attacks, numbers and a cost', () => {
+    const t = defaultTuning();
+    expect(NESS_ORDER.length).toBeGreaterThanOrEqual(5);
+    for (const id of NESS_ORDER) {
+      const def = NESS[id];
+      expect(def.name).toMatch(/ Ness$/);
+      expect(def.attacks.length).toBeGreaterThan(0);
+      const k = t.ness.kinds[id];
+      expect(k).toBeDefined();
+      expect(k.cost).toBeGreaterThan(0);
+      expect(k.headHp).toBeGreaterThan(0);
+    }
+  });
+
+  test('every kind can be built and fought in a world (a sweep over each: it surfaces, attacks, and can be killed)', () => {
+    for (const id of NESS_ORDER) {
+      const t = quiet(defaultTuning());
+      const w = new World(t, 3, { enemies: [], nesses: [{ kind: id }], crew: [5, 6, 7, 8, 9, 10] });
+      w.start();
+      const n = w.nesses.list[0];
+      let surfaced = false;
+      let attacked = false;
+      for (let i = 0; i < 90 / FIXED_DT && !w.result; i++) {
+        if (n.state === 'surfaced') surfaced = true;
+        if (n.act) attacked = true;
+        // A boat that keeps sailing away from the ring is not the point here: keep it parked and mend it.
+        for (const p of w.player.parts) for (const l of p.layers) l.hp = l.maxHp;
+        for (const l of w.player.crew.lees) l.hp = l.maxHp;
+        w.step(FIXED_DT);
+      }
+      expect(surfaced, `${id} surfaces`).toBe(true);
+      expect(attacked, `${id} attacks the deck`).toBe(true);
+      w.nesses.hurt(w, n, headOf(n), 9999);
+      expect(n.state).toBe('dead');
+    }
+  });
+});
+
+describe('Lonely Ness', () => {
+  test('it drags the Lee standing furthest from the others toward itself, and the edge hurts', () => {
+    const t = quiet(defaultTuning());
+    const { w, n } = alongside(t, 'lonely', [5, 6, 7, 8, 9, 10]);
+    // Move one Lee as far from the rest as the deck allows.
+    const g = w.player.grid;
+    const far = g.tiles.reduce((a, b) => (b.center.x < a.center.x ? b : a));
+    const loner = w.player.crew.lees[0];
+    loner.tile = far.index;
+    loner.pos = { ...far.center };
+    loner.path = [];
+    for (const l of w.player.crew.lees) if (l !== loner) l.pos = { x: l.pos.x + 6, y: l.pos.y };
+    n.attackIdx = 0;
+    w.step(FIXED_DT);
+    expect(n.act?.kind).toBe('drag');
+    const z = w.zones.pending(w.player)[0];
+    expect(z.tiles).toEqual([standingTile(loner)]);
+    const hp = loner.hp;
+    const y0 = loner.pos.y;
+    run(w, t.ness.kinds.lonely.dragWarn + 0.2);
+    expect(z.impacted).toBe(true);
+    expect(loner.hp).toBeLessThan(hp);
+    // Hauled toward the Ness, on the starboard side (larger y in the boat's frame).
+    expect(loner.pos.y).toBeGreaterThan(y0 - 1e-6);
+    expect(loner.stagger > 0 || loner.slide !== null).toBe(true);
+  });
+});
+
+describe('Sad Ness', () => {
+  test('its cloud pours water into the parts under it for a while, then goes', () => {
+    const t = quiet(defaultTuning());
+    const { w, n } = alongside(t, 'sad');
+    n.attackIdx = 0;
+    w.step(FIXED_DT);
+    expect(n.act?.kind).toBe('rain');
+    const z = w.zones.pending(w.player)[0];
+    const water0 = w.player.parts.reduce((a, p) => a + p.water, 0);
+    run(w, t.ness.kinds.sad.rainWarn + 0.1);
+    expect(z.impacted).toBe(true);
+    expect(w.zones.lingering(w.player)).toContain(z);
+    run(w, 3);
+    const water1 = w.player.parts.reduce((a, p) => a + p.water, 0);
+    expect(water1).toBeGreaterThan(water0 + 1);
+    run(w, t.ness.kinds.sad.rainTime + 1);
+    expect(w.zones.list).not.toContain(z);
+  });
+});
+
+describe('Dark Ness', () => {
+  test('Lees in its ink aim worse (and clear sight returns after)', () => {
+    const t = quiet(defaultTuning());
+    const { w, n } = alongside(t, 'dark');
+    n.attackIdx = 0;
+    w.step(FIXED_DT);
+    expect(n.act?.kind).toBe('ink');
+    const z = w.zones.pending(w.player)[0];
+    const inkd = w.player.crew.lees.filter((l) => z.tiles.includes(standingTile(l)));
+    expect(inkd.length).toBeGreaterThan(0);
+    run(w, t.ness.kinds.dark.inkWarn + 0.3);
+    expect(w.zones.lingering(w.player)).toContain(z);
+    for (const l of inkd) expect(l.inkMul).toBeCloseTo(t.ness.kinds.dark.inkBlind, 5);
+    run(w, t.ness.kinds.dark.inkTime + 1);
+    for (const l of inkd) expect(l.inkMul).toBe(1);
+  });
+});
+
+describe('Quiet Ness', () => {
+  test('without a Lookout its ring goes up only for the last moment; with one, the whole way', () => {
+    const t = quiet(defaultTuning());
+    const k = t.ness.kinds.quiet;
+    const a = setup(t, { x: 55, y: 0 });
+    a.w.lookoutManned = () => false;
+    a.n.state = 'submerged';
+    a.n.hold = 0;
+    a.n.kind = 'quiet';
+    a.n.def = NESS.quiet;
+    until(a.w, a.n, 'emerging');
+    expect(a.w.telegraphs.list.filter((x) => x.kind === 'emerge')).toHaveLength(0);
+    run(a.w, k.warn - k.quietWarn + 0.1);
+    const ring = a.w.telegraphs.list.find((x) => x.kind === 'emerge');
+    expect(ring).toBeDefined();
+    expect(ring!.warnTime).toBeLessThanOrEqual(k.quietWarn + 0.05);
+  });
+
+  test('a manned Lookout shows the full warning', () => {
+    const t = quiet(defaultTuning());
+    const w = new World(t, 1, { enemies: [], nesses: [{ kind: 'quiet' }], crew: [5, 6, 7, 8] });
+    w.start();
+    pin(w.player, { x: 0, y: 0 });
+    // Pretend a Lookout is manned.
+    w.lookoutManned = () => true;
+    const n = w.nesses.list[0];
+    n.x = 55;
+    n.y = 0;
+    n.hold = 0;
+    until(w, n, 'emerging');
+    const ring = w.telegraphs.list.find((x) => x.kind === 'emerge');
+    expect(ring).toBeDefined();
+    expect(ring!.warnTime).toBeGreaterThan(t.ness.kinds.quiet.quietWarn + 0.5);
   });
 });

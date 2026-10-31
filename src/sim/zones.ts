@@ -15,7 +15,7 @@ import { standingTile, type Lee } from './crew';
 import { dist, toLocal, toWorld, type Vec } from './math';
 import type { World } from './world';
 
-export type ZoneKind = 'bite' | 'smash' | 'slap';
+export type ZoneKind = 'bite' | 'smash' | 'slap' | 'drag' | 'rain' | 'ink';
 
 export interface DangerZone {
   id: number;
@@ -35,6 +35,8 @@ export interface DangerZone {
   push: Vec;
   /** The side of the deck the attack comes from. */
   side: ContactSide;
+  /** Seconds it stays on the deck after it lands, doing its effect every step (rain, ink); 0 = a single blow. */
+  lasting: number;
 }
 
 const LINGER = 0.45;
@@ -43,8 +45,8 @@ export class ZoneSystem {
   readonly list: DangerZone[] = [];
   private nextId = 1;
 
-  add(z: Omit<DangerZone, 'id' | 'elapsed' | 'impacted' | 'linger'>): DangerZone {
-    const zone: DangerZone = { ...z, id: this.nextId++, elapsed: 0, impacted: false, linger: LINGER };
+  add(z: Omit<DangerZone, 'id' | 'elapsed' | 'impacted' | 'linger' | 'lasting'> & { lasting?: number }): DangerZone {
+    const zone: DangerZone = { ...z, lasting: z.lasting ?? 0, id: this.nextId++, elapsed: 0, impacted: false, linger: LINGER };
     this.list.push(zone);
     return zone;
   }
@@ -71,10 +73,17 @@ export class ZoneSystem {
     for (let i = this.list.length - 1; i >= 0; i--) if (this.list[i].source === source && !this.list[i].impacted) this.list.splice(i, 1);
   }
 
+  /** Zones that are on a deck right now doing something every step (rain, ink). */
+  lingering(boat?: Boat): DangerZone[] {
+    return this.list.filter((z) => z.impacted && z.lasting > 0 && (!boat || z.boat === boat));
+  }
+
   step(w: World, dt: number): void {
+    for (const l of w.allLees()) l.inkMul = 1;
     for (const z of this.list) {
       if (z.boat.sinkingSince !== null && !z.impacted) {
         z.impacted = true;
+        z.lasting = 0;
         z.linger = 0;
         continue;
       }
@@ -84,9 +93,13 @@ export class ZoneSystem {
           z.impacted = true;
           w.zoneImpact(z);
         }
+      } else if (z.lasting > 0) {
+        w.zoneTick(z, dt);
+        z.lasting -= dt;
+        if (z.lasting <= 0) z.lasting = 0;
       } else z.linger -= dt;
     }
-    for (let i = this.list.length - 1; i >= 0; i--) if (this.list[i].impacted && this.list[i].linger <= 0) this.list.splice(i, 1);
+    for (let i = this.list.length - 1; i >= 0; i--) if (this.list[i].impacted && this.list[i].lasting <= 0 && this.list[i].linger <= 0) this.list.splice(i, 1);
   }
 }
 
@@ -152,6 +165,24 @@ export function blockTiles(boat: Boat, from: Vec, depth: number, width: number):
     tiles.push(t.index);
   }
   return { tiles: tiles.length ? tiles : [nearestTile(boat, l)], side };
+}
+
+/** The tile of the Lee standing furthest from every other Lee on the deck (ties: the lower id), or -1 if there are none. */
+export function loneTile(boat: Boat, lees: Lee[]): number {
+  const here = lees.filter((l) => l.alive && !l.swing && l.deck === boat);
+  let best: Lee | null = null;
+  let bestD = -1;
+  for (const l of here) {
+    let near = Infinity;
+    for (const o of here) if (o !== l) near = Math.min(near, dist(l.pos, o.pos));
+    // Alone on the deck: the one Lee is the loner.
+    if (!Number.isFinite(near)) near = 1e6;
+    if (near > bestD + 1e-9 || (Math.abs(near - bestD) <= 1e-9 && best && l.id < best.id)) {
+      bestD = near;
+      best = l;
+    }
+  }
+  return best ? standingTile(best) : -1;
 }
 
 /** The tiles within `radius` tiles of the tile nearest a point (a bite). */

@@ -1900,6 +1900,25 @@ export class World {
         }
         break;
       }
+      case 'drag': {
+        // Whoever is standing there is hauled toward the Ness: across the deck, into the rail.
+        const toward = { x: -z.push.x, y: -z.push.y };
+        const hit = this.allLees().filter((l) => l.alive && !l.swing && l.deck === boat && tiles.has(standingTile(l)));
+        for (const l of hit) {
+          const dmg = k.dragLeeDamage * Math.max(0, leeStat(l, 'impactTaken', l.boat, this.tuning));
+          this.events.push({ type: 'leeHurt', boatId: boat.id, leeId: l.id, damage: dmg });
+          if (hurtLee(l, dmg, this.time, 'ness')) {
+            this.noteLost(l);
+            continue;
+          }
+          this.pushAndHurt(l, toward, k.dragPush, k.dragStagger);
+        }
+        break;
+      }
+      case 'rain':
+      case 'ink':
+        // A cloud now hangs over these tiles: `zoneTick` does the rest, every step.
+        break;
       case 'slap': {
         // Everyone standing in the band is shoved away from the Ness, and knocked off their post.
         const hit = this.allLees().filter((l) => l.alive && !l.swing && l.deck === boat && tiles.has(standingTile(l)));
@@ -1919,6 +1938,26 @@ export class World {
       }
     }
     boat.crew.thinkIn = 0;
+  }
+
+  /** What a cloud does to the deck under it, every step: rain floods the parts, ink blinds the Lees. */
+  zoneTick(z: DangerZone, dt: number): void {
+    const boat = z.boat;
+    const n = this.nesses.list.find((x) => x.id === z.source);
+    const k = nessKind(this.tuning, n?.kind ?? 'weak');
+    if (z.kind === 'rain') {
+      const parts = new Set(z.tiles.map((i) => boat.grid.tiles[i].part));
+      for (const pi of parts) this.stats[boat.side].waterTaken += floodPart(boat, boat.parts[pi], k.rainWater * dt);
+    } else if (z.kind === 'ink') {
+      const mul = Math.max(0.05, k.inkBlind);
+      const tiles = new Set(z.tiles);
+      for (const l of this.allLees()) if (l.alive && !l.swing && l.deck === boat && tiles.has(standingTile(l))) l.inkMul = Math.min(l.inkMul, mul);
+    }
+  }
+
+  /** Is someone working a Lookout on this boat (it sees a Quiet Ness coming)? */
+  lookoutManned(b: Boat = this.player): boolean {
+    return b.grid.tiles.some((t) => t.station === 'lookout' && !!t.fixture && !t.fixture.destroyed && !!workerAt(b, t.index));
   }
 
   /** Shove a Lee along its deck. Into the edge of the deck (a hard surface) it takes extra damage. */

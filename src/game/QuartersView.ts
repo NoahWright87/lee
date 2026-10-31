@@ -10,7 +10,7 @@ import { headOf } from '../sim/ness';
 import { clamp, dist, lerp, toWorld, type Vec } from '../sim/math';
 import type { DeckTarget } from '../sim/targets';
 import type { World } from '../sim/world';
-import { ZoneSystem } from '../sim/zones';
+import { ZoneSystem, type DangerZone } from '../sim/zones';
 
 const ROPE = 0xd9c08a;
 const ENEMY_ROPE = 0xff9a6a;
@@ -154,41 +154,79 @@ export function drawTargets(g: G, targets: DeckTarget[], px: (n: number) => numb
 
 const RED = 0xff2b2b;
 const BLUE = 0x3aa0ff;
+const RAIN = 0x8fb4de;
+const INK = 0x1a0f2a;
 
-/** Danger zones on a deck: the tiles flash (red for a bite or a smash, blue for a tail slap), fill in as the blow nears, and show a mark in the middle to tap. */
+function colorOf(kind: string): number {
+  return kind === 'slap' ? BLUE : kind === 'rain' ? RAIN : kind === 'ink' ? 0x9a6bd6 : RED;
+}
+
+function tileCorners(boat: DangerZone['boat'], i: number): Vec[] {
+  const t = boat.grid.tiles[i];
+  const m = boat.motion;
+  return [
+    toWorld({ x: t.x0, y: t.y0 }, m, m.heading),
+    toWorld({ x: t.x1, y: t.y0 }, m, m.heading),
+    toWorld({ x: t.x1, y: t.y1 }, m, m.heading),
+    toWorld({ x: t.x0, y: t.y1 }, m, m.heading),
+  ];
+}
+
+/**
+ * Danger zones on a deck: the tiles flash (red for a bite, smash or drag; blue for a tail slap; grey for rain; purple for ink),
+ * fill in as the blow nears, and show a mark in the middle to tap. Rain and ink then hang over the deck for a while; ink is drawn last,
+ * over everything, and hides the warnings under it.
+ */
 export function drawZones(g: G, world: World, px: (n: number) => number, clock: number): void {
+  const inked = new Map<DangerZone['boat'], Set<number>>();
+  for (const z of world.zones.lingering()) {
+    if (z.kind !== 'ink') continue;
+    if (!inked.has(z.boat)) inked.set(z.boat, new Set());
+    for (const i of z.tiles) inked.get(z.boat)!.add(i);
+  }
   for (const z of world.zones.list) {
+    if (z.kind === 'ink' && z.impacted) continue; // drawn in the last pass
     const boat = z.boat;
     const k = ZoneSystem.progress(z);
-    const color = z.kind === 'slap' ? BLUE : RED;
+    const color = colorOf(z.kind);
     const flash = 0.5 + 0.5 * Math.sin(clock * (8 + 10 * k));
+    // Hidden under ink: a faint outline, no mark.
+    const hidden = !z.impacted && z.tiles.every((i) => inked.get(boat)?.has(i));
     let cx = 0;
     let cy = 0;
     for (const i of z.tiles) {
+      const corners = tileCorners(boat, i);
       const t = boat.grid.tiles[i];
-      const corners = [
-        toWorld({ x: t.x0, y: t.y0 }, boat.motion, boat.motion.heading),
-        toWorld({ x: t.x1, y: t.y0 }, boat.motion, boat.motion.heading),
-        toWorld({ x: t.x1, y: t.y1 }, boat.motion, boat.motion.heading),
-        toWorld({ x: t.x0, y: t.y1 }, boat.motion, boat.motion.heading),
-      ];
       const c = toWorld(t.center, boat.motion, boat.motion.heading);
       cx += c.x;
       cy += c.y;
+      if (z.impacted && z.lasting > 0 && z.kind === 'rain') {
+        // A raincloud over the tile: grey-blue, and streaks falling.
+        g.fillStyle(0x6d86a6, 0.34);
+        g.fillPoints(corners, true);
+        g.lineStyle(px(1), 0xcfe6ff, 0.55);
+        for (let d = 0; d < 3; d++) {
+          const f = (clock * 1.6 + d / 3 + i * 0.17) % 1;
+          const a = toWorld({ x: lerp(t.x0, t.x1, 0.2 + 0.3 * d), y: lerp(t.y0, t.y1, f) }, boat.motion, boat.motion.heading);
+          const b = toWorld({ x: lerp(t.x0, t.x1, 0.2 + 0.3 * d), y: lerp(t.y0, t.y1, Math.min(1, f + 0.18)) }, boat.motion, boat.motion.heading);
+          g.lineBetween(a.x, a.y, b.x, b.y);
+        }
+        continue;
+      }
       if (z.impacted) {
         // The blow: a white flash that fades with the linger.
         g.fillStyle(0xffffff, 0.55 * clamp(z.linger / 0.45, 0, 1));
       } else {
-        g.fillStyle(color, 0.14 + 0.3 * k * (0.6 + 0.4 * flash));
+        g.fillStyle(color, (hidden ? 0.05 : 0.14) + (hidden ? 0.05 : 0.3) * k * (0.6 + 0.4 * flash));
       }
       g.fillPoints(corners, true);
       if (!z.impacted) {
-        g.lineStyle(px(1.8), color, 0.55 + 0.4 * flash);
+        g.lineStyle(px(1.8), color, hidden ? 0.2 : 0.55 + 0.4 * flash);
         g.strokePoints(corners, true);
       }
     }
-    if (z.impacted) continue;
-    // The mark to tap: a warning triangle (a droplet for the slap), sized for a finger.
+    if (z.impacted || hidden) continue;
+    // The mark to tap, sized for a finger.
     const n = Math.max(1, z.tiles.length);
     const x = cx / n;
     const y = cy / n;
@@ -199,6 +237,22 @@ export function drawZones(g: G, world: World, px: (n: number) => number, clock: 
       g.fillCircle(x, y + r * 0.2, r * 0.75);
       g.lineStyle(px(1.4), 0x0b3a72, 1);
       g.strokeCircle(x, y + r * 0.2, r * 0.75);
+    } else if (z.kind === 'rain') {
+      // A cloud with drops.
+      g.fillStyle(0xd7e4f4, 0.95);
+      g.fillCircle(x - r * 0.45, y, r * 0.55);
+      g.fillCircle(x + r * 0.2, y - r * 0.2, r * 0.7);
+      g.fillCircle(x + r * 0.7, y + r * 0.05, r * 0.5);
+      g.fillStyle(0x4f7fb8, 0.95);
+      for (const dx of [-0.5, 0, 0.5]) g.fillCircle(x + r * dx, y + r * (0.8 + 0.2 * Math.sin(clock * 6 + dx * 9)), px(1.6));
+    } else if (z.kind === 'ink') {
+      g.fillStyle(0x2a1745, 0.95);
+      g.fillCircle(x, y, r * 0.9);
+      g.lineStyle(px(1.6), 0xc6a2ff, 1);
+      g.strokeCircle(x, y, r * 0.9);
+      g.fillStyle(0xc6a2ff, 1);
+      g.fillCircle(x - r * 0.3, y - r * 0.2, r * 0.2);
+      g.fillCircle(x + r * 0.35, y + r * 0.25, r * 0.28);
     } else {
       g.fillStyle(0xffd24a, 1);
       g.fillTriangle(x, y - r, x - r * 1.05, y + r * 0.8, x + r * 1.05, y + r * 0.8);
@@ -212,5 +266,19 @@ export function drawZones(g: G, world: World, px: (n: number) => number, clock: 
     // A thin ring closing in: time left.
     g.lineStyle(px(1.4), color, 0.6);
     g.strokeCircle(x, y, r * (1.2 + 1.6 * (1 - k)));
+  }
+  // Ink on top of everything.
+  for (const z of world.zones.lingering()) {
+    if (z.kind !== 'ink') continue;
+    const fade = clamp(z.lasting / 1.2, 0, 1);
+    for (const i of z.tiles) {
+      const corners = tileCorners(z.boat, i);
+      g.fillStyle(INK, 0.86 * fade);
+      g.fillPoints(corners, true);
+      const t = z.boat.grid.tiles[i];
+      const c = toWorld(t.center, z.boat.motion, z.boat.motion.heading);
+      g.lineStyle(px(1.2), 0x6b4a9a, 0.5 * fade);
+      g.strokeCircle(c.x + Math.sin(clock * 1.3 + i) * 0.3, c.y + Math.cos(clock * 1.1 + i) * 0.3, Math.min(z.boat.grid.tileW, z.boat.grid.tileH) * (0.25 + 0.1 * Math.sin(clock + i)));
+    }
   }
 }
