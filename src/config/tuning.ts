@@ -662,11 +662,11 @@ export function defaultTuning() {
     input: {
       /** 0 = the target is pinned in the water where you touched (preview stays exact). 1 = target stays under a still finger as the camera moves. */
       targetFollowsCamera: 0,
-      /** A tapped point counts as reached within this distance; then the boat holds the heading it arrived on, m. */
-      arriveRadius: 20,
+      /** A tapped point counts as reached within this distance; then the boat holds the heading it arrived on, m. Small, so a tap near the boat still turns it. */
+      arriveRadius: 4,
       /** Tapping the ocean within this distance of an enemy's hull circles it (the orbit follows the boat), m. */
       orbitGrab: 45,
-      /** Tapping within this distance of an enemy's hull (plus a finger's width) targets it for ⚔️; of your own, stops, m. */
+      /** Tapping within this distance of an enemy's hull (plus a finger's width) targets it for ⚔️, m. (Your own boat stops only when you tap the boat itself.) */
       boatGrab: 6,
     },
     visuals: {

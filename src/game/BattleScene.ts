@@ -382,7 +382,8 @@ export class BattleScene extends Phaser.Scene {
     const w = this.oceanCam.getWorldPoint(screen.x, screen.y);
     const p = { x: w.x, y: w.y };
     const grab = world.tuning.input.boatGrab + this.px(this.oceanCam, 14);
-    if (distanceToHull(world.player, p) <= grab) {
+    // Only a tap on the boat itself stops it: right beside or behind it is a turn, however close.
+    if (distanceToHull(world.player, p) <= this.px(this.oceanCam, 10)) {
       world.setHelm({ kind: 'stop' });
       return false;
     }
