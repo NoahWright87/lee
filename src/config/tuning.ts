@@ -484,6 +484,8 @@ export function defaultTuning() {
     map: {
       /** Travel radius: any stop this close can be reached in one hop. */
       radius: 30,
+      /** Chance a fight stop has sea monsters in it (× the map style: Ness waters, Crowded lanes). */
+      nessChance: 0.22,
       /** The guaranteed route hops this share of the radius toward the destination. */
       routeHop: 0.9,
       /** The guaranteed route bends up to this many degrees off the straight line. */

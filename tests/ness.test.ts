@@ -103,6 +103,7 @@ describe('a Ness underwater', () => {
 describe('rising', () => {
   test('under your hull it wrecks the part above it, floods it and hurts the Lees there', () => {
     const t = quiet(defaultTuning());
+    t.ness.kinds.weak.emergeDamage = 1; // a whole part's HP
     const { w, n } = setup(t, { x: 40, y: 0 });
     n.hold = 0;
     const before = w.player.parts.map((p) => p.layers[p.layers.length - 1].hp);
@@ -908,3 +909,186 @@ describe('Hydrophone', () => {
 
 // keep the helper referenced
 void abortRise;
+
+// ------------------------------------------------------------ slice 5: the run
+
+import { generateEncounter, generateNesses, nessCost } from '../src/sim/budget';
+import { Rng } from '../src/sim/math';
+import { applyFight, emptyPost, encounterSummary, loadRun, newRun, saveRun } from '../src/sim/run';
+import { combinedStyle, generateMap } from '../src/sim/seaMap';
+import { enterPort, makePlan } from '../src/sim/port';
+import { rngFor } from '../src/sim/math';
+import { MAP_STYLES, STOP_TYPES } from '../src/config/sea';
+
+describe('Ness budgets', () => {
+  test('a Ness costs its kind\'s points, plus a share for each level', () => {
+    const t = defaultTuning();
+    expect(nessCost('mad', 1, t)).toBe(t.ness.kinds.mad.cost);
+    expect(nessCost('mad', 3, t)).toBeCloseTo(t.ness.kinds.mad.cost * (1 + 2 * t.ness.common.levelCost), 5);
+  });
+
+  test('a generated pack stays within its budget, deterministically', () => {
+    const t = defaultTuning();
+    for (const budget of [30, 80, 150, 300, 900]) {
+      const a = generateNesses(budget, new Rng(7), t);
+      const b = generateNesses(budget, new Rng(7), t);
+      expect(a).toEqual(b);
+      expect(a.length).toBeGreaterThan(0);
+      expect(a.length).toBeLessThanOrEqual(t.ness.common.maxPerFight);
+      const spent = a.reduce((x, n) => x + nessCost(n.kind, n.level ?? 1, t), 0);
+      // The cheapest Ness always comes, even on a thin budget; otherwise it never overspends.
+      if (budget >= Math.min(...Object.values(t.ness.kinds).map((k) => k.cost))) expect(spent).toBeLessThanOrEqual(budget + 1e-6);
+    }
+  });
+
+  test('a bigger budget buys more or bigger Nesses', () => {
+    const t = defaultTuning();
+    const small = generateNesses(80, new Rng(3), t).reduce((x, n) => x + nessCost(n.kind, n.level ?? 1, t), 0);
+    const big = generateNesses(500, new Rng(3), t).reduce((x, n) => x + nessCost(n.kind, n.level ?? 1, t), 0);
+    expect(big).toBeGreaterThan(small);
+  });
+
+  test('a fight can be ships, Nesses, or both; no share is exactly the old ships', () => {
+    const t = defaultTuning();
+    const none = generateEncounter(300, 5, t, { nessShare: 0 });
+    expect(none.nesses).toHaveLength(0);
+    expect(none.enemies.length).toBeGreaterThan(0);
+    const lair = generateEncounter(300, 5, t, { nessShare: 1 });
+    expect(lair.enemies).toHaveLength(0);
+    expect(lair.nesses.length).toBeGreaterThan(0);
+    const mixed = generateEncounter(600, 5, t, { nessShare: 0.4 });
+    expect(mixed.enemies.length).toBeGreaterThan(0);
+    expect(mixed.nesses.length).toBeGreaterThan(0);
+  });
+});
+
+describe('maps', () => {
+  test('Ness waters and the lair exist; Ness waters have many Nesses, crowded lanes few', () => {
+    expect(MAP_STYLES.ness).toBeDefined();
+    expect(STOP_TYPES.lair?.nessOnly).toBe(true);
+    expect(combinedStyle(['ness']).ness).toBeGreaterThan(combinedStyle(['open']).ness);
+    expect(combinedStyle(['crowded']).ness).toBeLessThan(combinedStyle(['open']).ness);
+  });
+
+  function stats(styles: string[]): { fights: number; withNess: number; lairs: number } {
+    const t = defaultTuning();
+    let fights = 0;
+    let withNess = 0;
+    let lairs = 0;
+    for (let seed = 1; seed <= 12; seed++) {
+      const run = newRun('basic', seed, t);
+      enterPort(run, makePlan(rngFor(seed, 'p'), run, t, new Set()), t);
+      const plan = { ...run.port!.offers[0], styles };
+      const map = generateMap(run, plan, t);
+      for (const s of map.stops) {
+        if (STOP_TYPES[s.type]?.effect !== 'fight') continue;
+        fights++;
+        if (s.nesses.length) withNess++;
+        if (s.type === 'lair') {
+          lairs++;
+          expect(s.enemies).toHaveLength(0);
+          expect(s.nesses.length).toBeGreaterThan(0);
+        }
+      }
+    }
+    return { fights, withNess, lairs };
+  }
+
+  test('a Ness waters map has a lot more Nesses than a crowded one', () => {
+    const waters = stats(['ness']);
+    const crowded = stats(['crowded']);
+    expect(waters.withNess / waters.fights).toBeGreaterThan(crowded.withNess / crowded.fights);
+    expect(waters.lairs).toBeGreaterThan(0);
+  });
+});
+
+describe('after a fight with Nesses', () => {
+  test('a slain Ness pays gold and may leave its trophy (which is cargo); a summary names it', () => {
+    const t = defaultTuning();
+    t.ness.common.trophyChance = 1;
+    const run = newRun('basic', 4, t);
+    run.encounter = { stop: null, type: 'fight', budget: 200, enemies: [], nesses: [{ kind: 'lonely', level: 1, budget: 40 }], gold: 1, special: false };
+    expect(encounterSummary(run)).toBe('Lonely Ness');
+    const gold0 = run.gold;
+    const cargoBefore = run.items.length;
+    const post = applyFight(run, { won: true, lees: [], enemies: [], nesses: [{ kind: 'lonely', level: 1, budget: 40 }], lastEnemy: null, hull: [] }, t);
+    expect(post.slain).toHaveLength(1);
+    expect(post.slain[0].trophy).toBe('lonelyLocket');
+    expect(run.gold).toBeGreaterThan(gold0);
+    expect(run.items.length).toBe(cargoBefore + 1);
+    expect(post.spoils).toContain('lonelyLocket');
+    expect(post.outcomes).toHaveLength(0);
+  });
+
+  test('no trophy when the dice say no', () => {
+    const t = defaultTuning();
+    t.ness.common.trophyChance = 0;
+    const run = newRun('basic', 4, t);
+    run.encounter = { stop: null, type: 'fight', budget: 200, enemies: [], nesses: [{ kind: 'weak', level: 1, budget: 30 }], gold: 1, special: false };
+    const post = applyFight(run, { won: true, lees: [], enemies: [], nesses: [{ kind: 'weak', level: 1, budget: 30 }], lastEnemy: null, hull: [] }, t);
+    expect(post.slain[0].trophy).toBeNull();
+  });
+
+  test('every Ness kind names a real trophy', () => {
+    for (const id of NESS_ORDER) expect(ITEMS[NESS[id].trophy], id).toBeDefined();
+  });
+
+  test('a run saved before Nesses still loads', () => {
+    const t = defaultTuning();
+    const run = newRun('basic', 4, t);
+    run.encounter = { stop: null, type: 'fight', budget: 200, enemies: [], nesses: [], gold: 1, special: false };
+    const json = JSON.parse(saveRun(run));
+    delete json.encounter.nesses;
+    const post = emptyPost(run, true);
+    delete (post as unknown as Record<string, unknown>).slain;
+    json.pending = post;
+    const loaded = loadRun(JSON.stringify(json));
+    expect(loaded.ok).toBe(true);
+    if (loaded.ok) {
+      expect(loaded.run.encounter?.nesses).toEqual([]);
+      expect(loaded.run.pending?.slain).toEqual([]);
+    }
+  });
+});
+
+describe('a whole fight against Nesses', () => {
+  test('the world builds from a run encounter and ends when the last one is slain', () => {
+    const t = quiet(defaultTuning());
+    const w = new World(t, 1, { enemies: [], nesses: [{ kind: 'weak', level: 1, budget: 30 }, { kind: 'lonely', level: 1, budget: 40 }], crew: [5, 6, 7, 8] });
+    w.start();
+    expect(w.foesLeft()).toBe(2);
+    for (const n of w.nesses.list) w.nesses.hurt(w, n, headOf(n), 9999);
+    run(w, 1.5);
+    expect(w.result?.winner).toBe('player');
+    expect(w.nessOutcomes().map((o) => o.kind).sort()).toEqual(['lonely', 'weak']);
+    expect(w.nessOutcomes().reduce((a, o) => a + o.budget, 0)).toBe(70);
+  });
+});
+
+describe('guns at the rail', () => {
+  test('a gun fires at a Ness alongside, closer than it would at a ship', () => {
+    const t = quiet(defaultTuning());
+    t.ness.kinds.weak.diveHurt = 99;
+    t.ness.kinds.weak.attackRange = 0; // it only sits there
+    const w = new World(t, 1, { enemies: [], nesses: [{ kind: 'weak' }], crew: [0, 1, 2, 3, 4, 5, 6, 7] });
+    w.start();
+    pin(w.player, { x: 0, y: 0 });
+    const n = w.nesses.list[0];
+    const edge = w.player.layout.beam / 2 + 6;
+    n.x = edge;
+    n.y = 0;
+    n.heading = -Math.PI / 2;
+    for (let i = 0; i < n.path.length; i++) n.path[i] = { x: edge, y: i };
+    n.state = 'surfaced';
+    n.hold = 1000;
+    layOut(n);
+    for (const l of w.player.crew.lees) l.job = 'fire';
+    let fired = 0;
+    for (let i = 0; i < 20 / FIXED_DT; i++) {
+      pin(w.player, { x: 0, y: 0 });
+      w.step(FIXED_DT);
+      for (const e of w.drainEvents()) if (e.type === 'fire') fired++;
+    }
+    expect(fired).toBeGreaterThan(0);
+  });
+});

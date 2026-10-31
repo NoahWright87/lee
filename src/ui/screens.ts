@@ -7,6 +7,7 @@
 
 import { ITEMS } from '../config/items';
 import { LEE_DEFS, STAT_LABELS } from '../config/lees';
+import { NESS } from '../config/ness';
 import { SHIP_ORDER, SHIPS } from '../config/ships';
 import { countTags, tagName } from '../config/tags';
 import { DECK_ZOOMS, OCEAN_ZOOMS, type Controller, type ZoomChoice, type ZoomKind } from '../game/Controller';
@@ -298,6 +299,7 @@ export class Screens {
     const pay = el('div', 'spoils');
     if (post.gold) pay.append(el('div', 'spoil gold', `🪙 +${post.gold} gold`));
     for (const o of post.outcomes) pay.append(el('div', 'spoil', `${SHIPS[o.ship]?.name ?? o.ship}: ${o.how === 'sunk' ? 'sunk (its parts went down with it)' : 'captured'}`));
+    for (const n of post.slain ?? []) pay.append(el('div', 'spoil', `${NESS[n.kind]?.name ?? n.kind}${n.level > 1 ? ` (Lv ${n.level})` : ''}: slain${n.trophy ? ` · trophy: ${ITEMS[n.trophy]?.name ?? n.trophy}` : ''}`));
     for (const id of post.spoils) {
       const d = ITEMS[id];
       if (!d) continue;

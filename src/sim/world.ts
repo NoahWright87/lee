@@ -329,6 +329,8 @@ export class World {
   readonly charges: Charge[] = [];
   private nextChargeId = 1;
   private nextAutoCharge = 0;
+  /** Points each Ness was built with, by id. */
+  private nessBudgets = new Map<number, number>();
   /** Hooks in the air and the lines between hulls. */
   readonly lines = new LineSystem();
   /** Taps on a deck waiting for, or being worked by, a Lee. */
@@ -394,6 +396,7 @@ export class World {
       const a = bearing + (setups.length ? 1.7 : 0) + (i - (specs.length - 1) / 2) * 0.7;
       const pos = { x: Math.cos(a) * nessRange, y: Math.sin(a) * nessRange };
       this.nesses.add(createNess(2 + count + i, spec, tuning, pos, Math.atan2(-pos.y, -pos.x), this.rng));
+      this.nessBudgets.set(2 + count + i, spec.budget ?? 0);
     });
   }
 
@@ -815,6 +818,13 @@ export class World {
       hp: this.player.parts.map((p) => structureFraction(p)),
       water: this.player.parts.map((p) => p.water),
     };
+  }
+
+  /** The sea monsters slain, and what each was worth (what it pays). */
+  nessOutcomes(): { kind: string; level: number; budget: number }[] {
+    return this.nesses.list
+      .filter((n) => n.state === 'dead')
+      .map((n) => ({ kind: n.kind, level: n.level, budget: this.nessBudgets.get(n.id) ?? 0 }));
   }
 
   /** Enemy ships still in the fight: afloat and with crew. */
@@ -1641,9 +1651,9 @@ export class World {
   }
 
   /** Is `aim` inside this gun's arc, and between its minimum and maximum range? */
-  canHit(b: Boat, g: GunState, from: Vec, aim: Vec): boolean {
+  canHit(b: Boat, g: GunState, from: Vec, aim: Vec, minRangeMul = 1): boolean {
     const spec = gunSpec(b, g, this.tuning);
-    return inArc(from, this.gunFacing(b, g), aim, spec.arcHalf, spec.minRange, spec.range);
+    return inArc(from, this.gunFacing(b, g), aim, spec.arcHalf, spec.minRange * minRangeMul, spec.range);
   }
 
   /**
@@ -1759,7 +1769,9 @@ export class World {
       const ness = b.side === 'player' ? this.pickNess(b, g, from) : null;
       let aim: Vec;
       let time: number;
+      let minMul = 1;
       if (ness && (!target || ness.d <= dist(from, target.motion))) {
+        minMul = this.tuning.ness.common.minRangeShare;
         if (!g.aim || g.aim.boatId !== -ness.ness.id) g.aim = this.planNessAim(ness.ness, ness.part);
         const part = ness.ness.parts[g.aim.part];
         ({ aim, time } = this.leadAimNess(b, from, ness.ness, part, g.aim, spec.shellSpeed));
@@ -1770,7 +1782,7 @@ export class World {
         g.aim = null;
         return;
       }
-      if (!this.canHit(b, g, from, aim)) return;
+      if (!this.canHit(b, g, from, aim, minMul)) return;
       const accuracy = Math.max(0.05, leeStat(gunner, 'accuracy', b, this.tuning));
       // Accuracy pass: scatter grows with distance and with how hard the shooter's own boat is turning.
       const turning = Math.abs(b.motion.omega) * Math.max(0, G0.turnScatter);
@@ -1836,7 +1848,7 @@ export class World {
     const pool = g.mode === 'lob' ? [...this.nessTargets(), ...this.underTargets().filter((x) => this.nessVisible(x.ness))] : this.nessTargets();
     for (const t of pool) {
       const d = dist(from, t.part.pos);
-      if (!this.canHit(b, g, from, t.part.pos)) continue;
+      if (!this.canHit(b, g, from, t.part.pos, this.tuning.ness.common.minRangeShare)) continue;
       if (!best || d < best.d - 1e-6 || (Math.abs(d - best.d) <= 1e-6 && t.part.index < best.part.index)) best = { ...t, d };
     }
     return best;
@@ -1914,7 +1926,6 @@ export class World {
    * (a whole part's HP, and a hole), the tiles and Lees under it too. Steering off the ring is the dodge.
    */
   nessSurfaced(n: Ness, at: Vec, k: NessKindTuning): void {
-    const G = this.tuning.guns;
     this.events.push({ type: 'nessSurface', nessId: n.id, pos: { ...at }, radius: k.ringRadius });
     for (const boat of this.boats) {
       if (this.isSinking(boat)) continue;
@@ -1926,7 +1937,7 @@ export class World {
         const dealt = applyDamage(part, structure(part).maxHp * Math.max(0, k.emergeDamage)).dealt;
         this.stats.enemy.damageDealt += dealt;
         this.stats[boat.side].damageTaken += dealt;
-        this.stats[boat.side].waterTaken += floodPart(boat, part, G.holeWater);
+        this.stats[boat.side].waterTaken += floodPart(boat, part, k.emergeWater);
         this.events.push({ type: 'hit', boatId: boat.id, part: part.index, pos: { ...at }, damage: dealt });
         if (wasOnline && structureFraction(part) <= this.tuning.boat.function.gunOfflineAt && boat.guns.some((g) => g.partIndex === part.index)) this.events.push({ type: 'offline', boatId: boat.id, part: part.index });
         if (!wasWrecked && isWrecked(part)) this.events.push({ type: 'wrecked', boatId: boat.id, part: part.index });

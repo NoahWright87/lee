@@ -784,8 +784,9 @@ export function gunEngages(boat: Boat, g: GunState, ctx: CrewContext, at: number
     const p = { x: f.motion.x + f.motion.vx * at, y: f.motion.y + f.motion.vy * at };
     if (inArc(muzzle, face, p, spec.arcHalf, spec.minRange, spec.range)) return true;
   }
-  for (const m of ctx.marks ?? []) if (inArc(muzzle, face, m, spec.arcHalf, spec.minRange, spec.range)) return true;
-  if (g.mode === 'lob') for (const m of ctx.underMarks ?? []) if (inArc(muzzle, face, m, spec.arcHalf, spec.minRange, spec.range)) return true;
+  const near = spec.minRange * Math.max(0, ctx.tuning.ness.common.minRangeShare);
+  for (const m of ctx.marks ?? []) if (inArc(muzzle, face, m, spec.arcHalf, near, spec.range)) return true;
+  if (g.mode === 'lob') for (const m of ctx.underMarks ?? []) if (inArc(muzzle, face, m, spec.arcHalf, near, spec.range)) return true;
   return false;
 }
 

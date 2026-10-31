@@ -17,6 +17,8 @@ export interface NessDef {
   attacks: NessAttack[];
   /** How solid it looks when it is up (1 = fully; a Quiet Ness is a little see-through). */
   solid?: number;
+  /** The item a slain one may leave (a trophy; see items.ts). */
+  trophy: string;
 }
 
 /**
@@ -35,6 +37,7 @@ export const NESS: Record<string, NessDef> = {
     color: '#7fb98a',
     coils: 2,
     attacks: ['bite'],
+    trophy: 'weakTooth',
   },
   mad: {
     id: 'mad',
@@ -43,6 +46,7 @@ export const NESS: Record<string, NessDef> = {
     color: '#c46a5a',
     coils: 3,
     attacks: ['smash', 'slap', 'smash', 'bite'],
+    trophy: 'madScale',
   },
   lonely: {
     id: 'lonely',
@@ -51,6 +55,7 @@ export const NESS: Record<string, NessDef> = {
     color: '#8a90cf',
     coils: 3,
     attacks: ['drag', 'bite', 'drag'],
+    trophy: 'lonelyLocket',
   },
   sad: {
     id: 'sad',
@@ -59,6 +64,7 @@ export const NESS: Record<string, NessDef> = {
     color: '#5f95cc',
     coils: 3,
     attacks: ['rain', 'bite', 'rain'],
+    trophy: 'sadTear',
   },
   quiet: {
     id: 'quiet',
@@ -67,6 +73,7 @@ export const NESS: Record<string, NessDef> = {
     color: '#a9b4bd',
     coils: 2,
     attacks: ['bite', 'slap'],
+    trophy: 'quietPearl',
     solid: 0.72,
   },
   dark: {
@@ -76,14 +83,16 @@ export const NESS: Record<string, NessDef> = {
     color: '#4a3f5e',
     coils: 3,
     attacks: ['ink', 'bite', 'ink', 'slap'],
+    trophy: 'inkVial',
   },
 };
 
 /** What one Ness kind does, in numbers. Meters, seconds, radians per second where noted. */
 export function defaultNessKind() {
   return {
-    /** Points it costs in a stop's budget. */
-    cost: 30,
+    /** Points it costs in a stop's budget (each level above 1 adds `levelCost` of this), and how often the generator picks it. */
+    cost: 130,
+    weight: 3,
     /** HP of the head (zero kills it), each coil, and the tail. */
     headHp: 40,
     coilHp: 30,
@@ -103,12 +112,13 @@ export function defaultNessKind() {
     /** It commits to rising once it's within this distance of your hull, m. */
     emergeTrigger: 90,
     /** The warning before it rises, s, and the size of the ring that marks where, m. */
-    warn: 2.2,
-    ringRadius: 11,
-    /** Rising under a part: damage as a share of that part's full HP (1 wrecks it), and the damage to each tile and Lee in the ring. */
-    emergeDamage: 1.1,
-    emergeTileDamage: 40,
-    emergeLeeDamage: 14,
+    warn: 2.6,
+    ringRadius: 8,
+    /** Rising under a part: damage as a share of that part's full HP (1 wrecks it), the water it lets into each part, and the damage to each tile (a tile has 30) and Lee in the ring. */
+    emergeDamage: 0.35,
+    emergeWater: 1.5,
+    emergeTileDamage: 18,
+    emergeLeeDamage: 8,
     /** Surfaced: seconds before it dives (min..max), how far off your hull it keeps, m, and the share of its head HP lost since rising that makes it dive early. */
     surfacedMin: 8,
     surfacedMax: 12,
@@ -187,8 +197,18 @@ export function defaultNessTuning() {
       startRange: 150,
       /** Each level adds this share of the kind's HP (and later its damage). */
       levelScale: 0.25,
+      /** Each level adds this share of the kind's cost to its price in a stop's budget. */
+      levelCost: 0.6,
+      /** Most Nesses the generator puts in one fight. */
+      maxPerFight: 4,
+      /** Chance a slain Ness leaves its trophy. */
+      trophyChance: 0.4,
       /** Pistols and cannons: damage to a Ness part × this. */
       damageTaken: 1,
+      /** A gun can shoot a Ness this much closer than its ordinary minimum range (× it): a monster at the rail is not a ship at point-blank. */
+      minRangeShare: 0.2,
+      /** Underwater and far from you (past its trigger distance) a Ness swims this much faster: you cannot just sail away from one. */
+      chaseSpeed: 2,
       /** A mortar shell that lands on a shadow hurts it: × the shell's damage. */
       mortarUnderwater: 0.7,
       /** How far from your hull you can see a Ness's shadow, m (a manned Hydrophone ×`hydroSight`). */
@@ -205,7 +225,8 @@ export function defaultNessTuning() {
       weak: defaultNessKind(),
       lonely: {
         ...defaultNessKind(),
-        cost: 40,
+        cost: 160,
+        weight: 2,
         headHp: 45,
         coilHp: 30,
         tailHp: 24,
@@ -216,7 +237,8 @@ export function defaultNessTuning() {
       },
       sad: {
         ...defaultNessKind(),
-        cost: 50,
+        cost: 190,
+        weight: 1.5,
         headHp: 55,
         coilHp: 40,
         tailHp: 30,
@@ -231,7 +253,8 @@ export function defaultNessTuning() {
       },
       quiet: {
         ...defaultNessKind(),
-        cost: 55,
+        cost: 200,
+        weight: 1.5,
         headHp: 38,
         coilHp: 28,
         tailHp: 22,
@@ -246,7 +269,8 @@ export function defaultNessTuning() {
       },
       dark: {
         ...defaultNessKind(),
-        cost: 60,
+        cost: 230,
+        weight: 1,
         headHp: 60,
         coilHp: 40,
         tailHp: 30,
@@ -258,7 +282,8 @@ export function defaultNessTuning() {
       },
       mad: {
         ...defaultNessKind(),
-        cost: 60,
+        cost: 250,
+        weight: 1.2,
         headHp: 70,
         coilHp: 45,
         tailHp: 36,
@@ -269,10 +294,11 @@ export function defaultNessTuning() {
         turnRate: 1.7,
         submergedMin: 3,
         submergedMax: 6,
-        warn: 1.6,
-        ringRadius: 13,
+        warn: 2,
+        ringRadius: 9,
         surfacedMin: 12,
         surfacedMax: 18,
+        emergeDamage: 0.6,
         smashCooldown: 1.2,
         slapCooldown: 1.2,
         biteCooldown: 1.5,

@@ -35,6 +35,8 @@ export interface NessPart {
 export interface NessSpec {
   kind: string;
   level?: number;
+  /** Points spent on it (generated ones): what it pays when slain. */
+  budget?: number;
 }
 
 export interface Ness {
@@ -315,8 +317,9 @@ export class NessSystem {
     const hunting = !w.isSinking(me) && !w.result;
     if (hunting) {
       const goal = lurkPoint(me, head, k.lurkRange, n.circle);
-      swim(n, goal, k, dt);
       const reach = distanceToHull(me, head);
+      // Far behind a boat that is sailing away: it swims faster, so it always catches up.
+      swim(n, goal, k, dt, reach > k.emergeTrigger ? Math.max(1, w.tuning.ness.common.chaseSpeed) : 1);
       if (n.stateT >= n.hold && reach <= k.emergeTrigger) this.beginEmerge(w, n, k);
     } else {
       swim(n, { x: n.x + Math.cos(n.heading) * 20, y: n.y + Math.sin(n.heading) * 20 }, k, dt);
@@ -509,12 +512,12 @@ export class NessSystem {
 // ------------------------------------------------------------ movement
 
 /** Swim toward a point: turn at most `turnRate`, then move forward (slower on arrival). */
-function swim(n: Ness, goal: Vec, k: NessKindTuning, dt: number): void {
+function swim(n: Ness, goal: Vec, k: NessKindTuning, dt: number, boost = 1): void {
   const want = Math.atan2(goal.y - n.y, goal.x - n.x);
   const turn = clamp(wrapAngle(want - n.heading), -k.turnRate * dt, k.turnRate * dt);
   n.heading = wrapAngle(n.heading + turn);
   const d = Math.hypot(goal.x - n.x, goal.y - n.y);
-  const speed = k.speed * clamp(d / 12, 0.35, 1);
+  const speed = k.speed * boost * clamp(d / 12, 0.35, 1);
   n.vx = Math.cos(n.heading) * speed;
   n.vy = Math.sin(n.heading) * speed;
   n.x += n.vx * dt;

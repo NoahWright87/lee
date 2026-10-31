@@ -28,6 +28,17 @@ npm run sweep      # tuning tool: a scripted captain sails each ship port to por
 
 Stack: TypeScript, [Phaser 3](https://phaser.io), Vite, lil-gui for the tuning panel, and Vitest.
 
+## Nesses (Phase 8)
+
+Sea monsters, each named for a *-ness* word and fighting true to it ([`docs/PRD_PHASE8.md`](docs/PRD_PHASE8.md)). A Ness is not a boat: a body of parts (head, coils, tail) with HP, no deck, no crew; **killing the head kills it**.
+
+- **States.** A **shadow** under the water that nobody can hit (cannons and pistols do nothing; a mortar shell or a depth charge does). A **ring** goes up where it will rise, about 2.6 s ahead: rising under a hull damages the part above it, breaks the tiles and hurts the Lees, so steering off the ring is the dodge. Then it is **up**: cannons and pistols hurt it until it dives (when its time is up or it is hurt enough). The game slows to close-combat speed as a ring forms or a Ness is up near you. Shadows only show within sight of your hull (`ness.common.sight`; a manned Hydrophone sees ×2.2 as far); you can't sail away from one (`chaseSpeed`).
+- **The roster** (`config/ness.ts`, one entry plus numbers per kind): **Weak** (small bites, packs), **Lonely** (hauls the Lee standing furthest from the others into the rail), **Sad** (a raincloud floods the parts under it for a while: bailing duty), **Mad** (fast, smashes and slaps again and again), **Quiet** (faint shadow, ring only for the last second unless a Lookout or Hydrophone is manned), **Dark** (ink: gunners in it aim at 35% and the warnings under it can't be seen).
+- **Deck attacks** use the danger-zone system (`sim/zones.ts`): tiles flash for the warning time, then take their effect. **Bite** (a circle), **head smash** (a block of tiles; the head then rests on your deck, stunned 💫), **tail slap** (a band that pushes Lees and floods), **drag**, **rain**, **ink**. A Lee pushed into the edge of the deck takes extra damage. **Tap a flashing zone** and the Lees standing in it step out to the nearest safe tiles; **tap the stunned head** and Lees go stab it for ×3 damage. Crew bars flash for a Lee in danger.
+- **Gear.** **Depth Charge** (rail item: tap, or your 🔫 Lees drop one by themselves at a shadow that will be in the blast; it blows where it was dropped and drives back a Ness that is rising). **Harpoon Gun**: a ship it hits is held by a line like a hook; a surfaced Ness is held up (it can't dive; it strains against the line) and reeled toward the gun. **Mortar** shells reach shadows. **Hydrophone** (a Lookout-kind station): shadows show further out and a Ness gives +1 s of warning. Cannons can fire at a Ness at the rail (`ness.common.minRangeShare`).
+- **In the run.** A Ness costs points like a ship (`ness.kinds.<id>.cost`, + 60% per level); a fight can be ships, Nesses or both. The **Ness waters** map style has many, **Crowded lanes** few; the **Ness lair** stop has only Nesses. The map shows the kind (a Spyglass adds its level, a manned Crow's Nest how it fights). Slaying one pays gold and may leave a **trophy** (a rare trinket or treasure: Weak Ness Tooth, Lonely Locket, Mad Ness Scale, Quiet Pearl, Vial of Ink, Sad Ness Tear). The sandbox places Nesses (`+ Ness`) and generates them with ships (the Ness % picker).
+- **Tuning.** Everything is under Tune → `ness` (shared numbers, then one group per kind) plus the new items' params. The numbers are first guesses.
+
 ## Close quarters (Phase 7)
 
 Close combat now has stages you can see coming, and every way in has a way out.
@@ -138,6 +149,7 @@ src/
     items.ts       guns, stations, rail items, hull modules, attachments, floors, Treasures, Trinkets
     lees.ts        Lee types: stats, traits (generic abilities), tags, level-up weights, colors
     tags.ts        tags (data only: shown and counted, no bonuses yet)
+    ness.ts        Nesses: kinds (look, deck attacks, trophy) and every number (cost, HP, speed, warnings, attacks)
     encounters.ts  AI profiles, hand-made archetypes (tests, sandbox), the enemy spec shape
     economy.ts     the one point-cost table: chassis, Lees by type and level, items
     sea.ts         stop types, modifiers (Fog), map styles, intel levels

@@ -18,7 +18,8 @@ import { difficulty } from '../config/difficulty';
 import { INTEL, MAP_STYLES, MODIFIERS, STOP_TYPES, type IntelDef, type MapStyleDef } from '../config/sea';
 import { SHIPS } from '../config/ships';
 import type { Tuning } from '../config/tuning';
-import { budgetFor, dangerSkulls, generateEnemies } from './budget';
+import { budgetFor, dangerSkulls, generateEncounter } from './budget';
+import type { NessSpec } from './ness';
 import { chassisCost, itemCost, leeCost } from '../config/economy';
 import { hashString, pickWeighted, rngFor as seededRng } from './math';
 import { bankInterest, enterPort, type PortPlan } from './port';
@@ -37,6 +38,8 @@ export interface Stop {
   budget: number;
   /** Fights: the enemy ships, built at generation. */
   enemies: EnemySpec[];
+  /** Fights: the sea monsters (alone in a lair, else alongside the ships). */
+  nesses: NessSpec[];
   cleared: boolean;
   /** Depth here: journeys completed + progress across this map. */
   depth: number;
@@ -67,13 +70,14 @@ const MARGIN = 6;
 
 /** Map styles' numbers multiplied together. */
 export function combinedStyle(ids: string[]): Omit<MapStyleDef, 'id' | 'name' | 'icon' | 'text' | 'chance'> {
-  const out = { stops: 1, radius: 1, budget: 1, gold: 1, weights: {} as Record<string, number>, modifiers: {} as Record<string, number> };
+  const out = { stops: 1, radius: 1, budget: 1, ness: 1, gold: 1, weights: {} as Record<string, number>, modifiers: {} as Record<string, number> };
   for (const id of ids) {
     const s = MAP_STYLES[id];
     if (!s) continue;
     out.stops *= s.stops;
     out.radius *= s.radius;
     out.budget *= s.budget;
+    out.ness *= s.ness;
     out.gold *= s.gold;
     for (const [k, v] of Object.entries(s.weights)) out.weights[k] = (out.weights[k] ?? 1) * (v ?? 1);
     for (const [k, v] of Object.entries(s.modifiers)) out.modifiers[k] = (out.modifiers[k] ?? 1) * (v ?? 1);
@@ -96,7 +100,7 @@ export function generateMap(run: RunState, plan: PortPlan, t: Tuning): SeaMap {
   const spacing = Math.max(2, M.spacing * Math.sqrt(style.radius));
   const stops: Stop[] = [];
   const add = (x: number, y: number, type: string): Stop => {
-    const s: Stop = { id: stops.length, x, y, type, mods: [], budget: 0, enemies: [], cleared: false, depth: journey };
+    const s: Stop = { id: stops.length, x, y, type, mods: [], budget: 0, enemies: [], nesses: [], cleared: false, depth: journey };
     stops.push(s);
     return s;
   };
@@ -148,7 +152,14 @@ export function generateMap(run: RunState, plan: PortPlan, t: Tuning): SeaMap {
     const def = STOP_TYPES[s.type];
     const mult = Math.max(0, t.stops[s.type]?.budget ?? def.budget) * (def.effect === 'fight' ? style.budget : 1);
     s.budget = budgetFor(s.depth, mult, rng, t, diff.growth);
-    if (def.effect === 'fight') s.enemies = generateEnemies(s.budget, (run.seed ^ hashString(`enemies:${journey}:${s.id}`)) >>> 0, t);
+    if (def.effect === 'fight') {
+      // Sea monsters: all of it in a lair, else sometimes a share of the budget (more in Ness waters, fewer in crowded lanes).
+      const chance = Math.min(0.95, Math.max(0, M.nessChance) * style.ness);
+      const share = def.nessOnly ? 1 : rng.next() < chance ? rng.range(0.3, 0.7) : 0;
+      const gen = generateEncounter(s.budget, (run.seed ^ hashString(`enemies:${journey}:${s.id}`)) >>> 0, t, { nessShare: share });
+      s.enemies = gen.enemies;
+      s.nesses = gen.nesses;
+    }
   }
   return { journey, styles: [...plan.styles], width, height, radius, stops, dest: dest.id, at: start.id, hops: 0, route, destPort: plan };
 }
@@ -248,7 +259,7 @@ export function sailTo(run: RunState, stopId: number, t: Tuning): boolean {
   const def = STOP_TYPES[stop.type] ?? STOP_TYPES.fight;
   const style = combinedStyle(map.styles);
   if (def.effect === 'fight') {
-    run.encounter = { stop: stop.id, type: stop.type, budget: stop.budget, enemies: structuredClone(stop.enemies), gold: style.gold, special: !!def.special };
+    run.encounter = { stop: stop.id, type: stop.type, budget: stop.budget, enemies: structuredClone(stop.enemies), nesses: structuredClone(stop.nesses ?? []), gold: style.gold, special: !!def.special };
     run.stage = 'refit';
     return true;
   }

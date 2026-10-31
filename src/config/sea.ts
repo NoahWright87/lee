@@ -15,6 +15,8 @@ export interface StopTypeDef {
   budget: number;
   /** Fights: also offers a special reward (a rare pick) when won. */
   special?: boolean;
+  /** Fights: only sea monsters, no ships. */
+  nessOnly?: boolean;
   /** Base weight when scattering stops (each map style multiplies it). */
   weight: number;
 }
@@ -22,6 +24,7 @@ export interface StopTypeDef {
 export const STOP_TYPES: Record<string, StopTypeDef> = {
   fight: { id: 'fight', name: 'Fight', icon: '⚔️', text: 'Enemy ships. Pays gold and spoils.', effect: 'fight', budget: 1, weight: 6 },
   hard: { id: 'hard', name: 'Hard fight', icon: '💀', text: 'A bigger fight. Pays more, plus a rare pick.', effect: 'fight', budget: 1.5, special: true, weight: 1.2 },
+  lair: { id: 'lair', name: 'Ness lair', icon: '🐍', text: 'Sea monsters only. Pays gold, and they may leave a trophy.', effect: 'fight', budget: 1.15, nessOnly: true, weight: 0.5 },
   abandoned: { id: 'abandoned', name: 'Abandoned ship', icon: '🛶', text: 'Nobody aboard. Salvage it for gold.', effect: 'salvage', budget: 1, weight: 1 },
   wreck: { id: 'wreck', name: 'Wreck', icon: '🪵', text: 'Pick one of the parts floating in the wreckage.', effect: 'wreck', budget: 1, weight: 1 },
   cove: { id: 'cove', name: 'Cove', icon: '🏝️', text: 'Calm water: a free partial heal and repair.', effect: 'cove', budget: 1, weight: 0.8 },
@@ -62,6 +65,8 @@ export interface MapStyleDef {
   radius: number;
   /** × fight budgets. */
   budget: number;
+  /** × the chance a fight has Nesses in it. */
+  ness: number;
   /** × gold from fights. */
   gold: number;
   /** × each stop type's weight. */
@@ -76,6 +81,7 @@ const style = (s: Partial<MapStyleDef> & Pick<MapStyleDef, 'id' | 'name' | 'icon
   stops: 1,
   radius: 1,
   budget: 1,
+  ness: 1,
   gold: 1,
   weights: {},
   modifiers: {},
@@ -84,7 +90,8 @@ const style = (s: Partial<MapStyleDef> & Pick<MapStyleDef, 'id' | 'name' | 'icon
 
 export const MAP_STYLES: Record<string, MapStyleDef> = {
   open: style({ id: 'open', name: 'Open water', icon: '🌊', text: 'A bit of everything.', chance: 3 }),
-  crowded: style({ id: 'crowded', name: 'Crowded lanes', icon: '⛵', text: 'Packed stops: more fights, each a bit weaker.', stops: 1.6, radius: 0.8, budget: 0.8, weights: { fight: 1.6 }, chance: 1 }),
+  crowded: style({ id: 'crowded', name: 'Crowded lanes', icon: '⛵', text: 'Packed stops: more fights, each a bit weaker. Few sea monsters.', stops: 1.6, radius: 0.8, budget: 0.8, ness: 0.3, weights: { fight: 1.6, lair: 0.2 }, chance: 1 }),
+  ness: style({ id: 'ness', name: 'Ness waters', icon: '🐍', text: 'Sea monsters everywhere, alone or alongside ships.', ness: 3.5, weights: { lair: 5, fight: 0.9 }, chance: 1 }),
   wide: style({ id: 'wide', name: 'Wide sea', icon: '🧭', text: 'Few stops, far apart.', stops: 0.6, radius: 1.3, chance: 1 }),
   foggy: style({ id: 'foggy', name: 'Foggy', icon: '🌫️', text: 'Many stops are hidden in fog.', modifiers: { fog: 5 }, chance: 1 }),
   dangerous: style({ id: 'dangerous', name: 'Dangerous', icon: '☠️', text: 'More hard fights; better pay.', budget: 1.1, gold: 1.3, weights: { hard: 3 }, chance: 1 }),

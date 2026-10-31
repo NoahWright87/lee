@@ -136,6 +136,7 @@ export class RefitPanel {
   private sandboxOpen = false;
   private genBudget = 400;
   private genChassis = '';
+  private genNess = 0;
   private builtFor: unknown = null;
   private lastSig = '';
   private now: { bars: BoatBars; card: BoatCard } | null = null;
@@ -879,7 +880,12 @@ export class RefitPanel {
     for (const id of SHIP_ORDER) chassis.append(new Option(SHIPS[id].name, id));
     chassis.value = this.genChassis;
     chassis.onchange = () => (this.genChassis = chassis.value);
-    gen.append(el('span', '', 'Budget'), budget, chassis, button('Generate', 'hud-btn', () => ctl.generateSandbox(this.genBudget, this.genChassis || undefined)));
+    // Sea monsters: what share of the budget goes to Nesses (all of it is a lair).
+    const nessShare = el('select');
+    for (const [v, label] of [['0', 'No Nesses'], ['0.4', '40% Nesses'], ['0.7', '70% Nesses'], ['1', 'Only Nesses']] as const) nessShare.append(new Option(label, v));
+    nessShare.value = String(this.genNess);
+    nessShare.onchange = () => (this.genNess = Number(nessShare.value));
+    gen.append(el('span', '', 'Budget'), budget, chassis, nessShare, button('Generate', 'hud-btn', () => ctl.generateSandbox(this.genBudget, this.genChassis || undefined, this.genNess)));
     box.append(gen);
     const preset = el('select');
     preset.append(new Option('Load an archetype…', ''));

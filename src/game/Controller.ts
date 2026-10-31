@@ -56,7 +56,7 @@ import {
 } from '../sim/run';
 import { buy, buyChassis, buyHeal, buyHealAll, buyRepair, enterPort, makePlan, reroll, sell, type Shop } from '../sim/port';
 import { leavePort, sailTo } from '../sim/seaMap';
-import { generateEnemies } from '../sim/budget';
+import { generateEncounter } from '../sim/budget';
 import { structureFraction } from '../sim/boat';
 import { rngFor } from '../sim/math';
 import type { BonusKey } from '../sim/levels';
@@ -263,7 +263,7 @@ export class Controller {
         fight: run.fight,
         player: setupFor(run, this.tuning),
         enemies,
-        nesses: sandbox ? this.sandbox!.nesses : undefined,
+        nesses: sandbox ? this.sandbox!.nesses : this.refitFor === 'fight' ? run.encounter?.nesses : undefined,
         assists: sandbox,
         hesitation: difficulty(run.difficulty).hesitation,
         surrender: difficulty(run.difficulty).surrender,
@@ -532,9 +532,11 @@ export class Controller {
   }
 
   /** Sandbox: generate an enemy from a budget (optionally on a given chassis), the way the sea does. */
-  generateSandbox(budget: number, chassis?: string): void {
+  generateSandbox(budget: number, chassis?: string, nessShare = 0): void {
     if (!this.sandbox) return;
-    this.sandbox.enemies = generateEnemies(budget, (Math.random() * 2 ** 31) >>> 0, this.tuning, { chassis });
+    const gen = generateEncounter(budget, (Math.random() * 2 ** 31) >>> 0, this.tuning, { chassis, nessShare });
+    this.sandbox.enemies = gen.enemies;
+    this.sandbox.nesses = gen.nesses;
     this.changed();
   }
 
@@ -580,6 +582,7 @@ export class Controller {
         won: w.result.winner === 'player',
         lees: w.player.crew.lees,
         enemies: w.enemyOutcomes(),
+        nesses: w.nessOutcomes(),
         lastEnemy: w.lastEnemyStanding(),
         joined: w.defectors(),
         hull: w.player.parts.map((p) => structureFraction(p)),

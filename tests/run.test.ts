@@ -251,7 +251,7 @@ describe('after a fight', () => {
     expect(cards).toHaveLength(t.run.rewardChoices);
     expect(cards.some((c) => c.kind === 'recruit')).toBe(true);
     while (run.crew.length < t.ships.basic.crewMax) addCrew(run, 'basic', 1, t);
-    run.encounter = { stop: null, type: 'hard', budget: 400, enemies: [], gold: 1, special: true };
+    run.encounter = { stop: null, type: 'hard', budget: 400, enemies: [], nesses: [], gold: 1, special: true };
     const post = applyFight(run, report(run, true, lees(run)), t);
     expect(post.reward.length).toBe(t.run.rewardChoices);
     post.reward = [{ kind: 'recruit', type: 'deft', level: 2 }];
@@ -289,7 +289,7 @@ describe('encounters', () => {
       stop: null,
       type: 'fight',
       budget: 0,
-      gold: 1,
+      nesses: [], gold: 1,
       special: false,
       enemies: [
         { ship: 'basic', ai: 'standard', crew: [{ type: 'quick', level: 3 }, { type: 'basic', count: 2 }] },

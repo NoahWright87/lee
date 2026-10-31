@@ -10,10 +10,12 @@ import { difficulty } from '../config/difficulty';
 import type { EnemySpec } from '../config/encounters';
 import { ITEMS, type ItemDef } from '../config/items';
 import { LEE_DEFS, STAT_LABELS } from '../config/lees';
+import { NESS } from '../config/ness';
 import { SHIPS } from '../config/ships';
 import type { Facing, SlotType } from '../config/slots';
 import type { Tuning } from '../config/tuning';
 import type { Lee } from './crew';
+import type { NessSpec } from './ness';
 import { allSlots, fits, presetBuild, slotById, trinketMods, type BoatBuild } from './loadout';
 import { autoBonuses, bonusLabel, bonusMods, bonusOffers, combineMods, xpToNext, type BonusKey } from './levels';
 import { drawDistinct, rngFor as seededRng, type Rng } from './math';
@@ -92,6 +94,8 @@ export interface FightReport {
   lees: Lee[];
   /** Each enemy ship (only those that were beaten). */
   enemies: EnemyOutcome[];
+  /** Each sea monster slain (what it was worth, so what it pays). */
+  nesses?: { kind: string; level: number; budget: number }[];
   /** The last enemy Lee to fall (not by sinking): who might surrender. */
   lastEnemy: { type: string; level: number } | null;
   /** An enemy Lee that threw down its sword mid-fight and is still alive: it asks to stay (no roll). */
@@ -120,6 +124,8 @@ export interface PostFight {
   gold: number;
   /** How each enemy ship went out. */
   outcomes: { ship: string; how: 'sunk' | 'captured' }[];
+  /** Sea monsters slain, and the trophies they left (already in cargo). */
+  slain: { kind: string; level: number; trophy: string | null }[];
   /** Items taken (already in cargo). */
   spoils: string[];
   /** Captured ships: pick whole working parts from the ones that survived (a pick each, `taken` fills as you go). */
@@ -145,6 +151,8 @@ export interface Encounter {
   type: string;
   budget: number;
   enemies: EnemySpec[];
+  /** Sea monsters (alone in a lair, else alongside the ships). */
+  nesses: NessSpec[];
   /** × gold paid (map style). */
   gold: number;
   /** Offers a special reward when won. */
@@ -156,6 +164,8 @@ export interface RunTotals {
   ports: number;
   sunk: number;
   captured: number;
+  /** Sea monsters slain (older saves have none). */
+  slain?: number;
 }
 
 export interface RunState {
@@ -630,11 +640,11 @@ export function enemySetups(run: RunState, t: Tuning): BoatSetup[] {
   return enc.enemies.map((spec, i) => enemySetup(spec, t, { salt: run.seed + run.fight * 101 + i }));
 }
 
-/** "Basic Ship + Friend Ship". */
+/** "Basic Ship + Friend Ship", "Mad Ness + Basic Ship". */
 export function encounterSummary(run: RunState): string {
   const enc = run.encounter;
-  if (!enc || !enc.enemies.length) return 'Nobody';
-  return enc.enemies.map((s) => SHIPS[s.ship]?.name ?? s.ship).join(' + ');
+  const names = [...(enc?.enemies ?? []).map((s) => SHIPS[s.ship]?.name ?? s.ship), ...(enc?.nesses ?? []).map((n) => NESS[n.kind]?.name ?? n.kind)];
+  return names.length ? names.join(' + ') : 'Nobody';
 }
 
 // ------------------------------------------------------------ after a fight
@@ -677,6 +687,7 @@ export function emptyPost(run: RunState, won: boolean): PostFight {
     levelUps: [],
     gold: 0,
     outcomes: [],
+    slain: [],
     spoils: [],
     captures: [],
     surrender: null,
@@ -764,6 +775,18 @@ export function applyFight(run: RunState, report: FightReport, t: Tuning): PostF
         const picks = Math.max(0, Math.round(t.spoils.captureParts));
         if (options.length && picks > 0) post.captures.push({ ship: e.ship, options, picks, taken: [] });
       }
+    }
+    // Sea monsters slain: gold by what they cost, and maybe a trophy (their remains go down with them: no capture).
+    for (const n of report.nesses ?? []) {
+      post.gold += earn(run, n.budget * Math.max(0, t.spoils.goldPerBudget) * goldMul);
+      const trophy = NESS[n.kind]?.trophy ?? null;
+      const got = trophy && ITEMS[trophy] && rng.next() < Math.max(0, t.ness.common.trophyChance) ? trophy : null;
+      if (got) {
+        addItem(run, got);
+        post.spoils.push(got);
+      }
+      post.slain.push({ kind: n.kind, level: n.level, trophy: got });
+      run.totals.slain = (run.totals.slain ?? 0) + 1;
     }
     // Sometimes the last enemy Lee standing surrenders.
     const chance = Math.max(0, t.spoils.surrender) * difficulty(run.difficulty).surrender;
@@ -931,6 +954,10 @@ export function loadRun(json: string | null): LoadResult {
   if (!validRun(r)) return { ok: false, reason: 'invalid' };
   // Saved before Phase 7: a post-fight screen with no capture picks.
   if (r.pending && !r.pending.captures) r.pending.captures = [];
+  // Saved before Phase 8: no sea monsters in stops, the fight being set up, or the post-fight screen.
+  if (r.pending && !r.pending.slain) r.pending.slain = [];
+  if (r.encounter && !r.encounter.nesses) r.encounter.nesses = [];
+  if (r.map) for (const s of r.map.stops) if (!s.nesses) s.nesses = [];
   return { ok: true, run: r };
 }
 
