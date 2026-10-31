@@ -43,9 +43,9 @@ export interface EffectDef {
 }
 
 export type StationKind = 'gun' | 'oars' | 'sails' | 'lookout' | 'pump' | 'powder';
-export type RailKind = 'spikes' | 'fence' | 'planks' | 'rope' | 'hook' | 'pole' | 'charge';
+export type RailKind = 'spikes' | 'fence' | 'planks' | 'rope' | 'hook' | 'pole';
 /** How a gun's shot travels and is telegraphed. */
-export type GunMode = 'shell' | 'lob' | 'stream' | 'burst' | 'harpoon';
+export type GunMode = 'shell' | 'lob' | 'stream' | 'burst' | 'harpoon' | 'depth';
 
 export interface ItemDef {
   id: string;
@@ -181,6 +181,21 @@ const list: ItemDef[] = [
     rewardWeight: 1,
   },
   {
+    id: 'depthCharge',
+    name: 'Depth Charge',
+    icon: '🛢️',
+    description: 'A crewed gun that lobs a charge just beyond the rail. It sinks, and goes off after a few seconds, or the moment a Ness swims into it. Only hurts what is under the water.',
+    tradeoff: 'Short range. Lead your target: the charge has to be waiting in its path.',
+    category: 'gun',
+    fits: ['edge'],
+    tags: ['barrage'],
+    // fuse: s until it goes off; sink: s to reach its deepest; blast: radius, m; trigger: how close a Ness sets it off, m; lead: s ahead of the Ness it aims.
+    params: { ...gunParams({ arc: 120, damage: 3, crewDamage: 0, reload: 1.1, shellSpeed: 2.2, range: 0.35, minRange: 0.1, spread: 0.7 }), fuse: 4, sink: 3, blast: 11, trigger: 3, lead: 1.5 },
+    effects: [],
+    gun: { mode: 'depth', targets: 'hull' },
+    rewardWeight: 1.2,
+  },
+  {
     id: 'gatling',
     name: 'Gatling',
     icon: '🌪️',
@@ -298,22 +313,6 @@ const list: ItemDef[] = [
     rewardWeight: 1.2,
   },
 
-  {
-    id: 'hydrophone',
-    name: 'Hydrophone',
-    icon: '🎧',
-    description: 'While manned: shadows show up further out, and a Ness gives you longer warning before it rises.',
-    tradeoff: 'No help against ships. Its Lee does nothing else.',
-    category: 'station',
-    fits: ['interior'],
-    tags: ['skirmish'],
-    // Works as a lookout for noticing Nesses (a Quiet Ness gives its full warning), with no gunnery bonus.
-    params: { accuracy: 0, exposure: 1, hydro: 1 },
-    effects: [],
-    station: 'lookout',
-    rewardWeight: 1,
-  },
-
   // ------------------------------------------------------------ rail items
   {
     id: 'spikes',
@@ -385,21 +384,6 @@ const list: ItemDef[] = [
     effects: [],
     rail: 'rope',
     rewardWeight: 1.3,
-  },
-  {
-    id: 'depthCharge',
-    name: 'Depth Charge',
-    icon: '🛢️',
-    description: 'Tap to drop one over the side. It sinks, then explodes: the answer to a shadow, and it interrupts a Ness that is about to rise.',
-    tradeoff: 'Only hurts what is under the water. It stays where it was dropped: lead the shadow. Cooldown after each.',
-    category: 'rail',
-    fits: ['rail'],
-    tags: ['barrage'],
-    // delay: seconds to sink and blow; radius: m; damage: to every Ness part under the water within it (half at the edge); cooldown: s.
-    params: { delay: 2, radius: 14, damage: 24, cooldown: 7 },
-    effects: [],
-    rail: 'charge',
-    rewardWeight: 1.2,
   },
   {
     id: 'poles',
@@ -663,91 +647,6 @@ const list: ItemDef[] = [
     params: { melee: 1.2 },
     effects: [fx('wearer', 'meleeDamage', 'mul', 'melee')],
     rewardWeight: 1,
-  },
-  // ------------------------------------------------------------ Ness trophies (only from slain Nesses)
-  {
-    id: 'weakTooth',
-    name: 'Weak Ness Tooth',
-    icon: '🦷',
-    description: 'Takes 10% less impact damage.',
-    tradeoff: '',
-    category: 'trinket',
-    fits: ['trinket'],
-    tags: ['bulwark'],
-    params: { impact: 0.9 },
-    effects: [fx('wearer', 'impactTaken', 'mul', 'impact')],
-    rewardWeight: 0,
-    rare: true,
-  },
-  {
-    id: 'lonelyLocket',
-    name: 'Lonely Locket',
-    icon: '📿',
-    description: 'Walks 20% faster. It never did like company.',
-    tradeoff: '',
-    category: 'trinket',
-    fits: ['trinket'],
-    tags: ['skirmish'],
-    params: { walk: 1.2 },
-    effects: [fx('wearer', 'walkSpeed', 'mul', 'walk')],
-    rewardWeight: 0,
-    rare: true,
-  },
-  {
-    id: 'madScale',
-    name: 'Mad Ness Scale',
-    icon: '🐉',
-    description: 'Sword damage +25%.',
-    tradeoff: 'Pistols a little wilder (−10% pistol accuracy).',
-    category: 'trinket',
-    fits: ['trinket'],
-    tags: ['board'],
-    params: { melee: 1.25, pistol: 0.9 },
-    effects: [fx('wearer', 'meleeDamage', 'mul', 'melee'), fx('wearer', 'pistolAccuracy', 'mul', 'pistol')],
-    rewardWeight: 0,
-    rare: true,
-  },
-  {
-    id: 'quietPearl',
-    name: 'Quiet Pearl',
-    icon: '🫧',
-    description: 'Spotting +30%: a manned Lookout sees further.',
-    tradeoff: '',
-    category: 'trinket',
-    fits: ['trinket'],
-    tags: ['barrage'],
-    params: { spot: 1.3 },
-    effects: [fx('wearer', 'spotting', 'mul', 'spot')],
-    rewardWeight: 0,
-    rare: true,
-  },
-  {
-    id: 'inkVial',
-    name: 'Vial of Ink',
-    icon: '🖋️',
-    description: 'Accuracy +15%.',
-    tradeoff: '',
-    category: 'trinket',
-    fits: ['trinket'],
-    tags: ['barrage'],
-    params: { aim: 1.15 },
-    effects: [fx('wearer', 'accuracy', 'mul', 'aim')],
-    rewardWeight: 0,
-    rare: true,
-  },
-  {
-    id: 'sadTear',
-    name: 'Sad Ness Tear',
-    icon: '💧',
-    description: 'Every Lee bails and repairs 10% faster.',
-    tradeoff: '',
-    category: 'treasure',
-    fits: ['treasure'],
-    tags: ['bulwark'],
-    params: { bail: 1.1, repair: 1.1 },
-    effects: [fx('crew', 'bailRate', 'mul', 'bail'), fx('crew', 'repairRate', 'mul', 'repair')],
-    rewardWeight: 0,
-    rare: true,
   },
   {
     id: 'woodenLeg',

@@ -27,6 +27,7 @@ import { buy, buyHealAll, buyRepair, enterPort, makePlan } from '../src/sim/port
 import { answerSurrender, applyFight, pickCapture, hullShare, autoEquipAll, cargo, discard, enemySetups, finishPost, newRun, setupFor, takeReward, type RunState } from '../src/sim/run';
 import { leavePort, playerValue, sailTo } from '../src/sim/seaMap';
 import { FIXED_DT } from '../src/sim/steering';
+import { isHeadOpen } from '../src/sim/ness';
 import { World } from '../src/sim/world';
 
 const SEEDS = Math.max(1, Number(process.env.SWEEP_SEEDS ?? 4));
@@ -41,44 +42,21 @@ function quarters(w: World, ship: string): void {
 }
 
 /**
- * Sea monsters for the scripted captain: steer off any ring that is about to open under the boat, step the Lees out of flashing
- * deck zones, and stab a head that is down. (Depth charges and the like go off by themselves.)
+ * Sea monsters for the scripted captain: step the Lees out of a bite's bubble, hit the head while it is on the boat, cut a hand
+ * that has the boat, man the guns (🔫) and keep somebody on the pumps (🛠️) while the hull is wet. It holds still against them.
  */
 function monsters(w: World): void {
   const p = w.player;
   if (!w.nesses.alive().length) return;
-  // Man the guns (🔫), and keep somebody on 🛠️ while the hull is hurt or wet: what a person would mash.
   const alive = p.crew.lees.filter((l) => l.alive);
   if (alive.filter((l) => l.job === 'fire').length < Math.ceil(alive.length / 2)) w.order('fire');
   const wet = p.parts.some((x) => x.capacity > 0 && x.water / x.capacity > 0.15);
   if (wet && alive.filter((l) => l.job === 'fix').length < 2) w.order('fix');
-  for (const z of w.zones.pending(p)) w.tapZone(z, p);
-  for (const n of w.nesses.list) if (n.state === 'surfaced' && n.stunUntil !== null && !w.orders.list.some((o) => o.kind === 'stab')) w.tapHead(n, p);
-}
-
-/** The point to head for to get clear of a ring about to open under the boat, or null if none threatens it. */
-function ringThreat(w: World): { x: number; y: number } | null {
-  const p = w.player.motion;
-  for (const n of w.nesses.list) {
-    if (n.state !== 'emerging' || !n.emergeAt) continue;
-    const k = w.tuning.ness.kinds[n.kind];
-    const d = Math.hypot(p.x - n.emergeAt.x, p.y - n.emergeAt.y);
-    const safe = k.ringRadius + Math.max(w.player.layout.length, w.player.layout.beam) / 2 + 12;
-    if (d >= safe * 1.3) continue;
-    // Straight away from the ring's center (or along the keel if sitting right on it).
-    const a = d > 1 ? Math.atan2(p.y - n.emergeAt.y, p.x - n.emergeAt.x) : p.heading;
-    return { x: p.x + Math.cos(a) * 80, y: p.y + Math.sin(a) * 80 };
+  for (const z of w.zones.pending(p)) if (z.tiles.length) w.tapZone(z, p);
+  for (const n of w.nesses.alive()) {
+    if (isHeadOpen(n) && !w.orders.list.some((o) => o.kind === 'stab')) w.tapHead(n, p);
+    for (const h of n.hands) if (h.state === 'holding' && !w.orders.list.some((o) => o.kind === 'cutHand' && o.hand === h)) w.tapHand(n, h, p);
   }
-  return null;
-}
-
-/** Steer clear of the ring where a Ness is about to rise (returns true if it did). */
-function dodgeRing(w: World): boolean {
-  const away = ringThreat(w);
-  if (!away) return false;
-  if (w.helm.kind !== 'drift') w.setHelm({ kind: 'drift' });
-  w.player.target = away;
-  return true;
 }
 
 /** Fight the set-up encounter with the scripted captain. */
@@ -94,7 +72,7 @@ function fight(run: RunState, ship: string, seed: number, t: Tuning): { won: boo
     const d = e ? Math.hypot(e.motion.x - p.x, e.motion.y - p.y) : 0;
     if (!e || w.isOut(e)) {
       // Only sea monsters left: hold position and play the deck.
-      if (!ringThreat(w) && w.helm.kind !== 'stop') w.setHelm({ kind: 'stop' });
+      if (w.helm.kind !== 'stop') w.setHelm({ kind: 'stop' });
     } else if (ship === 'friend') {
       if (w.boardTargetId !== e.id || (w.helm.kind !== 'board' && w.helm.kind !== 'ram')) w.targetEnemy(e);
       const alive = w.player.crew.lees.filter((l) => l.alive);
@@ -113,10 +91,9 @@ function fight(run: RunState, ship: string, seed: number, t: Tuning): { won: boo
       monsters(w);
       nextQuarters = w.time + 0.4;
     }
-    dodgeRing(w);
     w.step(FIXED_DT);
     if (process.env.SWEEP_TRACE && w.nesses.list.length && Math.floor(w.time * 60) % 180 === 0) {
-      console.log(`  t${w.time.toFixed(0)} water ${Math.round(w.player.parts.reduce((x, q) => x + q.water, 0))} alive ${w.player.crew.lees.filter((l) => l.alive).length} jobs ${w.player.crew.lees.map((l) => l.job[0]).join('')} guns ${w.player.guns.map((g) => `${w.gunnerOf(w.player, g) ? 'M' : '-'}${g.load.toFixed(1)}${w.nessTargets().some((x) => w.canHit(w.player, g, w.muzzle(w.player, g), x.part.pos, w.tuning.ness.common.minRangeShare)) ? '!' : ''}`).join(' ')} shells ${w.stats.player.shellsFired}/${w.stats.player.shellsHit} ${w.nesses.list.map((n) => `${n.kind}:${n.state}:${Math.round(n.parts[0].hp)}`).join(' ')}`);
+      console.log(`  t${w.time.toFixed(0)} water ${Math.round(w.player.parts.reduce((x, q) => x + q.water, 0))} alive ${w.player.crew.lees.filter((l) => l.alive).length} jobs ${w.player.crew.lees.map((l) => l.job[0]).join('')} shells ${w.stats.player.shellsFired}/${w.stats.player.shellsHit} ${w.nesses.list.map((n) => `${n.mode}:d${n.depth.toFixed(2)}:${Math.round(n.hp)}`).join(' ')}`);
     }
   }
   const won = w.result?.winner === 'player';
@@ -162,7 +139,7 @@ test('run sweep', () => {
         for (const stop of route) {
           if (!sailTo(run, stop, t)) break voyage;
           if (run.stage === 'refit') {
-            const before = `hull ${Math.round(hullShare(run, t) * 100)}% budget ${run.encounter?.budget} ${run.encounter?.type} vs ${Math.round(playerValue(run))} [${run.encounter?.enemies.map((e) => `${e.ship}/${e.ai}:${Object.values(e.fullLoadout ?? {}).join(",")}`).join(" + ")}]`;
+            const before = `hull ${Math.round(hullShare(run, t) * 100)}% budget ${run.encounter?.budget} ${run.encounter?.type} vs ${Math.round(playerValue(run))} [${run.encounter?.enemies.map((e) => `${e.ship}/${e.ai}:${Object.values(e.fullLoadout ?? {}).join(",")}`).join(" + ")}${(run.encounter?.nesses ?? []).map((n) => ` +${n.kind}${n.level}`).join("")}]`;
             const r = fight(run, ship, seed, t);
             if (process.env.SWEEP_LOG) console.log(`${ship} s${seed} j${run.journey} ${before} → ${r.won ? 'won' : 'LOST'} ${Math.round(r.time)}s`);
             fights++;

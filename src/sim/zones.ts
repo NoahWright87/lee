@@ -1,28 +1,40 @@
-// Deck danger zones (Phase 8): "these tiles of this deck will be hit in N
-// seconds." The same idea as the red X for shells, but on a deck: a set of tiles
-// that flash during a warning time and then take an effect (damage, a push,
-// water). Ness bites, head smashes and tail slaps use it; bosses and traps can
-// too. A zone is data (kind, tiles, warning, which way it pushes); what it does
-// when it lands is the world's job (`World.zoneImpact`), so a new attack is a
-// new kind there, not a new system.
+// Deck danger zones: "these tiles of this deck will be hit in N seconds." The same
+// idea as the red X for shells, but on a deck. A zone is data: a boat, a warning
+// time, and a SHAPE in the world (a rectangle from where an attack starts to where it
+// lands, with a full-damage circle at the end). Each step the tiles under that shape
+// are worked out afresh, so a boat that sails out from under it takes nothing, and the
+// ⚠️ bubble (and any Lee told to step out) follows what is actually in danger. What a
+// zone does when it lands is the world's job (`World.zoneImpact`).
 //
-// Tapping a zone sends the Lees standing in it to the nearest safe tiles (an
+// Tapping a zone's bubble sends the Lees standing in it to the nearest safe tiles (an
 // order, see orders.ts).
 
 import type { Boat } from './boat';
-import { sideFacing, type ContactSide } from './contact';
 import { standingTile, type Lee } from './crew';
-import { dist, toLocal, toWorld, type Vec } from './math';
+import { closestOnSegment, dist, toWorld, type Vec } from './math';
 import type { World } from './world';
 
-export type ZoneKind = 'bite' | 'smash' | 'slap' | 'drag' | 'rain' | 'ink';
+export type ZoneKind = 'bite';
+
+/** Where a zone is in the world right now. */
+export interface ZoneShape {
+  /** The attack's start and end (world): a rectangle `width` wide between them. */
+  a: Vec;
+  b: Vec;
+  width: number;
+  /** The circle at `b` where it lands hardest, m. */
+  tip: number;
+  /** Damage along the rectangle outside the tip, as a share of the tip's. */
+  neckShare: number;
+}
 
 export interface DangerZone {
   id: number;
   boat: Boat;
   kind: ZoneKind;
-  /** Tile indices on `boat`'s deck. */
+  /** Tiles under the shape right now, and how hard each is hit (1 at the tip, `neckShare` along the neck). */
   tiles: number[];
+  weights: Map<number, number>;
   /** Seconds from creation to impact, and seconds elapsed. */
   warn: number;
   elapsed: number;
@@ -31,22 +43,34 @@ export interface DangerZone {
   linger: number;
   /** Who made it (a Ness id), or 0. */
   source: number;
-  /** Which way a push goes, in the deck's local frame (unit). */
-  push: Vec;
-  /** The side of the deck the attack comes from. */
-  side: ContactSide;
-  /** Seconds it stays on the deck after it lands, doing its effect every step (rain, ink); 0 = a single blow. */
-  lasting: number;
+  shape: () => ZoneShape;
 }
 
 const LINGER = 0.45;
+
+/** The tiles of `boat` under a shape, with a weight each (the tip counts in full). */
+export function tilesUnder(boat: Boat, s: ZoneShape): Map<number, number> {
+  const out = new Map<number, number>();
+  const half = Math.min(boat.grid.tileW, boat.grid.tileH) * 0.5;
+  for (const t of boat.grid.tiles) {
+    const c = toWorld(t.center, boat.motion, boat.motion.heading);
+    if (dist(c, s.b) <= s.tip + half * 0.6) {
+      out.set(t.index, 1);
+      continue;
+    }
+    const q = closestOnSegment(c, s.a, s.b);
+    if (dist(c, q) <= s.width / 2 + half * 0.6) out.set(t.index, Math.max(0, s.neckShare));
+  }
+  return out;
+}
 
 export class ZoneSystem {
   readonly list: DangerZone[] = [];
   private nextId = 1;
 
-  add(z: Omit<DangerZone, 'id' | 'elapsed' | 'impacted' | 'linger' | 'lasting'> & { lasting?: number }): DangerZone {
-    const zone: DangerZone = { ...z, lasting: z.lasting ?? 0, id: this.nextId++, elapsed: 0, impacted: false, linger: LINGER };
+  add(z: { boat: Boat; warn: number; source: number; shape: () => ZoneShape }): DangerZone {
+    const zone: DangerZone = { ...z, kind: 'bite', id: this.nextId++, tiles: [], weights: new Map(), elapsed: 0, impacted: false, linger: LINGER };
+    this.refresh(zone);
     this.list.push(zone);
     return zone;
   }
@@ -54,6 +78,11 @@ export class ZoneSystem {
   /** 0 → 1 as the impact nears. */
   static progress(z: DangerZone): number {
     return z.warn > 0 ? Math.min(1, z.elapsed / z.warn) : 1;
+  }
+
+  private refresh(z: DangerZone): void {
+    z.weights = tilesUnder(z.boat, z.shape());
+    z.tiles = [...z.weights.keys()];
   }
 
   /** Zones that have not landed yet. */
@@ -65,144 +94,57 @@ export class ZoneSystem {
   inDanger(lee: Lee): boolean {
     if (!lee.alive || lee.swing) return false;
     const tile = standingTile(lee);
-    return this.list.some((z) => !z.impacted && z.boat === lee.deck && z.tiles.includes(tile));
+    return this.list.some((z) => !z.impacted && z.boat === lee.deck && z.weights.get(tile)! > 0);
   }
 
-  /** Drop what a Ness has put up (it dove, or died). */
+  /** Drop what a Ness has put up (it fled, or died). */
   cancel(source: number): void {
     for (let i = this.list.length - 1; i >= 0; i--) if (this.list[i].source === source && !this.list[i].impacted) this.list.splice(i, 1);
   }
 
-  /** Zones that are on a deck right now doing something every step (rain, ink). */
-  lingering(boat?: Boat): DangerZone[] {
-    return this.list.filter((z) => z.impacted && z.lasting > 0 && (!boat || z.boat === boat));
-  }
-
   step(w: World, dt: number): void {
-    for (const l of w.allLees()) l.inkMul = 1;
     for (const z of this.list) {
-      if (z.boat.sinkingSince !== null && !z.impacted) {
+      if (z.impacted) {
+        z.linger -= dt;
+        continue;
+      }
+      if (z.boat.sinkingSince !== null) {
         z.impacted = true;
-        z.lasting = 0;
         z.linger = 0;
         continue;
       }
-      if (!z.impacted) {
-        z.elapsed += dt;
-        if (z.elapsed >= z.warn) {
-          z.impacted = true;
-          w.zoneImpact(z);
-        }
-      } else if (z.lasting > 0) {
-        w.zoneTick(z, dt);
-        z.lasting -= dt;
-        if (z.lasting <= 0) z.lasting = 0;
-      } else z.linger -= dt;
+      this.refresh(z);
+      z.elapsed += dt;
+      if (z.elapsed >= z.warn) {
+        z.impacted = true;
+        w.zoneImpact(z);
+      }
     }
-    for (let i = this.list.length - 1; i >= 0; i--) if (this.list[i].impacted && this.list[i].lasting <= 0 && this.list[i].linger <= 0) this.list.splice(i, 1);
+    for (let i = this.list.length - 1; i >= 0; i--) if (this.list[i].impacted && this.list[i].linger <= 0) this.list.splice(i, 1);
   }
 }
 
-/** The center of a zone in the world (it moves with the boat). */
+/** The middle of the tiles in danger (world), or the tip if none are. */
 export function zoneCenter(z: DangerZone): Vec {
+  if (!z.tiles.length) return z.shape().b;
+  // Weighted toward the tip: that is where the bubble should sit.
   let x = 0;
   let y = 0;
+  let sum = 0;
   for (const i of z.tiles) {
-    x += z.boat.grid.tiles[i].center.x;
-    y += z.boat.grid.tiles[i].center.y;
+    const wgt = z.weights.get(i) ?? 0;
+    const p = toWorld(z.boat.grid.tiles[i].center, z.boat.motion, z.boat.motion.heading);
+    x += p.x * wgt;
+    y += p.y * wgt;
+    sum += wgt;
   }
-  const n = Math.max(1, z.tiles.length);
-  return toWorld({ x: x / n, y: y / n }, z.boat.motion, z.boat.motion.heading);
+  return sum > 0 ? { x: x / sum, y: y / sum } : z.shape().b;
 }
 
-/** How far out from its center a zone reaches, m (for a tap target). */
+/** How far out from its center the tiles in danger reach, m (for a tap target). */
 export function zoneRadius(z: DangerZone): number {
-  const c = toLocal(zoneCenter(z), z.boat.motion, z.boat.motion.heading);
+  const c = zoneCenter(z);
   let r = 0;
-  for (const i of z.tiles) r = Math.max(r, dist(c, z.boat.grid.tiles[i].center));
+  for (const i of z.tiles) r = Math.max(r, dist(c, toWorld(z.boat.grid.tiles[i].center, z.boat.motion, z.boat.motion.heading)));
   return r + Math.min(z.boat.grid.tileW, z.boat.grid.tileH) * 0.5;
-}
-
-/** Which way "away from the attacker" is, in the deck's local frame. */
-export function pushAway(side: ContactSide): Vec {
-  switch (side) {
-    case 'starboard':
-      return { x: 0, y: -1 };
-    case 'port':
-      return { x: 0, y: 1 };
-    case 'bow':
-      return { x: -1, y: 0 };
-    case 'stern':
-      return { x: 1, y: 0 };
-  }
-}
-
-/**
- * The tiles a block attack covers: `depth` tiles in from the side the attacker is on, `width` tiles
- * along that side centered on it (0 width = the whole side). Never empty: it falls back to the tile nearest the attacker.
- */
-export function blockTiles(boat: Boat, from: Vec, depth: number, width: number): { tiles: number[]; side: ContactSide } {
-  const side = sideFacing(boat, from);
-  const l = toLocal(from, boat.motion, boat.motion.heading);
-  const g = boat.grid;
-  const across = side === 'starboard' || side === 'port';
-  let lo = Infinity;
-  let hi = -Infinity;
-  for (const t of g.tiles) {
-    const v = across ? t.center.y : t.center.x;
-    lo = Math.min(lo, v);
-    hi = Math.max(hi, v);
-  }
-  const step = across ? g.tileH : g.tileW;
-  const along = across ? g.tileW : g.tileH;
-  const tiles: number[] = [];
-  for (const t of g.tiles) {
-    const v = across ? t.center.y : t.center.x;
-    const d = side === 'starboard' || side === 'bow' ? (hi - v) / step : (v - lo) / step;
-    if (d > depth - 0.5) continue;
-    const a = across ? t.center.x - l.x : t.center.y - l.y;
-    if (width > 0 && Math.abs(a) > (width * along) / 2) continue;
-    tiles.push(t.index);
-  }
-  return { tiles: tiles.length ? tiles : [nearestTile(boat, l)], side };
-}
-
-/** The tile of the Lee standing furthest from every other Lee on the deck (ties: the lower id), or -1 if there are none. */
-export function loneTile(boat: Boat, lees: Lee[]): number {
-  const here = lees.filter((l) => l.alive && !l.swing && l.deck === boat);
-  let best: Lee | null = null;
-  let bestD = -1;
-  for (const l of here) {
-    let near = Infinity;
-    for (const o of here) if (o !== l) near = Math.min(near, dist(l.pos, o.pos));
-    // Alone on the deck: the one Lee is the loner.
-    if (!Number.isFinite(near)) near = 1e6;
-    if (near > bestD + 1e-9 || (Math.abs(near - bestD) <= 1e-9 && best && l.id < best.id)) {
-      bestD = near;
-      best = l;
-    }
-  }
-  return best ? standingTile(best) : -1;
-}
-
-/** The tiles within `radius` tiles of the tile nearest a point (a bite). */
-export function circleTiles(boat: Boat, from: Vec, radius: number): { tiles: number[]; side: ContactSide } {
-  const l = toLocal(from, boat.motion, boat.motion.heading);
-  const near = boat.grid.tiles[nearestTile(boat, l)];
-  const r = Math.max(0.5, radius) * Math.min(boat.grid.tileW, boat.grid.tileH);
-  const tiles = boat.grid.tiles.filter((t) => dist(t.center, near.center) <= r + 1e-6).map((t) => t.index);
-  return { tiles, side: sideFacing(boat, from) };
-}
-
-function nearestTile(boat: Boat, local: Vec): number {
-  let best = 0;
-  let bestD = Infinity;
-  for (const t of boat.grid.tiles) {
-    const d = dist(t.center, local);
-    if (d < bestD) {
-      bestD = d;
-      best = t.index;
-    }
-  }
-  return best;
 }

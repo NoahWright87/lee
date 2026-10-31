@@ -8,11 +8,11 @@ import { leeWorldPos } from './combat';
 import { repairable } from './crew';
 import { railPoint, railsOf, tileWorld } from './lines';
 import { dist, type Vec } from './math';
-import { headOf } from './ness';
+import { isHeadOpen } from './ness';
 import { zoneCenter, zoneRadius } from './zones';
 import type { World } from './world';
 
-export type TargetKind = 'zone' | 'head' | 'enemyRope' | 'line' | 'enemyPlank' | 'hook' | 'rope' | 'planks' | 'pole' | 'charge' | 'station' | 'bail' | 'repair' | 'foeTile';
+export type TargetKind = 'zone' | 'head' | 'hand' | 'enemyRope' | 'line' | 'enemyPlank' | 'hook' | 'rope' | 'planks' | 'pole' | 'station' | 'bail' | 'repair' | 'foeTile';
 
 export interface DeckTarget {
   /** Stable while the thing exists (for markers). */
@@ -35,7 +35,7 @@ export interface DeckTarget {
   boat: Boat;
 }
 
-const PRIORITY: Record<TargetKind, number> = { zone: -1, head: 0.5, enemyRope: 0, line: 1, enemyPlank: 2, hook: 3, rope: 3, planks: 3, pole: 3, charge: 3, station: 3.5, bail: 4, repair: 5, foeTile: 6 };
+const PRIORITY: Record<TargetKind, number> = { zone: -1, head: 0.5, hand: 0.8, enemyRope: 0, line: 1, enemyPlank: 2, hook: 3, rope: 3, planks: 3, pole: 3, station: 3.5, bail: 4, repair: 5, foeTile: 6 };
 
 /** Everything on your deck (and the enemy decks in view) that a tap can do something with, right now. */
 export function deckTargets(w: World, decks: Boat[]): DeckTarget[] {
@@ -45,21 +45,23 @@ export function deckTargets(w: World, decks: Boat[]): DeckTarget[] {
   if (w.result || w.isSinking(me)) return out;
   const add = (d: Omit<DeckTarget, 'priority' | 'boat'> & { boat?: Boat }) => out.push({ boat: me, ...d, priority: PRIORITY[d.kind] });
 
-  // A flashing danger zone on your deck: tap it to get the Lees in it out of the way.
+  // A flashing bite on your deck: tap its ⚠️ bubble to get the Lees in it out of the way.
   for (const z of w.zones.pending(me)) {
-    if (z.kind === 'rain') continue; // nothing to step away from: the water just comes in
-    const what = { slap: 'tail slap', smash: 'head smash', bite: 'bite', drag: 'drag', ink: 'ink', rain: 'rain' }[z.kind];
-    add({ id: `zone:${z.id}`, kind: 'zone', a: zoneCenter(z), radius: zoneRadius(z), label: `${what}: step out`, role: 'anyone in it', tap: () => w.tapZone(z, me) });
+    if (!z.tiles.length) continue; // nothing of yours is under it: you dodged
+    add({ id: `zone:${z.id}`, kind: 'zone', a: zoneCenter(z), radius: zoneRadius(z), label: 'bite: step out', role: 'anyone in it', tap: () => w.tapZone(z, me) });
   }
-  // A Ness head resting on your deck, stunned: tap it to stab it.
   for (const n of w.nesses.list) {
-    if (n.state !== 'surfaced' || n.stunUntil === null) continue;
-    const head = headOf(n);
-    add({ id: `head:${n.id}`, kind: 'head', a: head.pos, radius: head.radius + 1.5, label: `${n.def.name}: stab the head`, role: 'board or fix', tap: () => w.tapHead(n, me) });
+    // The head, while it is on your boat: tap it and Lees go and strike it.
+    if (isHeadOpen(n)) add({ id: `head:${n.id}`, kind: 'head', a: n.neck.head, radius: 3.4, label: `${n.def.name}: hit the head`, role: 'board or fix', tap: () => w.tapHead(n, me) });
+    // A hand that has your boat: tap it and a Lee hacks it free.
+    for (const h of n.hands) {
+      if (h.state !== 'holding' || h.boat !== me) continue;
+      add({ id: `hand:${n.id}:${h.slot.id}`, kind: 'hand', a: h.pos, radius: 2.4, label: 'cut the hand free', role: 'board or fix', tap: () => w.tapHand(n, h, me) });
+    }
   }
 
   // Your rail items.
-  for (const kind of ['hook', 'rope', 'planks', 'pole', 'charge'] as const) {
+  for (const kind of ['hook', 'rope', 'planks', 'pole'] as const) {
     for (const ref of railsOf(me, kind)) {
       const k = kind === 'planks' ? 'planks' : kind;
       add({
@@ -67,7 +69,7 @@ export function deckTargets(w: World, decks: Boat[]): DeckTarget[] {
         kind: k,
         a: railPoint(me, ref.tile, ref.rail),
         radius: 2.2,
-        label: `${ref.tile.label}: ${kind === 'hook' ? 'throw hook' : kind === 'rope' ? 'send a Lee' : kind === 'planks' ? (ref.rail.lowered ? 'raise plank' : 'lower plank') : kind === 'charge' ? 'drop a depth charge' : 'shove off'}`,
+        label: `${ref.tile.label}: ${kind === 'hook' ? 'throw hook' : kind === 'rope' ? 'send a Lee' : kind === 'planks' ? (ref.rail.lowered ? 'raise plank' : 'lower plank') : 'shove off'}`,
         role: kind === 'rope' ? 'board' : 'nearest',
         tap: () => w.tapRail(ref),
       });

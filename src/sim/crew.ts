@@ -51,6 +51,7 @@ import type { LadderTier, Side, Tuning } from '../config/tuning';
 import { gunOnline, gunSpec, isWrecked, keelSegment, partHasGuns, sinkProgress, structure, structureFraction, type Boat, type GunState, type PartState } from './boat';
 import { sideFacing } from './contact';
 import { canCross, crossings, type Crossing, type RailRef } from './lines';
+import { gunReaches, type NessBand } from './ness';
 import { pathTo, tileAt, type Grid, type RailState, type Tile } from './grid';
 import { itemParam, type StatMods } from './loadout';
 import { closestOnSegment, dist, toLocal, toWorld, wrapAngle, type Vec } from './math';
@@ -241,11 +242,9 @@ export interface CrewContext {
   time: number;
   /** Boats this crew's guns may shoot at. */
   foes: Boat[];
-  /** Other things its guns may shoot at: surfaced Ness parts (world points). */
-  marks?: Vec[];
-  /** Ness parts under the water: a mortar can shell them. */
-  underMarks?: Vec[];
-  /** A Ness is about (a Lookout or Hydrophone has something to listen for). */
+  /** Sea monsters its guns may shoot at: where the body is and how deep it is (what each gun reaches depends on that). */
+  nessAims?: { pos: Vec; band: NessBand }[];
+  /** A Ness is about (a Lookout has something to listen for). */
   monsters?: boolean;
   /** Every Lee in the world (boarders on our deck, enemies on other decks). Defaults to this boat's crew. */
   lees?: Lee[];
@@ -785,8 +784,7 @@ export function gunEngages(boat: Boat, g: GunState, ctx: CrewContext, at: number
     if (inArc(muzzle, face, p, spec.arcHalf, spec.minRange, spec.range)) return true;
   }
   const near = spec.minRange * Math.max(0, ctx.tuning.ness.common.minRangeShare);
-  for (const m of ctx.marks ?? []) if (inArc(muzzle, face, m, spec.arcHalf, near, spec.range)) return true;
-  if (g.mode === 'lob') for (const m of ctx.underMarks ?? []) if (inArc(muzzle, face, m, spec.arcHalf, near, spec.range)) return true;
+  for (const m of ctx.nessAims ?? []) if (gunReaches(g.mode, m.band) && inArc(muzzle, face, m.pos, spec.arcHalf, near, spec.range)) return true;
   return false;
 }
 
@@ -934,7 +932,7 @@ export function computeNeeds(boat: Boat, ctx: CrewContext): Need[] {
   const offlineAt = t.boat.function.gunOfflineAt;
   let maxFill = 0;
   for (const p of boat.parts) maxFill = Math.max(maxFill, p.capacity > 0 ? p.water / p.capacity : 0);
-  const spotting = ctx.foes.length > 0 || (ctx.marks?.length ?? 0) > 0 || !!ctx.monsters;
+  const spotting = ctx.foes.length > 0 || (ctx.nessAims?.length ?? 0) > 0 || !!ctx.monsters;
   const stopped = boat.stopped;
 
   // Stations, in tile order.

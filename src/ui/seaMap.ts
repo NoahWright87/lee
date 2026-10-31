@@ -252,7 +252,7 @@ export class MapScreen {
       const row = el('div', 'intel-row');
       row.append(el('b', '', `🐍 ${def?.name ?? n.kind}`));
       if (know.has('crew') && (n.level ?? 1) > 1) row.append(el('span', '', ` · Lv ${n.level}`));
-      if (know.has('parts') && def) row.append(el('span', 'card-sub', ` · ${def.coils + 2} parts · ${[...new Set(def.attacks)].join(', ')}`));
+      if (know.has('parts') && def) row.append(el('span', 'card-sub', ' · circles, bites with its neck, grabs with its hands'));
       box.append(row);
     }
     if (!know.has('crew')) box.append(el('div', 'card-sub', 'A Spyglass (worn) shows their crew and how big a Ness is.'));

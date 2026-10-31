@@ -13,7 +13,9 @@ import { dist, lerp, toWorld, type Rng, type Vec } from './math';
 /** Something that isn't a Lee a pistol may shoot (a surfaced Ness's part), for Lees on the other side. */
 export interface PistolMark {
   nessId: number;
-  part: number;
+  /** 'head', 'hand' (which one, in `hand`) or 'body'. */
+  part: string;
+  hand?: number;
   pos: Vec;
   /** A shot landing within this distance of `pos` (plus the pistol's hit radius) hits it, m. */
   radius: number;
@@ -225,7 +227,9 @@ function nearestMark(marks: PistolMark[], from: Vec, range: number): PistolMark 
   for (const m of marks) {
     const d = dist(from, m.pos) - m.radius;
     if (d > range) continue;
-    if (d < bestD - 1e-9 || (Math.abs(d - bestD) <= 1e-9 && best && m.part < best.part)) {
+    // The head first (a pistol shot there counts double), then a hand that is out, then the body.
+    const rank = (x: PistolMark) => (x.part === 'head' ? 0 : x.part === 'hand' ? 1 : 2);
+    if (d < bestD - 1e-9 || (Math.abs(d - bestD) <= 1e-9 && best && rank(m) < rank(best))) {
       best = m;
       bestD = d;
     }

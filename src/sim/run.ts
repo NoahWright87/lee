@@ -801,13 +801,8 @@ export function applyFight(run: RunState, report: FightReport, t: Tuning): PostF
     // Sea monsters slain: gold by what they cost, and maybe a trophy (their remains go down with them: no capture).
     for (const n of report.nesses ?? []) {
       post.gold += earn(run, n.budget * Math.max(0, t.spoils.goldPerBudget) * goldMul);
-      const trophy = NESS[n.kind]?.trophy ?? null;
-      const got = trophy && ITEMS[trophy] && rng.next() < Math.max(0, t.ness.common.trophyChance) ? trophy : null;
-      if (got) {
-        addItem(run, got);
-        post.spoils.push(got);
-      }
-      post.slain.push({ kind: n.kind, level: n.level, trophy: got });
+      const trophy: string | null = null;
+      post.slain.push({ kind: n.kind, level: n.level, trophy });
       run.totals.slain = (run.totals.slain ?? 0) + 1;
     }
     // Sometimes the last enemy Lee standing surrenders.

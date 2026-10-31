@@ -247,7 +247,7 @@ export class Hud {
         'Ships sunk / crew killed',
         `${w.enemies.filter((x) => x.sinkingSince !== null).length} / ${w.enemies.filter((x) => x.sinkingSince === null && w.isOut(x)).length} of ${w.enemies.length}`,
       ],
-      ...(w.nesses.list.length ? ([['Nesses slain', `${w.nesses.list.filter((n) => n.state === 'dead').length} of ${w.nesses.list.length}`]] as [string, string][]) : []),
+      ...(w.nesses.list.length ? ([['Nesses slain', `${w.nesses.list.filter((n) => n.mode === 'dead').length} of ${w.nesses.list.length}`]] as [string, string][]) : []),
       ['Shells fired / hit', `${s.shellsFired} / ${s.shellsHit} (${pct}%)`],
       ['Shells dodged', `${s.shellsDodged} of ${e.shellsFired}`],
       ['Water taken / bailed', `${Math.round(s.waterTaken)} / ${Math.round(s.waterBailed)}`],

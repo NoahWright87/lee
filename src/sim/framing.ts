@@ -23,8 +23,7 @@ const MAX_DECKS = 3;
 export function oceanFit(w: World, prev: Set<number>): { boats: Boat[]; nesses: Ness[] } {
   const me = w.player;
   const live = w.enemies.filter((e) => w.sinkAnim(e) < 1);
-  // Only the ones you can see (an unseen shadow doesn't give itself away by where the camera points).
-  const monsters = w.liveNesses().filter((n) => w.nessVisible(n));
+  const monsters = w.liveNesses();
   const mine = maxGunRange(me, w.tuning);
   const slack = 1 + Math.max(0, w.tuning.camera.rangeHysteresis);
   const inPlay = new Set<number>();
@@ -35,10 +34,10 @@ export function oceanFit(w: World, prev: Set<number>): { boats: Boat[]; nesses: 
   for (const e of w.closeBoats()) inPlay.add(e.id);
   for (const e of w.touching(me)) inPlay.add(e.id);
   for (const line of w.lines.linesOf(me)) inPlay.add((line.owner === me ? line.target : line.owner).id);
-  // A Ness is in play while it is rising or up, or its shadow is within your guns' reach.
+  // A Ness is in play while it is near the surface, or its shadow is within your guns' reach.
   for (const n of monsters) {
     const reach = Math.max(mine, 60) * (prev.has(n.id) ? slack : 1);
-    if (n.state !== 'submerged' || distanceToHull(me, { x: n.x, y: n.y }) <= reach) inPlay.add(n.id);
+    if (n.mode === 'alongside' || n.mode === 'approach' || distanceToHull(me, { x: n.motion.x, y: n.motion.y }) <= reach) inPlay.add(n.id);
   }
   const any = inPlay.size > 0;
   prev.clear();

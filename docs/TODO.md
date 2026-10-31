@@ -2,23 +2,20 @@
 
 Phase 7 ("Close Quarters", [`PRD_PHASE7.md`](PRD_PHASE7.md)) is built in its five slices: the speed blend, accuracy pass and holding fire; hooks, lines, ropes, planks and push poles as the only way to connect and cross; deck taps with best-fit answering; breaking away, capture picks and mid-fight surrender; crew bars. It sits on top of Phase 6 (ports, gold, the sea map; its leftovers are in sections 0–5). This file lists what's still open, so the next PR can start from here.
 
-Phase 8 ("Nesses", [`PRD_PHASE8.md`](PRD_PHASE8.md)) is built on top of Phase 7 in its five slices (a Ness that surfaces and dives; deck attacks; the roster; underwater weapons and gear; the run). The list below is what to decide or watch when playing it.
+Phase 8 ("Nesses", [`PRD_PHASE8.md`](PRD_PHASE8.md)) is built on top of Phase 7: one plain Ness (oval body, neck and head, hands, depth with shadows, the Depth Charge gun, the run). The list below is what to decide or watch when playing it.
 
-## Phase 8 open questions (PRD §14) and things to watch in playtest
+## Phase 8 open questions and things to watch in playtest
 
-- [ ] **Dodging on deck.** Built as tapping the flashing zone (a big target; the Lees in it step to the nearest safe tiles). Tapping safe tiles instead isn't built. Does the one tap feel like dodging, or like a button?
-- [ ] **How long a Ness stays up** (`surfacedMin/Max`, `diveHurt`): it dives when its time is up or it has lost `diveHurt` of its head HP since rising, but never mid-blow. If fights drag, hurt-dives are the lever.
-- [ ] **Which kinds first.** Weak, Lonely, Sad, Mad, Quiet, Dark are in. Lazy, Greedy (needs gold to steal), Busy and Sick (damage over time) are later.
-- [ ] **Does every Ness latch?** None does yet: a Ness only attacks the deck from beside the hull. A latching kind would use a line like the harpoon's tether (`Ness.tether`).
-- [ ] **Trophies.** Rare trinkets and one treasure per kind, 40% a kill (`ness.common.trophyChance`). Sell-only loot isn't built.
-- [ ] **Can you outrun a Ness?** Not for long: far behind a boat that sails off, a shadow swims ×2 (`ness.common.chaseSpeed`).
-- [ ] **Emerge damage.** An undodged ring costs about a third of a part's HP and 1.5 water per part under it (`emergeDamage`, `emergeWater`); with the leak that follows, two at once can sink a Basic Ship that nobody bails. The PRD says "about a whole part's HP"; it was too lethal to play.
-- [ ] **Sweep.** The scripted captain steers off rings, taps zones, stabs heads, mans 🔫 and 🛠️ and holds still against Nesses; it wins about 70% of Ness-only fights. `npm run sweep` (8 seeds, 3 journeys): Basic ~1.0 journeys, Friend ~2.1, Hard ~1.0, Long Distance ~0.5 (Phase 7: 1.8 / 2.8 / 1.8 / 0.8; the maps differ now and a fifth of the fights have Nesses). Costs are `ness.kinds.<id>.cost` (130 to 250 against a first-fight budget of 230); lower them for easier Ness stops.
-- [ ] **Ships and Nesses together.** Ships don't hold fire near a surfaced Ness (PRD §9) and Nesses only attack your deck, not enemy ships', though a rising ring hurts any hull.
-- [ ] **Enemy ships don't use depth charges or harpoons** (the items are in the generator's pool, so they carry them; their AI never uses them).
-- [ ] **Deck view with a Ness.** The deck view frames a Ness at the rail (Fit does it always); Normal only does while the close-up is open.
-- [ ] **Harpoon on a Ness** can't be cut by hand yet (it breaks when it strains, or its tile blows out); the ship version is a Phase 7 line and can.
-- [ ] **Hydrophone** is a Lookout-kind station with no gunnery bonus; the crew mans lookouts whenever a Ness is about. Is a separate station kind worth it?
+The first Ness design (six kinds, surprise rings, trophies, Hydrophone) was dropped for one plain **Ness** that behaves like a boat; see the README's Nesses section. To check when playing it:
+
+- [ ] **Does it feel fair?** Circle, charge, rise beside you, bite with a visible rectangle and ⚠️, stay on the boat, retreat. If it still feels chaotic, the levers are `biteWarn`, `biteHold`, `circleMin/Max` and `chargeMul`.
+- [ ] **Balance.** The sweep's scripted captain wins ~75 s Ness-only fights every time on the default numbers; real players are slower. HP 300, head ×2, flee at 50%.
+- [ ] **Can it be outrun?** It is 1.15× your cruise speed and the chase is gentle; a boat at full sail can pull away slowly.
+- [ ] **Hands.** One per flank, cut by tapping or shooting. Do reeled hulls feel stuck rather than annoyed? (`handReel`, `handClose`, `handHp`.)
+- [ ] **Depth Charge gun.** Close range, aimed like a cannon, blows when the fuse ends or a submerged Ness touches it. Check lead (`lead`) and `trigger`/`blast` sizes.
+- [ ] **Roster later.** Special slots (feet, tail, spikes) and special attacks plug into `NESS_SLOTS` and `defaultNessKind`; trophies, ink, rain and the Hydrophone were removed and can come back with their own kinds.
+- [ ] **Ships and Nesses together.** Ships don't hold fire near a surfaced Ness and Nesses only attack your deck.
+- [ ] **Harpoon on a Ness.** Not supported (it only works on ships now).
 
 ## Phase 7 open questions (PRD §16) and things to watch in playtest
 

@@ -24,7 +24,7 @@ export interface StopTypeDef {
 export const STOP_TYPES: Record<string, StopTypeDef> = {
   fight: { id: 'fight', name: 'Fight', icon: '⚔️', text: 'Enemy ships. Pays gold and spoils.', effect: 'fight', budget: 1, weight: 6 },
   hard: { id: 'hard', name: 'Hard fight', icon: '💀', text: 'A bigger fight. Pays more, plus a rare pick.', effect: 'fight', budget: 1.5, special: true, weight: 1.2 },
-  lair: { id: 'lair', name: 'Ness lair', icon: '🐍', text: 'Sea monsters only. Pays gold, and they may leave a trophy.', effect: 'fight', budget: 1.15, nessOnly: true, weight: 0.5 },
+  lair: { id: 'lair', name: 'Ness lair', icon: '🐍', text: 'Sea monsters only. Pays gold.', effect: 'fight', budget: 1.15, nessOnly: true, weight: 0.5 },
   abandoned: { id: 'abandoned', name: 'Abandoned ship', icon: '🛶', text: 'Nobody aboard. Salvage it for gold.', effect: 'salvage', budget: 1, weight: 1 },
   wreck: { id: 'wreck', name: 'Wreck', icon: '🪵', text: 'Pick one of the parts floating in the wreckage.', effect: 'wreck', budget: 1, weight: 1 },
   cove: { id: 'cove', name: 'Cove', icon: '🏝️', text: 'Calm water: a free partial heal and repair.', effect: 'cove', budget: 1, weight: 0.8 },

@@ -59,7 +59,6 @@ export const ITEM_COST: Record<string, number> = {
   poles: 20,
   depthCharge: 25,
   harpoon: 40,
-  hydrophone: 30,
   ledger: 60,
   luckyCoin: 60,
   surgeonKit: 60,

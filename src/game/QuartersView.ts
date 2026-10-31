@@ -6,11 +6,12 @@
 import Phaser from 'phaser';
 import type { DeckOrder } from '../sim/orders';
 import { railPoint } from '../sim/lines';
-import { headOf, tetherAnchor } from '../sim/ness';
 import { clamp, dist, lerp, toWorld, type Vec } from '../sim/math';
 import type { DeckTarget } from '../sim/targets';
 import type { World } from '../sim/world';
-import { ZoneSystem, type DangerZone } from '../sim/zones';
+import { zoneCenter, ZoneSystem, type DangerZone } from '../sim/zones';
+import { isHeadOpen } from '../sim/ness';
+import { drawBubble } from './Bubble';
 
 const ROPE = 0xd9c08a;
 const ENEMY_ROPE = 0xff9a6a;
@@ -59,49 +60,6 @@ export function drawLines(g: G, world: World, px: (n: number) => number): void {
   }
 }
 
-/** Depth charges sinking (a dark barrel under the surface, a fuse ring that closes on the blast radius), and harpoon lines on Nesses. */
-export function drawCharges(g: G, world: World, px: (n: number) => number, clock: number): void {
-  for (const c of world.charges) {
-    const fuse = Math.max(0.1, c.fuse);
-    const total = Math.max(0.1, world.tuning.items.depthCharge?.delay ?? 2);
-    const k = clamp(1 - fuse / total, 0, 1);
-    // Where it will go off: a faint ring.
-    g.lineStyle(px(1.3), 0xbfe6ff, 0.28 + 0.3 * k);
-    g.strokeCircle(c.pos.x, c.pos.y, c.radius);
-    // The barrel sinking: it shrinks and darkens.
-    const r = Math.max(px(3), 1.1) * (1 - 0.35 * k);
-    g.fillStyle(0x10202e, 0.9 - 0.3 * k);
-    g.fillCircle(c.pos.x, c.pos.y, r);
-    g.lineStyle(px(1.2), 0x9fb6c8, 0.7);
-    g.strokeCircle(c.pos.x, c.pos.y, r);
-    if (Math.sin(clock * 24) > 0) {
-      g.fillStyle(0xffd24a, 0.9);
-      g.fillCircle(c.pos.x + r * 0.6, c.pos.y - r * 0.6, px(1.4));
-    }
-  }
-  for (const n of world.nesses.list) {
-    const t = n.tether;
-    if (!t) continue;
-    const a = tetherAnchor(t);
-    const b = headOf(n).pos;
-    const len = dist(a, b);
-    const slack = clamp((len - t.limit) * -0.1 + 0.3, 0, 1);
-    const mid = { x: (a.x + b.x) / 2 + (b.y - a.y) * 0.07 * slack, y: (a.y + b.y) / 2 - (b.x - a.x) * 0.07 * slack };
-    g.lineStyle(px(3), 0x000000, 0.35);
-    strokeCurve(g, a, mid, b);
-    g.lineStyle(px(2.2), ROPE, 1);
-    strokeCurve(g, a, mid, b);
-    const worn = 1 - t.hp / Math.max(1e-6, t.maxHp);
-    if (worn > 0.02) {
-      g.lineStyle(px(1), 0xffffff, 0.25 + 0.5 * worn);
-      strokeCurve(g, a, mid, b);
-    }
-    // The barb in its head.
-    g.fillStyle(0xdfe3e6, 1);
-    g.fillCircle(b.x, b.y, px(3));
-  }
-}
-
 function strokeCurve(g: G, a: Vec, m: Vec, b: Vec): void {
   const n = 12;
   let prev = { x: a.x, y: a.y };
@@ -121,7 +79,6 @@ function orderPos(world: World, o: DeckOrder): Vec | null {
     case 'throw':
     case 'lower':
     case 'push':
-    case 'drop':
     case 'wreckPlank':
       return o.rail ? railPoint(o.rail.boat, o.rail.tile, o.rail.rail) : null;
     case 'cutLine': {
@@ -139,7 +96,9 @@ function orderPos(world: World, o: DeckOrder): Vec | null {
       return { x: lerp(from.x, to.x, k), y: lerp(from.y, to.y, k) };
     }
     case 'stab':
-      return o.ness ? headOf(o.ness).pos : null;
+      return o.ness ? o.ness.neck.head : null;
+    case 'cutHand':
+      return o.hand ? o.hand.pos : null;
     case 'flee': {
       const tile = boat.grid.tiles[o.tile];
       return tile ? toWorld(tile.center, boat.motion, boat.motion.heading) : null;
@@ -197,13 +156,6 @@ export function drawTargets(g: G, targets: DeckTarget[], px: (n: number) => numb
 }
 
 const RED = 0xff2b2b;
-const BLUE = 0x3aa0ff;
-const RAIN = 0x8fb4de;
-const INK = 0x1a0f2a;
-
-function colorOf(kind: string): number {
-  return kind === 'slap' ? BLUE : kind === 'rain' ? RAIN : kind === 'ink' ? 0x9a6bd6 : RED;
-}
 
 function tileCorners(boat: DangerZone['boat'], i: number): Vec[] {
   const t = boat.grid.tiles[i];
@@ -217,112 +169,84 @@ function tileCorners(boat: DangerZone['boat'], i: number): Vec[] {
 }
 
 /**
- * Danger zones on a deck: the tiles flash (red for a bite, smash or drag; blue for a tail slap; grey for rain; purple for ink),
- * fill in as the blow nears, and show a mark in the middle to tap. Rain and ink then hang over the deck for a while; ink is drawn last,
- * over everything, and hides the warnings under it.
+ * A bite coming: a red rectangle from the head to where it will land, pulsing along the way it will strike, a circle at the
+ * tip; the tiles of your deck under it flash (the tip hardest); and a ⚠️ bubble on your boat to tap, so the Lees in it step out.
+ * If your boat has moved out from under it, there are no tiles and no bubble: you dodged.
  */
-export function drawZones(g: G, world: World, px: (n: number) => number, clock: number): void {
-  const inked = new Map<DangerZone['boat'], Set<number>>();
-  for (const z of world.zones.lingering()) {
-    if (z.kind !== 'ink') continue;
-    if (!inked.has(z.boat)) inked.set(z.boat, new Set());
-    for (const i of z.tiles) inked.get(z.boat)!.add(i);
-  }
+export function drawZones(g: G, world: World, px: (n: number) => number, clock: number, bubbles = true): void {
   for (const z of world.zones.list) {
-    if (z.kind === 'ink' && z.impacted) continue; // drawn in the last pass
     const boat = z.boat;
     const k = ZoneSystem.progress(z);
-    const color = colorOf(z.kind);
+    const shape = z.shape();
     const flash = 0.5 + 0.5 * Math.sin(clock * (8 + 10 * k));
-    // Hidden under ink: a faint outline, no mark.
-    const hidden = !z.impacted && z.tiles.every((i) => inked.get(boat)?.has(i));
-    let cx = 0;
-    let cy = 0;
+    if (z.impacted) {
+      // The bite lands: a white flash on what it hit, fading.
+      const f = clamp(z.linger / 0.45, 0, 1);
+      for (const i of z.tiles) {
+        g.fillStyle(0xffffff, 0.55 * f * (z.weights.get(i) ?? 0));
+        g.fillPoints(tileCorners(boat, i), true);
+      }
+      continue;
+    }
+    // The rectangle, projected from the head toward where it lands.
+    const dx = shape.b.x - shape.a.x;
+    const dy = shape.b.y - shape.a.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len;
+    const uy = dy / len;
+    const hw = shape.width / 2;
+    const rect = [
+      { x: shape.a.x - uy * hw, y: shape.a.y + ux * hw },
+      { x: shape.b.x - uy * hw, y: shape.b.y + ux * hw },
+      { x: shape.b.x + uy * hw, y: shape.b.y - ux * hw },
+      { x: shape.a.x + uy * hw, y: shape.a.y - ux * hw },
+    ];
+    g.fillStyle(RED, 0.1 + 0.2 * k * (0.6 + 0.4 * flash));
+    g.fillPoints(rect, true);
+    g.lineStyle(px(1.8), RED, 0.5 + 0.45 * flash);
+    g.strokePoints(rect, true);
+    g.fillStyle(RED, 0.16 + 0.26 * k * (0.6 + 0.4 * flash));
+    g.fillCircle(shape.b.x, shape.b.y, shape.tip);
+    g.lineStyle(px(2), RED, 0.7 + 0.3 * flash);
+    g.strokeCircle(shape.b.x, shape.b.y, shape.tip);
+    // Chevrons running along it toward the tip: the way it will strike.
+    for (let c = 0; c < 3; c++) {
+      const f = (clock * (0.9 + 1.4 * k) + c / 3) % 1;
+      const cx = shape.a.x + dx * f;
+      const cy = shape.a.y + dy * f;
+      const w = hw * 0.8;
+      g.lineStyle(px(2.2), 0xffe0d0, (1 - Math.abs(f - 0.5) * 1.2) * 0.8);
+      g.lineBetween(cx - uy * w - ux * w * 0.7, cy + ux * w - uy * w * 0.7, cx, cy);
+      g.lineBetween(cx + uy * w - ux * w * 0.7, cy - ux * w - uy * w * 0.7, cx, cy);
+    }
+    // Your deck: the tiles in danger.
     for (const i of z.tiles) {
+      const wgt = z.weights.get(i) ?? 0;
+      g.fillStyle(RED, (0.1 + 0.32 * k * (0.6 + 0.4 * flash)) * (0.4 + 0.6 * wgt));
       const corners = tileCorners(boat, i);
-      const t = boat.grid.tiles[i];
-      const c = toWorld(t.center, boat.motion, boat.motion.heading);
-      cx += c.x;
-      cy += c.y;
-      if (z.impacted && z.lasting > 0 && z.kind === 'rain') {
-        // A raincloud over the tile: grey-blue, and streaks falling.
-        g.fillStyle(0x6d86a6, 0.34);
-        g.fillPoints(corners, true);
-        g.lineStyle(px(1), 0xcfe6ff, 0.55);
-        for (let d = 0; d < 3; d++) {
-          const f = (clock * 1.6 + d / 3 + i * 0.17) % 1;
-          const a = toWorld({ x: lerp(t.x0, t.x1, 0.2 + 0.3 * d), y: lerp(t.y0, t.y1, f) }, boat.motion, boat.motion.heading);
-          const b = toWorld({ x: lerp(t.x0, t.x1, 0.2 + 0.3 * d), y: lerp(t.y0, t.y1, Math.min(1, f + 0.18)) }, boat.motion, boat.motion.heading);
-          g.lineBetween(a.x, a.y, b.x, b.y);
-        }
-        continue;
-      }
-      if (z.impacted) {
-        // The blow: a white flash that fades with the linger.
-        g.fillStyle(0xffffff, 0.55 * clamp(z.linger / 0.45, 0, 1));
-      } else {
-        g.fillStyle(color, (hidden ? 0.05 : 0.14) + (hidden ? 0.05 : 0.3) * k * (0.6 + 0.4 * flash));
-      }
       g.fillPoints(corners, true);
-      if (!z.impacted) {
-        g.lineStyle(px(1.8), color, hidden ? 0.2 : 0.55 + 0.4 * flash);
-        g.strokePoints(corners, true);
-      }
+      g.lineStyle(px(1.8), RED, (0.45 + 0.45 * flash) * (0.4 + 0.6 * wgt));
+      g.strokePoints(corners, true);
     }
-    if (z.impacted || hidden) continue;
-    // The mark to tap, sized for a finger.
-    const n = Math.max(1, z.tiles.length);
-    const x = cx / n;
-    const y = cy / n;
-    const r = Math.max(px(11), 0.9);
-    if (z.kind === 'slap') {
-      g.fillStyle(0xcfe8ff, 0.95);
-      g.fillTriangle(x, y - r, x - r * 0.75, y + r * 0.15, x + r * 0.75, y + r * 0.15);
-      g.fillCircle(x, y + r * 0.2, r * 0.75);
-      g.lineStyle(px(1.4), 0x0b3a72, 1);
-      g.strokeCircle(x, y + r * 0.2, r * 0.75);
-    } else if (z.kind === 'rain') {
-      // A cloud with drops.
-      g.fillStyle(0xd7e4f4, 0.95);
-      g.fillCircle(x - r * 0.45, y, r * 0.55);
-      g.fillCircle(x + r * 0.2, y - r * 0.2, r * 0.7);
-      g.fillCircle(x + r * 0.7, y + r * 0.05, r * 0.5);
-      g.fillStyle(0x4f7fb8, 0.95);
-      for (const dx of [-0.5, 0, 0.5]) g.fillCircle(x + r * dx, y + r * (0.8 + 0.2 * Math.sin(clock * 6 + dx * 9)), px(1.6));
-    } else if (z.kind === 'ink') {
-      g.fillStyle(0x2a1745, 0.95);
-      g.fillCircle(x, y, r * 0.9);
-      g.lineStyle(px(1.6), 0xc6a2ff, 1);
-      g.strokeCircle(x, y, r * 0.9);
-      g.fillStyle(0xc6a2ff, 1);
-      g.fillCircle(x - r * 0.3, y - r * 0.2, r * 0.2);
-      g.fillCircle(x + r * 0.35, y + r * 0.25, r * 0.28);
-    } else {
-      g.fillStyle(0xffd24a, 1);
-      g.fillTriangle(x, y - r, x - r * 1.05, y + r * 0.8, x + r * 1.05, y + r * 0.8);
-      g.lineStyle(px(1.6), 0x3a0000, 1);
-      g.strokeTriangle(x, y - r, x - r * 1.05, y + r * 0.8, x + r * 1.05, y + r * 0.8);
-      g.lineStyle(px(2.2), 0x3a0000, 1);
-      g.lineBetween(x, y - r * 0.4, x, y + r * 0.2);
-      g.fillStyle(0x3a0000, 1);
-      g.fillCircle(x, y + r * 0.5, px(1.3));
-    }
-    // A thin ring closing in: time left.
-    g.lineStyle(px(1.4), color, 0.6);
-    g.strokeCircle(x, y, r * (1.2 + 1.6 * (1 - k)));
+    // The tappable bubble: only while some of your deck is under it.
+    if (bubbles && z.tiles.length && boat === world.player) drawBubble(g, zoneCenter(z), 'warn', px, clock, k);
   }
-  // Ink on top of everything.
-  for (const z of world.zones.lingering()) {
-    if (z.kind !== 'ink') continue;
-    const fade = clamp(z.lasting / 1.2, 0, 1);
-    for (const i of z.tiles) {
-      const corners = tileCorners(z.boat, i);
-      g.fillStyle(INK, 0.86 * fade);
-      g.fillPoints(corners, true);
-      const t = z.boat.grid.tiles[i];
-      const c = toWorld(t.center, z.boat.motion, z.boat.motion.heading);
-      g.lineStyle(px(1.2), 0x6b4a9a, 0.5 * fade);
-      g.strokeCircle(c.x + Math.sin(clock * 1.3 + i) * 0.3, c.y + Math.cos(clock * 1.1 + i) * 0.3, Math.min(z.boat.grid.tileW, z.boat.grid.tileH) * (0.25 + 0.1 * Math.sin(clock + i)));
-    }
+}
+
+/** Depth charges are drawn as shadows (see NessView); the blast radius of each shows faintly so you can lead a Ness into it. */
+export function drawCharges(g: G, world: World, px: (n: number) => number, clock: number): void {
+  for (const c of world.charges) {
+    g.lineStyle(px(1.2), 0xbfe6ff, 0.22 + 0.12 * Math.sin(clock * 6));
+    g.strokeCircle(c.pos.x, c.pos.y, c.radius);
+    g.lineStyle(px(1), 0xffd24a, 0.35);
+    g.strokeCircle(c.pos.x, c.pos.y, c.trigger);
+  }
+}
+
+/** Bubbles for the other things a tap answers: the head while it is on your boat (hit it), a hand that has your boat (cut it free). */
+export function drawNessBubbles(g: G, world: World, px: (n: number) => number, clock: number): void {
+  for (const n of world.nesses.list) {
+    if (isHeadOpen(n)) drawBubble(g, n.neck.head, 'sword', px, clock, null, 0xffb02a);
+    for (const h of n.hands) if (h.state === 'holding' && h.boat === world.player) drawBubble(g, h.pos, 'cut', px, clock, null, 0xffb02a);
   }
 }
