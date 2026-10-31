@@ -31,16 +31,44 @@ export interface EnemySpec {
 /** AI profiles (tuning.ai is built from these). */
 export function defaultAiProfiles() {
   // boardShare: share of the crew it moves to ⚔️ once you're within boardAt meters (the same action buttons you have).
-  const p = (preferredRange: number, seekAttach: number, ramLine = 20, ramRange = 70, boardShare = 0, boardAt = 90) => ({ preferredRange, seekAttach, ramLine, ramRange, boardShare, boardAt });
+  // Close quarters (Phase 7), all of it data:
+  //  hooks      0..1: how readily it throws hooks (1 = whenever one is ready; 0.5 = only while it's winning; 0 = never)
+  //  hookLines  most lines it wants out on you at once
+  //  cutDelay   × the hesitation before it cuts your lines, destroys your planks and cuts your ropes (0 = never; small = quick)
+  //  shove      1 = it uses push poles to get clear of you
+  //  breakOff   1 = it cuts the first line the moment it lands
+  //  winBoard   1 = it only sends boarders while it has the bigger crew
+  const p = (
+    preferredRange: number,
+    seekAttach: number,
+    ramLine = 20,
+    ramRange = 70,
+    boardShare = 0,
+    boardAt = 90,
+    close: { hooks?: number; hookLines?: number; cutDelay?: number; shove?: number; breakOff?: number; winBoard?: number } = {},
+  ) => ({
+    preferredRange,
+    seekAttach,
+    ramLine,
+    ramRange,
+    boardShare,
+    boardAt,
+    hooks: close.hooks ?? 0,
+    hookLines: close.hookLines ?? 1,
+    cutDelay: close.cutDelay ?? 1,
+    shove: close.shove ?? 0,
+    breakOff: close.breakOff ?? 0,
+    winBoard: close.winBoard ?? 0,
+  });
   return {
-    /** Closes in to come alongside or ram, moving most of its crew to ⚔️ on the way. */
-    boarder: p(30, 1, 20, 70, 0.7),
-    /** Closes to cannon range and orbits. */
-    standard: p(85, 0),
-    /** Holds range with its broadside. */
-    heavy: p(105, 0),
-    /** Keeps far out: long guns. */
-    skirmisher: p(150, 0),
+    /** Rushes in, hooks early, lowers planks, sends most of its crew across; slow to cut your lines. */
+    boarder: p(30, 1, 20, 70, 0.7, 90, { hooks: 1, hookLines: 2, cutDelay: 3 }),
+    /** Closes to cannon range and orbits. Fights where it is; hooks and boards only while it's winning. */
+    standard: p(85, 0, 20, 70, 0.4, 90, { hooks: 0.5, hookLines: 1, cutDelay: 1, winBoard: 1 }),
+    /** Holds range with its broadside; cuts your lines quickly and resists boarding. */
+    heavy: p(105, 0, 20, 70, 0, 90, { cutDelay: 0.3 }),
+    /** Keeps far out: long guns. Breaks off at the first hook. */
+    skirmisher: p(150, 0, 20, 70, 0, 90, { cutDelay: 0.15, shove: 1, breakOff: 1 }),
   };
 }
 

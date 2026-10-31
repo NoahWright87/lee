@@ -7,6 +7,7 @@
 
 import { ITEMS } from '../config/items';
 import { LEE_DEFS } from '../config/lees';
+import { NESS } from '../config/ness';
 import { MAP_STYLES, MODIFIERS, STOP_TYPES } from '../config/sea';
 import { SHIPS } from '../config/ships';
 import type { Controller } from '../game/Controller';
@@ -207,7 +208,7 @@ export class MapScreen {
     card.append(head);
     if (!fog && s.id !== map.dest && s.id !== 0 && !s.cleared) {
       card.append(el('div', 'card-text', def.text));
-      if (s.enemies.length) card.append(this.intelRows(run, s));
+      if (s.enemies.length || (s.nesses ?? []).length) card.append(this.intelRows(run, s));
     }
     const row = el('div', 'row');
     if (s.id === map.at) row.append(el('span', 'card-sub', 'You are here.'));
@@ -245,8 +246,17 @@ export class MapScreen {
       }
       box.append(row);
     }
-    if (!know.has('crew')) box.append(el('div', 'card-sub', 'A Spyglass (worn) shows their crew.'));
-    else if (!know.has('parts')) box.append(el('div', 'card-sub', 'A manned Crow’s Nest shows their parts.'));
+    // Sea monsters: the kind always; a Spyglass adds its level; a manned Crow's Nest adds how it fights.
+    for (const n of s.nesses ?? []) {
+      const def = NESS[n.kind];
+      const row = el('div', 'intel-row');
+      row.append(el('b', '', `🐍 ${def?.name ?? n.kind}`));
+      if (know.has('crew') && (n.level ?? 1) > 1) row.append(el('span', '', ` · Lv ${n.level}`));
+      if (know.has('parts') && def) row.append(el('span', 'card-sub', ` · ${def.coils + 2} parts · ${[...new Set(def.attacks)].join(', ')}`));
+      box.append(row);
+    }
+    if (!know.has('crew')) box.append(el('div', 'card-sub', 'A Spyglass (worn) shows their crew and how big a Ness is.'));
+    else if (!know.has('parts')) box.append(el('div', 'card-sub', 'A manned Crow’s Nest shows their parts and how a Ness fights.'));
     return box;
   }
 

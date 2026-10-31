@@ -28,8 +28,8 @@
 //     ladder tier, then walking time, then Lee id, then task order.
 //  6. Close combat: a Lee sharing a tile with an opposing Lee is engaged and
 //     fights until the tile is clear (forced, no decision). Wounded Lees fall
-//     back. Only ⚔️ Lees cross to an enemy deck, and only while it's within
-//     boarding range; once across they follow the boarder rules.
+//     back. Only ⚔️ Lees cross to an enemy deck, and only over a rope
+//     or a lowered plank (lines.ts); once across they follow the boarder rules.
 
 import type { StationKind } from '../config/items';
 import {
@@ -48,22 +48,23 @@ import {
 import { shipName } from '../config/ships';
 import { FACING_ANGLE } from '../config/slots';
 import type { LadderTier, Side, Tuning } from '../config/tuning';
-import { gunOnline, gunSpec, isWrecked, keelSegment, partHasGuns, sinkProgress, structure, structureFraction, type Boat, type GunState } from './boat';
-import { inReach, sideFacing } from './contact';
-import { pathTo, tileAt, type RailState, type Tile } from './grid';
+import { gunOnline, gunSpec, isWrecked, keelSegment, partHasGuns, sinkProgress, structure, structureFraction, type Boat, type GunState, type PartState } from './boat';
+import { sideFacing } from './contact';
+import { canCross, crossings, type Crossing, type RailRef } from './lines';
+import { pathTo, tileAt, type Grid, type RailState, type Tile } from './grid';
 import { itemParam, type StatMods } from './loadout';
 import { closestOnSegment, dist, toLocal, toWorld, wrapAngle, type Vec } from './math';
 
-export type TaskType = 'station' | 'repair' | 'bail' | 'idle' | 'board' | 'repel' | 'stage';
+export type TaskType = 'station' | 'repair' | 'bail' | 'idle' | 'board' | 'repel' | 'stage' | 'cover';
 
 export interface Task {
   type: TaskType;
-  /** Station: tile index. Repair/bail: part index. Board: boat id. Repel: the boarder's Lee id. Stage: boat id. Idle: -1. */
+  /** Station: tile index. Repair/bail: part index. Board: boat id. Repel: the boarder's Lee id. Stage: boat id. Cover: -1. Idle: -1. */
   target: number;
 }
 
 /** How a Lee was lost (result screen). */
-export type LossCause = 'cannon' | 'gatling' | 'melee' | 'pistol' | 'sank' | 'spikes' | 'explosion';
+export type LossCause = 'cannon' | 'gatling' | 'melee' | 'pistol' | 'sank' | 'spikes' | 'explosion' | 'fall' | 'ness';
 
 /** A Lee in the air between two decks. */
 export interface Swing {
@@ -78,6 +79,10 @@ export interface Swing {
   /** Swinging home (recall) rather than boarding. */
   back: boolean;
   why: string;
+  /** The rope or plank it crosses on (null: a bare leap, only for tests and tools). */
+  via: RailRef | null;
+  /** Cut mid-swing: it falls short and ends up back where it started. */
+  cut: boolean;
 }
 
 export interface LeeRunStats {
@@ -165,8 +170,21 @@ export interface Lee {
   hurtAt: number;
   /** In the air between decks, or null. */
   swing: Swing | null;
+  /** Threw down its sword in the fight and joined the other side. */
+  defected: boolean;
+  /** A deck order (a tap) it is answering, or null: it keeps its job and comes back to it when done. */
+  order: number | null;
   /** Sharing a tile with an opposing Lee: fighting, nothing else. */
   engaged: boolean;
+  /** Outnumbered on its tile (more opposing Lees than its own side): it can't leave, retreat, or swing away. */
+  locked: boolean;
+  /** Seconds it has wanted to step somewhere it can't (a full tile, a Lee in the way). */
+  blockedFor: number;
+  /** Standing in ink: × its accuracy (1 = clear sight). Reset and set every step by the zones. */
+  inkMul: number;
+  /** Knocked off its post (a push): seconds it can't act or walk, and the slide it is making over the deck. */
+  stagger: number;
+  slide: { from: Vec; to: Vec; t: number; dur: number } | null;
   /** Wounded (below boarding.retreatAt) with enemies around: falling back, shooting instead of fighting. */
   retreating: boolean;
   /** Opposing Lee it is hitting (debug). */
@@ -212,6 +230,10 @@ export interface CrewState {
   needs: Need[];
   /** Seconds until the next decision. */
   thinkIn: number;
+  /** A tap on an enemy deck tile: where this crew's boarders over there head first (until the time runs out). */
+  focus: { deck: Boat; tile: number; until: number } | null;
+  /** Lees that left this crew for the other side mid-fight (an empty crew with some departed is still a crew that was beaten). */
+  departed: number;
 }
 
 export interface CrewContext {
@@ -219,6 +241,12 @@ export interface CrewContext {
   time: number;
   /** Boats this crew's guns may shoot at. */
   foes: Boat[];
+  /** Other things its guns may shoot at: surfaced Ness parts (world points). */
+  marks?: Vec[];
+  /** Ness parts under the water: a mortar can shell them. */
+  underMarks?: Vec[];
+  /** A Ness is about (a Lookout or Hydrophone has something to listen for). */
+  monsters?: boolean;
   /** Every Lee in the world (boarders on our deck, enemies on other decks). Defaults to this boat's crew. */
   lees?: Lee[];
   /** Where this crew's ⚔️ Lees are headed: the boat they gather toward and board (null = none). */
@@ -227,7 +255,7 @@ export interface CrewContext {
   retreating?: boolean;
 }
 
-const TYPE_ORDER: Record<TaskType, number> = { station: 0, repair: 1, bail: 2, repel: 3, board: 4, stage: 5, idle: 6 };
+const TYPE_ORDER: Record<TaskType, number> = { station: 0, repair: 1, bail: 2, repel: 3, board: 4, stage: 5, cover: 6, idle: 7 };
 export const STATION_WORK: Record<StationKind, WorkKind> = { gun: 'gun', oars: 'row', sails: 'sail', lookout: 'lookout', pump: 'pump', powder: 'powder' };
 /** The job whose own work a station is. */
 export const STATION_JOB: Record<StationKind, Job> = { gun: 'fire', oars: 'sail', sails: 'sail', lookout: 'fire', pump: 'fix', powder: 'fire' };
@@ -342,7 +370,14 @@ export function createLee(id: number, number: number, def: LeeDef, side: Side, b
     lostCause: null,
     hurtAt: -99,
     swing: null,
+    defected: false,
+    order: null,
     engaged: false,
+    locked: false,
+    blockedFor: 0,
+    inkMul: 1,
+    stagger: 0,
+    slide: null,
     retreating: false,
     meleeTarget: null,
     meleeCd: 0.5,
@@ -413,6 +448,8 @@ function abilityMul(def: LeeDef, a: LeeDef['abilities'][number], key: LeeStatKey
 export function leeStat(lee: Lee, key: LeeStatKey, _boat: Boat, t: Tuning): number {
   let v = baseStat(lee.def, key, t, lee.mods);
   for (const a of lee.def.abilities) if (a.target === 'self') v *= abilityMul(lee.def, a, key, t);
+  // Ink in its eyes: it can't aim.
+  if ((key === 'accuracy' || key === 'pistolAccuracy') && lee.inkMul < 1) v *= lee.inkMul;
   if (lee.swing) return v;
   const here = lee.deck.grid.tiles[lee.tile];
   if (!here) return v;
@@ -480,6 +517,62 @@ export function foesOn(deck: Boat, side: Side, lees: Lee[]): Lee[] {
   return lees.filter((l) => l.alive && !l.swing && l.deck === deck && l.side !== side);
 }
 
+/**
+ * Shove a Lee along its deck: up to `tiles` tiles in the local direction `dir`, a step at a time to the
+ * neighbor that lies that way. It slides there, is knocked off whatever it was doing for `stagger`
+ * seconds (its job and task are kept: it walks back after), and if it hit the edge of the deck first, the
+ * push is a hard surface. Returns the tiles moved and whether it hit something hard.
+ */
+export function pushLee(lee: Lee, dir: Vec, tiles: number, stagger: number): { moved: number; hard: boolean } {
+  const g = lee.deck.grid;
+  const len = Math.hypot(dir.x, dir.y) || 1;
+  const d = { x: dir.x / len, y: dir.y / len };
+  let cur = standingTile(lee);
+  let moved = 0;
+  for (let i = 0; i < Math.round(tiles); i++) {
+    let best = -1;
+    let bestDot = 0.6;
+    for (const n of g.tiles[cur].neighbors) {
+      const dx = g.tiles[n].center.x - g.tiles[cur].center.x;
+      const dy = g.tiles[n].center.y - g.tiles[cur].center.y;
+      const dot = (dx * d.x + dy * d.y) / (Math.hypot(dx, dy) || 1);
+      if (dot > bestDot) {
+        bestDot = dot;
+        best = n;
+      }
+    }
+    if (best < 0) break;
+    cur = best;
+    moved++;
+  }
+  const hard = moved < Math.round(tiles);
+  const to = { ...g.tiles[cur].center };
+  lee.slide = { from: { ...lee.pos }, to, t: 0, dur: 0.22 };
+  lee.tile = cur;
+  lee.path = [];
+  lee.working = false;
+  lee.progress = 0;
+  lee.stagger = Math.max(lee.stagger, stagger);
+  lee.stuckSince = null;
+  lee.deck.crew.thinkIn = 0;
+  return { moved, hard };
+}
+
+/** A knocked Lee: slide to where it landed, then lie there until the stagger is over. */
+function stepKnock(lee: Lee, dt: number): void {
+  lee.working = false;
+  const s = lee.slide;
+  if (s) {
+    s.t += dt;
+    const k = Math.min(1, s.t / Math.max(1e-6, s.dur));
+    lee.pos = { x: s.from.x + (s.to.x - s.from.x) * k, y: s.from.y + (s.to.y - s.from.y) * k };
+    if (k >= 1) lee.slide = null;
+    return;
+  }
+  lee.stagger = Math.max(0, lee.stagger - dt);
+  if (lee.stagger <= 0) lee.deck.crew.thinkIn = 0;
+}
+
 /** The tile a Lee is standing on (by position, falling back to its last tile). */
 export function standingTile(lee: Lee): number {
   return (tileAt(lee.deck.grid, lee.pos, 1) ?? lee.deck.grid.tiles[lee.tile]).index;
@@ -499,41 +592,6 @@ export function departureTile(from: Boat, target: Boat): number {
     }
   }
   return best;
-}
-
-/** A tile with intact boarding planks about as close to `target` as the nearest tile, with room, or -1. */
-function boardingRail(from: Boat, target: Boat, lees: Lee[], t: Tuning, lee: Lee): number {
-  const [s0, s1] = keelSegment(target);
-  const d = (tile: Tile) => {
-    const w = toWorld(tile.center, from.motion, from.motion.heading);
-    return dist(w, closestOnSegment(w, s0, s1));
-  };
-  let min = Infinity;
-  for (const tile of from.grid.tiles) min = Math.min(min, d(tile));
-  let best = -1;
-  let bestD = Infinity;
-  for (const tile of from.grid.tiles) {
-    if (!tile.rails.some((r) => r.kind === 'planks' && !r.destroyed)) continue;
-    const dt = d(tile);
-    if (dt > min + 0.5 || !hasRoom(from, tile.index, lees, t, lee)) continue;
-    if (dt < bestD - 1e-9) {
-      bestD = dt;
-      best = tile.index;
-    }
-  }
-  return best;
-}
-
-/** Tiles of `from` about as close to `target`'s hull as the nearest one: the rail to swing across from. */
-function railTiles(from: Boat, target: Boat): number[] {
-  const [s0, s1] = keelSegment(target);
-  const d = from.grid.tiles.map((tile) => {
-    const w = toWorld(tile.center, from.motion, from.motion.heading);
-    return dist(w, closestOnSegment(w, s0, s1));
-  });
-  const min = Math.min(...d);
-  const slack = Math.min(from.grid.tileW, from.grid.tileH) * 0.5;
-  return from.grid.tiles.filter((x) => d[x.index] <= min + slack).map((x) => x.index);
 }
 
 /** The tile of `deck` nearest a world point (where a swinging Lee lands). Ties by tile index. */
@@ -674,8 +732,19 @@ export function crossTarget(boat: Boat, ctx: CrewContext): Boat | null {
   if (!o || ctx.retreating || o.side === boat.side || o.sinkingSince !== null) return null;
   const t = ctx.tuning;
   if (sinkProgress(o, t) >= t.boarding.evacuateAt) return null;
-  if (!inReach(boat, o, t)) return null;
+  if (!canCross(boat, o, t)) return null;
   return foesOn(o, boat.side, ctx.lees ?? boat.crew.lees).length ? o : null;
+}
+
+/** The ways this boat's ⚔️ Lees can go over to `target`: its own ropes and any lowered plank between them. */
+export function outbound(boat: Boat, target: Boat, t: Tuning): Crossing[] {
+  return crossings(boat, target, t).filter((c) => c.kind === 'plank' || c.ref.boat === boat);
+}
+
+/** Can this crossing be used to go over right now (a plank that's down, or a rope with a crossing ordered and a free lane)? */
+export function crossingReady(c: Crossing, boat: Boat, time: number): boolean {
+  if (c.ref.rail.readyAt > time) return false;
+  return c.kind === 'plank' || c.ref.rail.pending > 0 || c.ref.boat !== boat;
 }
 
 /** The Lee holding a claim on a station (working it or walking to it). */
@@ -715,6 +784,9 @@ export function gunEngages(boat: Boat, g: GunState, ctx: CrewContext, at: number
     const p = { x: f.motion.x + f.motion.vx * at, y: f.motion.y + f.motion.vy * at };
     if (inArc(muzzle, face, p, spec.arcHalf, spec.minRange, spec.range)) return true;
   }
+  const near = spec.minRange * Math.max(0, ctx.tuning.ness.common.minRangeShare);
+  for (const m of ctx.marks ?? []) if (inArc(muzzle, face, m, spec.arcHalf, near, spec.range)) return true;
+  if (g.mode === 'lob') for (const m of ctx.underMarks ?? []) if (inArc(muzzle, face, m, spec.arcHalf, near, spec.range)) return true;
   return false;
 }
 
@@ -740,6 +812,12 @@ export function jobSeats(boat: Boat, job: Job, t: Tuning): number {
     n++;
   }
   return n;
+}
+
+/** Can the crew still mend this part? Below the patch ceiling, and (when allowed) even a wrecked one. */
+export function repairable(part: PartState, t: Tuning): boolean {
+  const f = structureFraction(part);
+  return f < Math.min(1, Math.max(0, t.crew.repairCeiling)) - 1e-6 && (f > 0 || t.crew.wreckedRepairable > 0);
 }
 
 /** Living Lees of this crew in a job. */
@@ -780,10 +858,11 @@ function jobWalk(lee: Lee, job: Job, t: Tuning): number {
 /**
  * Best fit for an order: the Lee not already in `job` with the largest
  * (skill at the new job − skill at its current job). Ties: the shortest walk,
- * then the biggest group, then the lowest id. Returns null when the job has
- * no free seat (sail and fire) or nobody can move.
+ * then the biggest group, then the lowest id. Lees moved within `jobs.reassignGrace`
+ * of `time` stay put. Returns null when the job has no free seat (sail and fire)
+ * or nobody can move.
  */
-export function bestFit(boat: Boat, job: Job, t: Tuning): Lee | null {
+export function bestFit(boat: Boat, job: Job, t: Tuning, time = Infinity): Lee | null {
   if (!jobHasSeat(boat, job, t)) return null;
   const counts: Record<Job, number> = { sail: 0, fire: 0, board: 0, fix: 0 };
   for (const l of boat.crew.lees) if (l.alive) counts[l.job]++;
@@ -791,6 +870,8 @@ export function bestFit(boat: Boat, job: Job, t: Tuning): Lee | null {
   let bestKey: number[] = [];
   for (const l of boat.crew.lees) {
     if (!l.alive || l.job === job) continue;
+    // A Lee you just moved isn't pulled straight off its new job by the next tap (no shuffling the same Lee back and forth).
+    if (time - l.jobSince < Math.max(0, t.jobs.reassignGrace)) continue;
     const key = [-(leeJobSkill(l, job, t) - leeJobSkill(l, l.job, t)), jobWalk(l, job, t), -counts[l.job], l.id];
     if (!best || lexLess(key, bestKey)) {
       best = l;
@@ -809,7 +890,7 @@ function lexLess(a: number[], b: number[]): boolean {
 
 /** One order: move the best-fit Lee into `job`. Returns the Lee moved, or null (full, or nobody to move). */
 export function orderJob(boat: Boat, job: Job, time: number, t: Tuning): Lee | null {
-  const lee = bestFit(boat, job, t);
+  const lee = bestFit(boat, job, t, time);
   if (!lee) return null;
   setJob(lee, job, time, t);
   lee.reason = `ordered to ${job}`;
@@ -853,7 +934,7 @@ export function computeNeeds(boat: Boat, ctx: CrewContext): Need[] {
   const offlineAt = t.boat.function.gunOfflineAt;
   let maxFill = 0;
   for (const p of boat.parts) maxFill = Math.max(maxFill, p.capacity > 0 ? p.water / p.capacity : 0);
-  const spotting = ctx.foes.length > 0;
+  const spotting = ctx.foes.length > 0 || (ctx.marks?.length ?? 0) > 0 || !!ctx.monsters;
   const stopped = boat.stopped;
 
   // Stations, in tile order.
@@ -911,11 +992,18 @@ export function computeNeeds(boat: Boat, ctx: CrewContext): Need[] {
     }
   }
 
+  // Close combat across a gap: 🔫 Lees with no gun that can fire take a spot on their rail within pistol range
+  // of the enemy Lees over there, and shoot (the same pistols everyone carries, but they have to be in range).
+  if (coverTiles(boat, lees, t).size) {
+    const task: Task = { type: 'cover', target: -1 };
+    out.push({ key: taskKey(task), task, tier: 'cover', base: L.cover + span * 0.5, label: 'Firing line', why: 'enemy Lees across the gap: shoot them', job: 'fire', useful: true });
+  }
+
   boat.parts.forEach((part, i) => {
     // Repair: anything below the patch ceiling that isn't (unrepairably) wrecked.
     const f = structureFraction(part);
     const ceil = Math.min(1, Math.max(0, t.crew.repairCeiling));
-    if (f < ceil - 1e-6 && (f > 0 || t.crew.wreckedRepairable > 0)) {
+    if (repairable(part, t)) {
       const offline = partHasGuns(boat, i) && f <= offlineAt;
       const gating = offline || part.def.role === 'engine';
       const tier: LadderTier = gating ? 'functionDamage' : 'otherDamage';
@@ -954,6 +1042,8 @@ interface Option {
   why: string;
   /** Counts as "still needed" for stickiness. */
   needed: boolean;
+  /** A Lee of another job pitching in on repairs or bailing because its own job has nothing to do: it joins readily. */
+  idleHelp: boolean;
 }
 
 /** Seconds to walk from where the Lee is to a tile. */
@@ -975,33 +1065,43 @@ function destFor(lee: Lee, task: Task, boat: Boat, t: Tuning, ctx: CrewContext):
   if (task.type === 'station') return task.target;
   const lees = ctx.lees ?? boat.crew.lees;
   if (task.type === 'board') {
-    // A tile along the rail nearest the other boat, with room: where it already
-    // headed if that's still on the rail, else the shortest walk (queue up along the rail).
+    // The way across: a lowered plank first, then a rope with a crossing ordered, then the other ropes;
+    // queue along it (where it already headed if that's still a way across).
     const target = ctx.boardTarget;
     if (!target || target.id !== task.target) return -1;
-    // Among the tiles about as close to the other boat, boarding planks win.
-    const planked = boardingRail(boat, target, lees, t, lee);
-    if (planked >= 0) return planked;
-    const rail = railTiles(boat, target);
-    if (lee.task.type === 'board' && rail.includes(lee.dest) && hasRoom(boat, lee.dest, lees, t, lee)) return lee.dest;
-    let best = -1;
-    let bestW = Infinity;
-    for (const i of rail) {
-      if (!hasRoom(boat, i, lees, t, lee)) continue;
-      const wt = walkTime(lee, i, boat, t) + (boat.grid.tiles[i].station ? 0.3 : 0);
-      if (wt < bestW - 1e-9) {
-        bestW = wt;
-        best = i;
-      }
-    }
-    if (best >= 0) return best;
-    const first = departureTile(boat, target);
-    return nearestRoom(boat, first, lees, t, lee);
+    // Seats are handed out by Lee id (not by who happens to look first), so a party bigger than the
+    // seats doesn't shuffle back and forth: the first Lees take the best ways across, the rest queue beside them.
+    const cap = Math.max(1, Math.round(t.boarding.tileCap));
+    const ways = outbound(boat, target, t)
+      .map((c) => ({ c, rank: c.kind === 'plank' ? 0 : c.ref.rail.pending > 0 ? 1 : 2 }))
+      .sort((a, b) => a.rank - b.rank || a.c.departTile - b.c.departTile);
+    const seats: number[] = [];
+    for (const { c } of ways) if (!seats.includes(c.departTile)) for (let k = 0; k < cap; k++) seats.push(c.departTile);
+    const party = boat.crew.lees.filter((l) => l.alive && l.deck === boat && !l.swing && l.job === 'board' && !isWounded(l, t)).sort((a, b) => a.id - b.id);
+    const seat = party.indexOf(lee);
+    if (seat >= 0 && seat < seats.length) return seats[seat];
+    return nearestRoom(boat, seats[0] ?? departureTile(boat, target), lees, t, lee);
   }
   if (task.type === 'stage') {
     const target = ctx.boardTarget;
     if (!target) return -1;
     return stagingTile(lee, boat, target, lees, t);
+  }
+  if (task.type === 'cover') {
+    // Where it already is, if a pistol still reaches from there; else the nearest tile with room, closest to the enemy.
+    const spots = coverTiles(boat, lees, t);
+    if (lee.task.type === 'cover' && spots.has(lee.dest) && hasRoom(boat, lee.dest, lees, t, lee)) return lee.dest;
+    let best = -1;
+    let bestCost = Infinity;
+    for (const [i, near] of spots) {
+      if (!hasRoom(boat, i, lees, t, lee)) continue;
+      const cost = near + walkTime(lee, i, boat, t) * 2 + (boat.grid.tiles[i].station ? 1.5 : 0);
+      if (cost < bestCost - 1e-9) {
+        bestCost = cost;
+        best = i;
+      }
+    }
+    return best;
   }
   if (task.type === 'repel') {
     const e = lees.find((l) => l.id === task.target);
@@ -1049,6 +1149,31 @@ function destFor(lee: Lee, task: Task, boat: Boat, t: Tuning, ctx: CrewContext):
   return best;
 }
 
+/** Opposing Lees standing on a deck other than this boat's, with their world positions. */
+function foesAcross(boat: Boat, lees: Lee[]): { lee: Lee; at: Vec }[] {
+  const out: { lee: Lee; at: Vec }[] = [];
+  for (const o of lees) {
+    if (!o.alive || o.swing || o.side === boat.side || o.deck === boat || o.deck.sinkingSince !== null) continue;
+    out.push({ lee: o, at: toWorld(o.pos, o.deck.motion, o.deck.motion.heading) });
+  }
+  return out;
+}
+
+/** Tiles of this deck from which a pistol reaches an enemy Lee across the gap, with the distance to the nearest one. */
+export function coverTiles(boat: Boat, lees: Lee[], t: Tuning): Map<number, number> {
+  const out = new Map<number, number>();
+  const foes = foesAcross(boat, lees);
+  if (!foes.length) return out;
+  const reach = Math.max(0, t.pistol.range) * 0.9;
+  for (const tile of boat.grid.tiles) {
+    const w = toWorld(tile.center, boat.motion, boat.motion.heading);
+    let near = Infinity;
+    for (const f of foes) near = Math.min(near, dist(w, f.at));
+    if (near <= reach) out.set(tile.index, near);
+  }
+  return out;
+}
+
 /** The boarding party's spot: a tile on the edge facing the target (plain deck first, nearest the target), with room. */
 function stagingTile(lee: Lee, boat: Boat, target: Boat, lees: Lee[], t: Tuning): number {
   const side = sideFacing(boat, target.motion);
@@ -1072,7 +1197,7 @@ function stagingTile(lee: Lee, boat: Boat, target: Boat, lees: Lee[], t: Tuning)
 
 /** Points lost per other Lee already on this kind of job. Boarding has none; fighting boarders little (ganging up works). */
 function helpCost(type: TaskType, t: Tuning): number {
-  if (type === 'board' || type === 'stage' || type === 'idle' || type === 'station') return 0;
+  if (type === 'board' || type === 'stage' || type === 'idle' || type === 'station' || type === 'cover') return 0;
   if (type === 'repel') return Math.max(0, t.boarding.repelHelpPenalty);
   return t.crewAI.helpPenalty;
 }
@@ -1153,9 +1278,11 @@ function evaluate(lee: Lee, need: Need | null, othersOnIt: number, boat: Boat, c
     // Say so when a Lee's stats tipped the choice (debug reason strings).
     if (Math.abs(pts) >= 3) statNote = ` [${pts > 0 ? '+' : '−'}${Math.round(Math.abs(pts))} for ${STAT_LABELS[WORK_STAT[kind]]} ×${sv.toFixed(2)}]`;
   }
-  score -= helpCost(task.type, t) * othersOnIt;
+  // A Lee with nothing to do in its own job (a gunner with no target, a rower with no oars) mends and bails readily.
+  const idleHelp = pass === 2 && lee.job !== 'fix' && (task.type === 'repair' || task.type === 'bail');
+  score -= (idleHelp ? ai.idleHelpPenalty : helpCost(task.type, t)) * othersOnIt;
   // Extra hands only join a job when it's big enough to be worth it (a flood).
-  if (othersOnIt > 0 && helpCost(task.type, t) > 0 && score <= ai.helpThreshold) return null;
+  if (!idleHelp && othersOnIt > 0 && helpCost(task.type, t) > 0 && score <= ai.helpThreshold) return null;
   return {
     lee,
     need,
@@ -1168,6 +1295,7 @@ function evaluate(lee: Lee, need: Need | null, othersOnIt: number, boat: Boat, c
     label: need ? need.label : 'Stand by',
     why: why + statNote,
     needed: urgent || (isCurrent && task.type === 'station'),
+    idleHelp,
   };
 }
 
@@ -1202,6 +1330,7 @@ function endedWhy(lee: Lee, boat: Boat, t: Tuning): string {
   if (task.type === 'bail') return 'dry';
   if (task.type === 'board') return 'nobody to board';
   if (task.type === 'stage') return 'no target';
+  if (task.type === 'cover') return 'nobody in pistol range';
   if (task.type === 'repel') return 'boarder gone';
   return 'done';
 }
@@ -1218,6 +1347,8 @@ function describeTask(task: Task, boat: Boat): string {
       return 'Board';
     case 'stage':
       return 'Boarding party';
+    case 'cover':
+      return 'Firing line';
     case 'repel':
       return 'Repel boarder';
     default:
@@ -1254,7 +1385,7 @@ export function thinkCrew(boat: Boat, ctx: CrewContext): void {
     }
   }
   // Engaged Lees are forced to fight; boarders and swingers follow the boarder rules.
-  const lees = all.filter((l) => l.deck === boat && !l.swing && !l.engaged && !l.retreating);
+  const lees = all.filter((l) => l.deck === boat && !l.swing && !l.engaged && !l.retreating && l.order === null);
   for (const l of all) {
     if (l.engaged && l.deck === boat) l.reason = `engaged: fighting on ${boat.grid.tiles[standingTile(l)].label}`;
   }
@@ -1323,9 +1454,9 @@ export function thinkCrew(boat: Boat, ctx: CrewContext): void {
       }
       const k = keep.get(lee.id)!;
       const helpers = joined.get(o.key) ?? 0;
-      const score = o.score - helpCost(o.task.type, t) * helpers;
+      const score = o.score - (o.idleHelp ? ai.idleHelpPenalty : helpCost(o.task.type, t)) * helpers;
       if (!isCurrent && score <= k.value) continue;
-      if (!isCurrent && helpers > 0 && helpCost(o.task.type, t) > 0 && score <= ai.helpThreshold) continue;
+      if (!isCurrent && !o.idleHelp && helpers > 0 && helpCost(o.task.type, t) > 0 && score <= ai.helpThreshold) continue;
       decided.add(lee.id);
       if (o.task.type === 'station') takenStations.add(o.key);
       if (isCurrent) {
@@ -1367,7 +1498,18 @@ export function thinkCrew(boat: Boat, ctx: CrewContext): void {
 }
 
 /** Point a Lee at a new tile, finishing (or reversing) the step it's on. */
-function setDestination(lee: Lee, dest: number, boat: Boat): void {
+/** A Lee takes up a deck order: it drops its task (it keeps its job) and walks to where the order is worked. */
+export function takeOrder(lee: Lee, orderId: number, tile: number, why: string, time: number): void {
+  lee.order = orderId;
+  lee.task = IDLE;
+  lee.taskSince = time;
+  lee.stuckSince = null;
+  lee.reason = why;
+  lee.working = false;
+  setDestination(lee, tile, lee.deck);
+}
+
+export function setDestination(lee: Lee, dest: number, boat: Boat): void {
   const g = boat.grid;
   lee.dest = dest;
   lee.working = false;
@@ -1431,8 +1573,15 @@ export function stepCrew(boat: Boat, ctx: CrewContext, dt: number): CrewStepResu
       lee.progress = 0;
       continue;
     }
-    // Fighters hold their tile; the wounded break away.
-    if (!lee.engaged || lee.retreating) walk(lee, lee.deck, t, dt, ctx.lees ?? boat.crew.lees);
+    // Knocked down by a push: slides, then can't act for a moment.
+    if (lee.slide || lee.stagger > 0) {
+      stepKnock(lee, dt);
+      lee.progress = 0;
+      continue;
+    }
+    // Fighters hold their tile; the wounded break away, unless they're outnumbered (then they're locked in).
+    if (lee.locked) lee.working = false;
+    else if (!lee.engaged || lee.retreating) walk(lee, lee.deck, t, dt, ctx.lees ?? boat.crew.lees);
     else lee.working = false;
     const act = activity(lee, boat);
     lee.stats.time[act] += dt;
@@ -1443,28 +1592,29 @@ export function stepCrew(boat: Boat, ctx: CrewContext, dt: number): CrewStepResu
       lee.progress = 0;
       continue;
     }
-    // At the departure tile: swing across.
+    // At the departure tile: swing across (a rope with a crossing ordered, or a lowered plank).
     if (lee.task.type === 'board') {
       const target = crossTarget(boat, ctx);
-      // One at a time over the rail, and only when there's room to land.
-      const ready = ctx.time >= (boat.crew.nextSwingAt ?? -Infinity);
-      if (target && target.id === lee.task.target && ready) {
+      if (target && target.id === lee.task.target) {
         const why = lee.reason.split(' | ')[0];
         const lees = ctx.lees ?? boat.crew.lees;
-        if (startSwing(lee, target, false, `swinging across to ${boatLabel(target)}`, t, lees)) {
-          lee.whyBoarded = why;
-          lee.reason = `${why} | swinging across`;
-          boat.crew.nextSwingAt = ctx.time + Math.max(0, t.boarding.swingInterval);
-        } else {
-          // Fenced off: hack at the fence (a sword reaches across the gap) until it breaks.
-          const fence = blockingFence(target, toWorld(lee.pos, boat.motion, boat.motion.heading), t);
-          if (fence) {
-            fence.hp -= dt * Math.max(0, t.melee.damage) * Math.max(0, t.melee.rate) * leeStat(lee, 'meleeDamage', boat, t) * leeStat(lee, 'meleeRate', boat, t);
-            lee.stats.time.melee += dt;
-            lee.reason = `${why} | hacking at a fence (${Math.max(0, Math.round(fence.hp))} HP)`;
-            if (fence.hp <= 0) {
-              fence.hp = 0;
-              fence.destroyed = true;
+        const here = standingTile(lee);
+        const way = outbound(boat, target, t).find((c) => c.departTile === here && crossingReady(c, boat, ctx.time));
+        if (way) {
+          if (startSwing(lee, target, false, `swinging across to ${boatLabel(target)}`, t, lees, way, ctx.time)) {
+            lee.whyBoarded = why;
+            lee.reason = `${why} | ${way.kind === 'plank' ? 'crossing the plank' : 'swinging across'}`;
+          } else {
+            // Fenced off: hack at the fence (a sword reaches across the gap) until it breaks.
+            const fence = blockingFence(target, toWorld(lee.pos, boat.motion, boat.motion.heading), t);
+            if (fence) {
+              fence.hp -= dt * Math.max(0, t.melee.damage) * Math.max(0, t.melee.rate) * leeStat(lee, 'meleeDamage', boat, t) * leeStat(lee, 'meleeRate', boat, t);
+              lee.stats.time.melee += dt;
+              lee.reason = `${why} | hacking at a fence (${Math.max(0, Math.round(fence.hp))} HP)`;
+              if (fence.hp <= 0) {
+                fence.hp = 0;
+                fence.destroyed = true;
+              }
             }
           }
         }
@@ -1521,20 +1671,32 @@ export function stepCrew(boat: Boat, ctx: CrewContext, dt: number): CrewStepResu
 
 // ------------------------------------------------------------ boarding
 
-/** Leap from the Lee's deck to `to`, landing on the tile nearest where it left. */
-export function startSwing(lee: Lee, to: Boat, back: boolean, why: string, t: Tuning, lees?: Lee[]): boolean {
+/**
+ * Cross from the Lee's deck to `to`, over `cross` (a rope or a lowered plank).
+ * It leaves from where it stands and lands on the way's landing tile, else the
+ * tile nearest where it left. Without a `cross` it's a bare leap (tests and tools).
+ */
+export function startSwing(lee: Lee, to: Boat, back: boolean, why: string, t: Tuning, lees?: Lee[], cross?: Crossing, time = 0): boolean {
   const from = lee.deck;
   const world = toWorld(lee.pos, from.motion, from.motion.heading);
-  const toTile = lees ? landingWithRoom(to, world, lees, t, lee.side) : landingTile(to, world);
+  let toTile: number;
+  if (cross && cross.landTile >= 0) {
+    const near = lees ?? [];
+    toTile = hasRoom(to, cross.landTile, near, t, lee) ? cross.landTile : nearestRoom(to, cross.landTile, near, t, lee);
+  } else toTile = lees ? landingWithRoom(to, world, lees, t, lee.side) : landingTile(to, world);
   if (toTile < 0) return false;
   let speed = Math.max(0.05, leeStat(lee, 'swingSpeed', lee.boat, t));
-  // Swinging Ropes on its own boat; boarding planks on the tile it leaves from.
-  speed /= Math.max(0.05, lee.boat.mods.swing);
-  const planks = !back && from === lee.boat ? from.grid.tiles[standingTile(lee)]?.rails.find((r) => r.kind === 'planks' && !r.destroyed) : undefined;
   lee.boardBuff = null;
-  if (planks) {
-    speed *= Math.max(0.05, itemParam(t, planks.item, 'swing'));
-    lee.boardBuff = { pistolDamage: itemParam(t, planks.item, 'pistolDamage'), exposed: true };
+  if (cross?.kind === 'rope') speed /= Math.max(0.05, itemParam(t, cross.ref.rail.item, 'swing'));
+  if (cross?.kind === 'plank') {
+    speed *= Math.max(0.05, itemParam(t, cross.ref.rail.item, 'swing'));
+    if (!back && cross.ref.boat === lee.boat) lee.boardBuff = { pistolDamage: itemParam(t, cross.ref.rail.item, 'pistolDamage'), exposed: true };
+  }
+  const dur = Math.max(0.05, t.boarding.swingTime / speed);
+  if (cross) {
+    // One lane per rope; planks pass one Lee every plankInterval.
+    cross.ref.rail.readyAt = time + (cross.kind === 'plank' ? Math.max(0, t.lines.plankInterval) : dur);
+    if (cross.kind === 'rope' && !back && cross.ref.boat === lee.boat && cross.ref.rail.pending > 0) cross.ref.rail.pending--;
   }
   lee.swing = {
     from,
@@ -1542,9 +1704,11 @@ export function startSwing(lee: Lee, to: Boat, back: boolean, why: string, t: Tu
     fromLocal: { ...lee.pos },
     toTile,
     t: 0,
-    dur: Math.max(0.05, t.boarding.swingTime / speed),
+    dur,
     back,
     why,
+    via: cross?.ref ?? null,
+    cut: false,
   };
   lee.engaged = false;
   lee.working = false;
@@ -1558,11 +1722,29 @@ function stepSwing(lee: Lee, ctx: CrewContext, dt: number, out: CrewStepResult):
   const s = lee.swing!;
   s.t += dt;
   if (s.t < s.dur) return false;
-  // Land (somewhere close with room, if the spot filled up meanwhile).
   lee.swing = null;
   const lees = ctx.lees ?? lee.boat.crew.lees;
+  if (s.cut) {
+    // The rope was cut under it: it falls short, onto the deck it left, and the landing hurts.
+    const at = nearestRoom(s.from, landingTile(s.from, toWorld(s.fromLocal, s.from.motion, s.from.motion.heading)), lees, ctx.tuning, lee);
+    const tile = at >= 0 ? at : lee.tile;
+    lee.deck = s.from;
+    lee.tile = tile;
+    lee.pos = { ...s.from.grid.tiles[tile].center };
+    lee.path = [];
+    lee.dest = tile;
+    lee.working = false;
+    lee.task = IDLE;
+    lee.taskSince = ctx.time;
+    lee.boardBuff = null;
+    lee.reason = 'the rope was cut: fell short';
+    const dmg = Math.max(0, ctx.tuning.lines.hardSurfaceDamage) * Math.max(0, leeStat(lee, 'impactTaken', lee.boat, ctx.tuning));
+    out.hurt.push({ lee, damage: dmg, killed: hurtLee(lee, dmg, ctx.time, 'fall') });
+    return true;
+  }
+  // Land (somewhere close with room, if the spot filled up meanwhile).
   let at = s.toTile;
-  if (settledOn(s.to, at, lees, lee) >= Math.max(1, Math.round(ctx.tuning.boarding.tileCap))) {
+  if (occupantsOf(s.to, at, lees, lee).length >= Math.max(1, Math.round(ctx.tuning.boarding.tileCap))) {
     const alt = nearestRoom(s.to, at, lees, ctx.tuning, lee);
     if (alt >= 0) at = alt;
   }
@@ -1605,6 +1787,23 @@ export function recallWhy(lee: Lee, ctx: CrewContext): string | null {
   return null;
 }
 
+/** The way home for a Lee on `deck`: the crossing to `home` whose departure tile it can reach soonest (with room), or null. */
+function homeWay(lee: Lee, home: Boat, deck: Boat, lees: Lee[], t: Tuning): Crossing | null {
+  const here = lee.path.length ? lee.path[0] : lee.tile;
+  let best: Crossing | null = null;
+  let bestD = Infinity;
+  for (const c of crossings(deck, home, t)) {
+    // An enemy rope or plank can carry a Lee home too, but never one that's busy for long.
+    if (c.departTile !== here && !hasRoom(deck, c.departTile, lees, t, lee)) continue;
+    const d = deck.grid.dist[here][c.departTile] + (c.kind === 'plank' ? 0 : 0.5);
+    if (d < bestD - 1e-9) {
+      bestD = d;
+      best = c;
+    }
+  }
+  return best;
+}
+
 /**
  * The boarder rules, for this crew's Lees standing on an enemy deck: swing home
  * when there's a reason to (called back, retreat, wounded, sinking, deck clear)
@@ -1617,15 +1816,26 @@ export function thinkBoarders(boat: Boat, ctx: CrewContext): void {
     if (!lee.alive || lee.swing || lee.deck === boat) continue;
     const deck = lee.deck;
     const why = recallWhy(lee, ctx);
+    lee.retreating = isWounded(lee, ctx.tuning) && foesOn(deck, lee.side, lees).length > 0;
     if (why) {
-      if (inReach(boat, deck, ctx.tuning)) {
-        lee.retreating = isWounded(lee, ctx.tuning);
-        if (startSwing(lee, boat, true, why, ctx.tuning, lees)) {
-          lee.reason = `recall: ${why} → swinging home`;
-          continue;
-        }
-        lee.reason = `recall: ${why} → waiting for room aboard`;
-      } else lee.reason = `stranded on ${boatLabel(deck)} (${why}): home is out of reach`;
+      // Home over a rope or plank: walk to the nearest way across, then swing.
+      // Called away mid-fight, it breaks off (and takes the hits for it) rather than fight on.
+      const way = homeWay(lee, boat, deck, lees, ctx.tuning);
+      if (way) {
+        lee.retreating = true;
+        const here = standingTile(lee);
+        if (way.departTile === here && !lee.path.length && ctx.time >= way.ref.rail.readyAt && !lee.locked) {
+          if (startSwing(lee, boat, true, why, ctx.tuning, lees, way, ctx.time)) {
+            lee.reason = `recall: ${why} → swinging home`;
+            continue;
+          }
+          lee.reason = `recall: ${why} → waiting for room aboard`;
+        } else if (way.departTile !== here || lee.path.length) {
+          lee.reason = `recall: ${why} → heading for the ${way.kind} at ${deck.grid.tiles[way.departTile].label}`;
+          if (!lee.engaged && lee.dest !== way.departTile) setDestination(lee, way.departTile, deck);
+          if (!lee.engaged) continue;
+        } else lee.reason = `recall: ${why} → waiting for the ${way.kind}`;
+      } else lee.reason = `stranded on ${boatLabel(deck)} (${why}): no rope or plank within reach of home`;
     }
     if (lee.engaged) {
       lee.reason = why ? `stranded on ${boatLabel(deck)} (${why}): engaged in melee` : `boarding ${boatLabel(deck)}: engaged in melee`;
@@ -1637,6 +1847,16 @@ export function thinkBoarders(boat: Boat, ctx: CrewContext): void {
       continue;
     }
     const here = lee.path.length ? lee.path[0] : lee.tile;
+    // A tap on their deck: the boarders head for that part of it first.
+    const focus = boat.crew.focus;
+    if (focus && focus.deck === deck && ctx.time < focus.until && !why) {
+      const goal = hasRoom(deck, focus.tile, lees, ctx.tuning, lee) ? focus.tile : nearestRoom(deck, focus.tile, lees, ctx.tuning, lee);
+      if (goal >= 0) {
+        lee.reason = `boarding ${boatLabel(deck)}: sent to ${deck.grid.tiles[focus.tile].label}`;
+        if (lee.dest !== goal || (!lee.path.length && lee.tile !== goal)) setDestination(lee, goal, deck);
+        continue;
+      }
+    }
     let best: Lee | null = null;
     let bestD = Infinity;
     for (const f of foes) {
@@ -1657,26 +1877,58 @@ export function thinkBoarders(boat: Boat, ctx: CrewContext): void {
   }
 }
 
-/** Lees standing still on a tile (either side): what the tile cap counts on arrival. */
-function settledOn(deck: Boat, tile: number, lees: Lee[], except: Lee): number {
-  let n = 0;
-  for (const l of lees) if (l !== except && l.alive && !l.swing && l.deck === deck && !l.path.length && l.tile === tile) n++;
-  return n;
+/** The shortest walk from `from` to `to` (excluding `from`) over tiles that aren't `full`, or [] if there isn't one. */
+function routeAround(g: Grid, from: number, to: number, full: (tile: number) => boolean): number[] {
+  const d = g.tiles.map(() => Infinity);
+  const prev = g.tiles.map(() => -1);
+  const done = g.tiles.map(() => false);
+  d[from] = 0;
+  for (;;) {
+    let u = -1;
+    for (let i = 0; i < d.length; i++) if (!done[i] && d[i] < Infinity && (u < 0 || d[i] < d[u])) u = i;
+    if (u < 0 || u === to) break;
+    done[u] = true;
+    for (const n of g.tiles[u].neighbors) {
+      if (done[n] || (n !== to && full(n)) || (n === to && full(n))) continue;
+      const nd = d[u] + dist(g.tiles[u].center, g.tiles[n].center);
+      if (nd < d[n]) {
+        d[n] = nd;
+        prev[n] = u;
+      }
+    }
+  }
+  if (d[to] === Infinity) return [];
+  const out: number[] = [];
+  for (let at = to; at !== from; at = prev[at]) out.unshift(at);
+  return out;
 }
 
+/** Has the Lee started its step (it is between tile centers)? Until then it's still standing on its tile. */
+export function departed(l: Lee): boolean {
+  return l.path.length > 0 && dist(l.pos, l.deck.grid.tiles[l.tile].center) > 1e-6;
+}
+
+/** The tile a Lee occupies for crowding: its own, or the one it has started stepping onto. */
+function occupies(l: Lee): number {
+  return departed(l) ? l.path[0] : l.tile;
+}
+
+/** Living Lees physically on (or stepping onto) a tile, either side. */
+export function occupantsOf(deck: Boat, tile: number, lees: Lee[], except?: Lee): Lee[] {
+  return lees.filter((l) => l !== except && l.alive && !l.swing && l.deck === deck && occupies(l) === tile);
+}
+
+/**
+ * Lees block each other. A Lee steps onto a tile only if it has room (`boarding.tileCap`, both sides
+ * count), allies never get shoved aside, and two Lees may slide past each other only as a mutual swap
+ * (each is leaving for the other's tile). A Lee outnumbered on its tile is locked: it can't take a
+ * step at all, swap or not. Stepping onto a tile with an opposing Lee ends the walk there (you stop to
+ * fight). Blocked for a while, it sidesteps onto an equally short route if one is open, and gives up
+ * the walk after a few seconds.
+ */
 function walk(lee: Lee, boat: Boat, t: Tuning, dt: number, lees: Lee[] = boat.crew.lees): void {
   const g = boat.grid;
-  // Don't step onto a full tile to stop there: wait where you are until there's room.
   const cap = Math.max(1, Math.round(t.boarding.tileCap));
-  if (lee.path.length === 1 && settledOn(boat, lee.path[0], lees, lee) >= cap) {
-    const c = g.tiles[lee.tile].center;
-    if (dist(lee.pos, c) < 1e-6) {
-      lee.working = false;
-      return;
-    }
-    // Step back onto the tile it came from.
-    lee.path = [lee.tile];
-  }
   let budget = Math.max(0.1, t.crew.walkSpeed * leeStat(lee, 'walkSpeed', boat, t) * wetFactor(lee, boat, t)) * dt;
   // Finish settling onto the current tile if no path is left.
   if (!lee.path.length) {
@@ -1687,14 +1939,48 @@ function walk(lee: Lee, boat: Boat, t: Tuning, dt: number, lees: Lee[] = boat.cr
       lee.pos.x += (c.x - lee.pos.x) * k;
       lee.pos.y += (c.y - lee.pos.y) * k;
     }
+    lee.blockedFor = 0;
   }
   while (lee.path.length && budget > 0) {
+    // About to start a step: is the way open?
+    if (!departed(lee)) {
+      let next = lee.path[0];
+      const here = lee.tile;
+      const there = occupantsOf(boat, next, lees, lee);
+      const swap = there.some((p) => p.side === lee.side && !p.locked && !departed(p) && p.path.length > 0 && p.path[0] === here);
+      let open = !lee.locked && (there.length < cap || swap);
+      if (!open && !lee.locked && lee.blockedFor > 0.4) {
+        // Another way round, if one is open: the shortest route over tiles that have room.
+        const route = routeAround(g, here, lee.dest, (i) => occupantsOf(boat, i, lees, lee).length >= cap);
+        if (route.length && route[0] !== next) {
+          lee.path = route;
+          next = route[0];
+          open = true;
+        }
+      }
+      if (!open) {
+        lee.blockedFor += dt;
+        if (lee.blockedFor > 2.5) {
+          // Give up this walk; the crew AI picks something else next think.
+          lee.path = [];
+          lee.dest = lee.tile;
+          lee.blockedFor = 0;
+        }
+        break;
+      }
+    }
+    lee.blockedFor = 0;
     const c = g.tiles[lee.path[0]].center;
     const d = dist(lee.pos, c);
     if (d <= budget) {
       lee.pos = { ...c };
       budget -= d;
       lee.tile = lee.path.shift()!;
+      // Stepping onto an opposing Lee's tile ends the walk: you stop and fight.
+      if (lee.path.length && occupantsOf(boat, lee.tile, lees, lee).some((o) => o.side !== lee.side)) {
+        lee.path = [];
+        lee.dest = lee.tile;
+      }
     } else {
       lee.pos.x += ((c.x - lee.pos.x) / d) * budget;
       lee.pos.y += ((c.y - lee.pos.y) / d) * budget;

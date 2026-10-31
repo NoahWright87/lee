@@ -1,11 +1,12 @@
 import { defaultAiProfiles, type AiProfile } from './encounters';
+import { defaultNessTuning } from './ness';
 import { defaultItemParams } from './items';
 import { defaultTraits, LEE_DEFS, type LeeStats } from './lees';
 import { defaultStopTuning } from './sea';
 import { defaultShipStats, type ShipStats } from './ships';
 
 /** Bump when the tuning shape changes incompatibly (saved tuning from another version is dropped). */
-export const TUNING_VERSION = 6;
+export const TUNING_VERSION = 7;
 
 // Every gameplay number lives here. The sim reads from a live Tuning object, so
 // most changes apply the next frame. Values marked "next run" in the tuning
@@ -90,12 +91,16 @@ export function defaultGunTuning() {
     /** Shell flight time = (base + perMeter × distance) ÷ the gun's shell speed (seconds). */
     flightTimeBase: 1.9,
     flightTimePerMeter: 0.011,
+    /** Extra scatter per meter of distance to the target, m (÷ accuracy). Far shots wander. */
+    spreadPerMeter: 0.014,
+    /** Extra scatter per rad/s the shooter's own boat is turning, m. A boat in a hard turn can't aim. */
+    turnScatter: 10,
     /** A shell lands on a part if within this distance of it, m. */
     impactRadius: 1.2,
     /** Gunners aim at a random point within this distance of a random part's center, m. */
     aimRadius: 3.5,
     /** Lead error: the gunner leads a moving target by the right amount × (1 ± this), so fast or far targets are harder to hit. */
-    leadError: 0.2,
+    leadError: 0.3,
     /**
      * Gunners guess at your turn too: each shot follows a random 0..this fraction of the
      * target's current turn rate over the flight time. Changing direction is what dodges.
@@ -144,6 +149,8 @@ export function defaultTuning() {
     items: defaultItemParams(),
     /** Enemy AI profiles, chosen by the encounter (src/config/encounters.ts). */
     ai: defaultAiProfiles() as Record<string, AiProfile>,
+    /** Nesses (Phase 8): shared numbers, and one entry per kind. */
+    ness: defaultNessTuning(),
     enemyAI: {
       /** Degrees the enemy bends its course per meter it is off its preferred range. */
       rangeCorrection: 1,
@@ -177,6 +184,12 @@ export function defaultTuning() {
       maxIncomingShells: 3,
       /** 1 = enemy shells can hit other enemies (crossfire), 0 = they pass through. */
       friendlyFire: 1,
+      /** An enemy gun whose shot would land within this many m of one of its own ships may hold fire. */
+      holdFireRadius: 30,
+      /** Chance (0..1) that such a gun holds fire this time (it rechecks after holdFireRetry). */
+      holdFireChance: 0.85,
+      /** Seconds a gun that held fire waits before it looks again. */
+      holdFireRetry: 1.5,
     },
     /** Tiles are units: shells damage them, and a blown-out tile loses its fixture. */
     tiles: {
@@ -241,12 +254,60 @@ export function defaultTuning() {
       evacuateAt: 0.9,
       /** Points lost per Lee already fighting a boarder (low, so ganging up happens). */
       repelHelpPenalty: 8,
-      /** Most Lees (either side) that can stand on one tile. Swings and moves wait for room. */
-      tileCap: 2,
+      /** Most Lees (either side) that can stand on one tile. Swings and moves wait for room; Lees block each other, outnumbered Lees are locked in place, and only a mutual swap lets two slide past. */
+      tileCap: 3,
       /** A Lee below this fraction of its HP falls back (boarders swing home) and fights with its pistol instead. */
       retreatAt: 0.25,
       /** Seconds between Lees leaving one boat for the same enemy boat (one at a time over the rail). */
       swingInterval: 0.8,
+    },
+    /** Hooks, lines, ropes, planks and poles: the only ways to connect two boats and cross between them. */
+    lines: {
+      /** Hook reach: × pistol range, measured from the hook's rail tile to the other hull, m (× the item's range). */
+      hookRange: 1,
+      /** BOARD throws hooks itself, up to this many lines at once, checking every this many seconds. */
+      autoHooks: 2,
+      autoInterval: 0.4,
+      /** Seconds a thrown hook is in the air (the throw is telegraphed). Steer away before it lands to dodge it. */
+      hookFlight: 1,
+      /** A hook lands if its aim point is within this many m of the other hull when it arrives. */
+      hookCatch: 3,
+      /** Seconds before a hook can be thrown again once its line is cut or breaks. */
+      hookCooldown: 12,
+      /** Damage a line takes before it parts (~2 s of hacking for a baseline Lee). */
+      lineHp: 5,
+      /** Reeling in: m/s of closing per line on a baseline-mass boat (÷ the heavier boat's mass). */
+      pull: 0.5,
+      /** A boat sailing away eats the pull: reel speed lost per m/s of separating speed. */
+      dragEffect: 0.15,
+      /** Taut lines swing the two boats round to lie side by side, at up to this many rad/s. */
+      align: 0.5,
+      /** Once the hulls touch, lines slide the pair level with each other at up to this many m/s. */
+      slide: 2,
+      /** Lines stop reeling in at this hull gap, m. */
+      closeGap: 1.2,
+      /** Rope swing reach, m from the rope's rail to the other hull (× the item's reach). */
+      ropeRange: 4,
+      /** A plank can be lowered onto a hull this close, m (BOARD lowers them for you when you're this close). */
+      plankReach: 3,
+      /** A lowered plank is destroyed after this much damage. */
+      plankHp: 6,
+      /** Seconds between Lees stepping onto one plank. */
+      plankInterval: 0.35,
+      /** Seconds a Lee spends on the rail throwing a hook, lowering a plank or working a pole. */
+      workTime: 0.5,
+      /** Push poles: separating speed (m/s), for how long (s), and the cooldown (s). */
+      poleSpeed: 3,
+      poleTime: 1,
+      poleCooldown: 4,
+      /** How long a tap on an enemy deck tile sends your boarders there before they go back to hunting, s. */
+      focusTime: 10,
+      /** Seconds of hacking to cut a rope with a Lee on it. */
+      ropeCutTime: 0.6,
+      /** A tap that needs a ⚔️ or 🛠️ Lee (cutting, destroying) is open to any Lee after this long with none free, s. */
+      answerFallback: 1.5,
+      /** Extra damage a Lee takes when something drops it onto a hard surface (a cut rope, a knock into the rail). */
+      hardSurfaceDamage: 10,
     },
     /** Jobs and the four action buttons (⏩ SAIL, 🔫 FIRE, ⚔️ BOARD, 🛠️ FIX). */
     jobs: {
@@ -256,6 +317,8 @@ export function defaultTuning() {
       holdDelay: 0.4,
       /** ...then one more Lee every this many seconds. */
       holdRepeat: 0.3,
+      /** A Lee you just moved to a job isn't pulled off it by the next order for this long, s (so tapping around doesn't shuffle the same Lee back and forth). */
+      reassignGrace: 4,
       /** Stopped (tap your own boat): fixing (repair, bailing, pumping) × this... */
       stoppedFix: 1.25,
       /** ...and gunner aim × this (one bonus pair; they don't stack). */
@@ -313,9 +376,9 @@ export function defaultTuning() {
       /** Most a crew can push speed/turning (× the ship's own numbers). */
       mobilityCap: 1.5,
       /** Repairs can only bring a part back to this fraction of its max HP. */
-      repairCeiling: 0.6,
+      repairCeiling: 0.85,
       /** 1 = parts at 0 HP can be repaired mid-fight, 0 = wrecked stays wrecked. */
-      wreckedRepairable: 0,
+      wreckedRepairable: 1,
       /** A part this full of water (fraction of capacity) slows the Lees in it. */
       wetThreshold: 0.3,
       /** Work and walking speed lost while wet (0..1). */
@@ -335,6 +398,8 @@ export function defaultTuning() {
       walkPenalty: 3,
       /** Points lost per Lee already on a repair/bail job (so extra hands help only when nothing else needs them). */
       helpPenalty: 45,
+      /** The same, for a Lee whose own job has nothing to do (an idle gunner or rower pitches in readily: it would only stand there). */
+      idleHelpPenalty: 8,
       /** A second Lee only joins a repair/bail job if it still scores above this after the help penalty (a flood does; a scratch doesn't). */
       helpThreshold: 50,
       /** Points per +1.0 of the stat a task uses: within a job, the best-qualified Lee takes the work (a tiebreaker). */
@@ -366,6 +431,8 @@ export function defaultTuning() {
       board: 35,
       /** Empty oars or sails → man them. */
       mobility: 30,
+      /** 🔫 Lees with no gun that can fire, with enemy Lees across the gap in pistol range → take a firing spot on the rail. */
+      cover: 20,
       /** Empty support station (lookout, powder store) → man it. */
       lookout: 15,
       /** Cannons with nothing to shoot at. */
@@ -417,6 +484,8 @@ export function defaultTuning() {
     map: {
       /** Travel radius: any stop this close can be reached in one hop. */
       radius: 30,
+      /** Chance a fight stop has sea monsters in it (× the map style: Ness waters, Crowded lanes). */
+      nessChance: 0.22,
       /** The guaranteed route hops this share of the radius toward the destination. */
       routeHop: 0.9,
       /** The guaranteed route bends up to this many degrees off the straight line. */
@@ -444,8 +513,11 @@ export function defaultTuning() {
     spoils: {
       /** Gold per point of a beaten ship's budget. */
       goldPerBudget: 0.1,
-      /** Parts taken from a captured ship (its crew gone, still afloat), from tiles that weren't blown out. */
+      /** Parts you may pick from a captured ship (its crew gone, still afloat): whole working parts, from tiles that weren't blown out. */
       captureParts: 1,
+      /** Chance (× difficulty) that, in the fight itself, the last enemy Lee standing (or the weakest of a crew outnumbered `surrenderRatio`:1) throws down its sword and joins you on the spot. */
+      midSurrender: 0.3,
+      surrenderRatio: 3,
       /** Chance the last enemy Lee standing surrenders and offers to join (× difficulty). */
       surrender: 0.2,
       /** An abandoned ship is salvaged for this many gold per point of its stop's budget. */
@@ -521,6 +593,13 @@ export function defaultTuning() {
       /** Seconds the bars take to settle after a change. */
       barAnimTime: 0.6,
     },
+    /** Game speed: sailing speed blends down to the close-combat setting as an enemy comes into pistol range. */
+    speed: {
+      /** The blend starts when the nearest enemy hull is this many × pistol range away... */
+      blendStart: 1.5,
+      /** ...and is complete (close-combat speed) at this many × pistol range. */
+      blendEnd: 1,
+    },
     layout: {
       /** Ocean share of the screen in refit (the deck, cargo and buttons get the rest). */
       setupOceanFraction: 0.4,
@@ -563,6 +642,22 @@ export function defaultTuning() {
       smoothing: 1.2,
       /** Fraction of the strip's width the close-up boat fills. */
       stripBoatFill: 0.9,
+      /** "Fit" ocean view: room around the boats being framed, as a share of how big the framed area is, kept between these limits (m). */
+      fitPaddingShare: 0.2,
+      fitPaddingMin: 10,
+      fitPadding: 28,
+      /** "Fit" ocean view: the closest and furthest it will go, as the height of sea shown, m. */
+      fitMinHeight: 50,
+      fitMaxHeight: 1400,
+      /** "Fit" ocean view: how quickly the framing (center and zoom) catches up, 1/s. */
+      fitSmoothing: 2.2,
+      /** "Fit" deck view: the share of the width and height the decks may fill. */
+      deckFitWidth: 0.94,
+      deckFitHeight: 0.86,
+      /** "Fit" deck view: how far it may zoom out from your deck alone (a share of that zoom). */
+      deckFitMinScale: 0.3,
+      /** "Fit" deck view: how quickly the framing catches up, 1/s. */
+      deckFitSmoothing: 2.5,
     },
     input: {
       /** 0 = the target is pinned in the water where you touched (preview stays exact). 1 = target stays under a still finger as the camera moves. */

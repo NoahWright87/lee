@@ -25,6 +25,8 @@ import {
   addCrew,
   addItem,
   answerSurrender,
+  pickCapture,
+  skipCapture,
   applyFight,
   blankRun,
   cargo,
@@ -54,23 +56,25 @@ import {
 } from '../sim/run';
 import { buy, buyChassis, buyHeal, buyHealAll, buyRepair, enterPort, makePlan, reroll, sell, type Shop } from '../sim/port';
 import { leavePort, sailTo } from '../sim/seaMap';
-import { generateEnemies } from '../sim/budget';
+import { generateEncounter } from '../sim/budget';
 import { structureFraction } from '../sim/boat';
 import { rngFor } from '../sim/math';
 import type { BonusKey } from '../sim/levels';
 import { enemySetup } from '../sim/setup';
 import type { Job } from '../config/lees';
 import type { Lee } from '../sim/crew';
+import type { NessSpec } from '../sim/ness';
 import { World } from '../sim/world';
-import { DIFFICULTIES } from '../config/difficulty';
+import { difficulty, DIFFICULTIES } from '../config/difficulty';
 
 const STORAGE_KEY = 'lee.tuning.current';
 const PRESETS_KEY = 'lee.tuning.presets';
 const SPEED_KEY = 'lee.speeds';
+const ZOOM_KEY = 'lee.zoom';
 const RUN_KEY = 'lee.run';
 const SANDBOX_KEY = 'lee.sandbox';
 /** Everything Reset All Saved Data removes (named tuning presets are kept). */
-const RESET_KEYS = [STORAGE_KEY, SPEED_KEY, RUN_KEY, SANDBOX_KEY, 'lee.crew.arrangement', 'lee.crew.noteSeen'];
+const RESET_KEYS = [STORAGE_KEY, SPEED_KEY, ZOOM_KEY, RUN_KEY, SANDBOX_KEY, 'lee.crew.arrangement', 'lee.crew.noteSeen'];
 
 export type SpeedMode = 'ranged' | 'melee';
 export type Mode = 'run' | 'sandbox';
@@ -82,6 +86,8 @@ export type RefitFor = 'fight' | 'map' | 'port';
 export interface SandboxState {
   run: RunState;
   enemies: EnemySpec[];
+  /** Sea monsters to fight alongside (or instead of) the ships. */
+  nesses: NessSpec[];
 }
 
 /** The speed button cycles Pause → 0.5× → 1× → 3×. */
@@ -94,6 +100,44 @@ function loadSpeeds(): Record<SpeedMode, Speed> {
     const saved = JSON.parse(safeGet(SPEED_KEY) ?? '{}');
     // Pause is never remembered across reloads.
     for (const k of ['ranged', 'melee'] as const) if (SPEEDS.includes(saved[k]) && saved[k] > 0) out[k] = saved[k];
+  } catch {
+    /* defaults */
+  }
+  return out;
+}
+
+/** Zoom choices for the two views (the ocean on top, the deck below). "Normal" is the original framing; the rest scale it. */
+export interface ZoomChoice {
+  id: string;
+  label: string;
+  mul: number;
+  /** The camera frames what's in play by itself (the multiplier is not used). */
+  fit?: boolean;
+}
+/** Ocean: a multiplier on how much sea is shown (bigger = further out), or Fit: every boat that could be fighting you. */
+export const OCEAN_ZOOMS: ZoomChoice[] = [
+  { id: 'closer', label: 'Closer', mul: 0.75 },
+  { id: 'normal', label: 'Normal', mul: 1 },
+  { id: 'wider', label: 'Wider', mul: 1.4 },
+  { id: 'widest', label: 'Widest', mul: 2 },
+  { id: 'fit', label: 'Fit', mul: 1, fit: true },
+];
+/** Deck: a multiplier on how big the deck is drawn (bigger = closer; the ends of a long ship can run off the screen), or Fit: every deck with Lees in play. */
+export const DECK_ZOOMS: ZoomChoice[] = [
+  { id: 'wider', label: 'Wider', mul: 0.8 },
+  { id: 'normal', label: 'Normal', mul: 1 },
+  { id: 'closer', label: 'Closer', mul: 1.3 },
+  { id: 'closest', label: 'Closest', mul: 1.7 },
+  { id: 'fit', label: 'Fit', mul: 1, fit: true },
+];
+export type ZoomKind = 'ocean' | 'deck';
+
+function loadZoom(): Record<ZoomKind, string> {
+  const out: Record<ZoomKind, string> = { ocean: 'normal', deck: 'normal' };
+  try {
+    const saved = JSON.parse(safeGet(ZOOM_KEY) ?? '{}');
+    if (OCEAN_ZOOMS.some((z) => z.id === saved.ocean)) out.ocean = saved.ocean;
+    if (DECK_ZOOMS.some((z) => z.id === saved.deck)) out.deck = saved.deck;
   } catch {
     /* defaults */
   }
@@ -146,6 +190,8 @@ export class Controller {
    * (the close-up open): 3× for the sailing doesn't carry into a boarding fight.
    */
   speeds: Record<SpeedMode, Speed> = loadSpeeds();
+  /** Which zoom the top (ocean) and bottom (deck) views use; remembered. */
+  zoom: Record<ZoomKind, string> = loadZoom();
   debug = false;
   /** True while the rotate-your-phone overlay is up. */
   blocked = false;
@@ -172,6 +218,9 @@ export class Controller {
   stripProjection: StripProjection | null = null;
   private listeners = new Set<Listener>();
   private frameListeners = new Set<Listener>();
+  private toastListeners = new Set<(text: string) => void>();
+  /** The deck view's tap targets right now, with where each is on screen (CSS px). Set by the scene; tests and tools read it. */
+  tapTargets: () => { id: string; kind: string; label: string; css: { x: number; y: number } | null }[] = () => [];
 
   constructor() {
     this.tuning = defaultTuning();
@@ -214,7 +263,10 @@ export class Controller {
         fight: run.fight,
         player: setupFor(run, this.tuning),
         enemies,
+        nesses: sandbox ? this.sandbox!.nesses : this.refitFor === 'fight' ? run.encounter?.nesses : undefined,
         assists: sandbox,
+        hesitation: difficulty(run.difficulty).hesitation,
+        surrender: difficulty(run.difficulty).surrender,
         // The hull's damage carries (the sandbox always sails a fresh boat).
         carry: sandbox ? undefined : { hp: run.hull, water: run.hull.map(() => 0) },
       });
@@ -299,7 +351,7 @@ export class Controller {
       try {
         const s = JSON.parse(safeGet(SANDBOX_KEY) ?? 'null') as SandboxState | null;
         const ok = s && loadRun(saveRun(s.run));
-        if (s && ok && ok.ok) this.sandbox = { run: ok.run, enemies: Array.isArray(s.enemies) ? s.enemies : [] };
+        if (s && ok && ok.ok) this.sandbox = { run: ok.run, enemies: Array.isArray(s.enemies) ? s.enemies : [], nesses: Array.isArray(s.nesses) ? s.nesses : [] };
       } catch {
         /* start fresh */
       }
@@ -480,9 +532,18 @@ export class Controller {
   }
 
   /** Sandbox: generate an enemy from a budget (optionally on a given chassis), the way the sea does. */
-  generateSandbox(budget: number, chassis?: string): void {
+  generateSandbox(budget: number, chassis?: string, nessShare = 0): void {
     if (!this.sandbox) return;
-    this.sandbox.enemies = generateEnemies(budget, (Math.random() * 2 ** 31) >>> 0, this.tuning, { chassis });
+    const gen = generateEncounter(budget, (Math.random() * 2 ** 31) >>> 0, this.tuning, { chassis, nessShare });
+    this.sandbox.enemies = gen.enemies;
+    this.sandbox.nesses = gen.nesses;
+    this.changed();
+  }
+
+  /** Sandbox: the sea monsters to fight. */
+  setSandboxNesses(nesses: NessSpec[]): void {
+    if (!this.sandbox) return;
+    this.sandbox.nesses = nesses;
     this.changed();
   }
 
@@ -521,12 +582,30 @@ export class Controller {
         won: w.result.winner === 'player',
         lees: w.player.crew.lees,
         enemies: w.enemyOutcomes(),
+        nesses: w.nessOutcomes(),
         lastEnemy: w.lastEnemyStanding(),
+        joined: w.defectors(),
         hull: w.player.parts.map((p) => structureFraction(p)),
       },
       this.tuning,
     );
     this.screen = run.stage === 'over' ? 'over' : 'post';
+    this.persist();
+    this.notify();
+  }
+
+  /** Take a part from a captured ship. */
+  pickCapture(capture: number, item: string): boolean {
+    if (!this.run) return false;
+    const ok = pickCapture(this.run, capture, item);
+    this.persist();
+    this.notify();
+    return ok;
+  }
+
+  skipCapture(capture: number): void {
+    if (!this.run) return;
+    skipCapture(this.run, capture);
     this.persist();
     this.notify();
   }
@@ -664,18 +743,57 @@ export class Controller {
     return () => this.frameListeners.delete(fn);
   }
 
+  /** Show a short message in the HUD (a tap that couldn't be taken, and why). */
+  toast(text: string): void {
+    for (const fn of this.toastListeners) fn(text);
+  }
+
+  onToast(fn: (text: string) => void): () => void {
+    this.toastListeners.add(fn);
+    return () => this.toastListeners.delete(fn);
+  }
+
   frame(): void {
     for (const fn of this.frameListeners) fn();
   }
 
-  /** Which speed setting applies right now: close combat once the close-up is more than half open. */
+  /** Which speed setting the button changes right now: close combat once the blend is more than half done. */
   speedMode(): SpeedMode {
-    return this.world.phase === 'running' && this.world.closeness() > 0.5 ? 'melee' : 'ranged';
+    return this.world.phase === 'running' && this.world.speedBlend() > 0.5 ? 'melee' : 'ranged';
   }
 
-  /** Current game speed (0 = paused by the speed button). */
+  /** The speed setting shown on the button (0 = paused by it). */
   get speed(): Speed {
     return this.speeds[this.speedMode()];
+  }
+
+  /** The game speed the sim actually runs at: the sailing setting blended into the close-combat one as an enemy comes in range. */
+  get effectiveSpeed(): number {
+    if (this.world.phase !== 'running') return this.speeds.ranged;
+    const set = this.speed;
+    if (set === 0) return 0;
+    const k = this.world.speedBlend();
+    return this.speeds.ranged + (this.speeds.melee - this.speeds.ranged) * k;
+  }
+
+  /** The multiplier for a view's chosen zoom. */
+  zoomMul(kind: ZoomKind): number {
+    const list = kind === 'ocean' ? OCEAN_ZOOMS : DECK_ZOOMS;
+    return list.find((z) => z.id === this.zoom[kind])?.mul ?? 1;
+  }
+
+  /** Is this view on "Fit": the camera frames everything in play by itself? */
+  zoomFit(kind: ZoomKind): boolean {
+    const list = kind === 'ocean' ? OCEAN_ZOOMS : DECK_ZOOMS;
+    return list.find((z) => z.id === this.zoom[kind])?.fit === true;
+  }
+
+  setZoom(kind: ZoomKind, id: string): void {
+    const list = kind === 'ocean' ? OCEAN_ZOOMS : DECK_ZOOMS;
+    if (!list.some((z) => z.id === id)) return;
+    this.zoom[kind] = id;
+    safeSet(ZOOM_KEY, JSON.stringify(this.zoom));
+    this.notify();
   }
 
   /** The speed button: Pause → 0.5× → 1× → 3× → Pause… */
@@ -691,11 +809,7 @@ export class Controller {
   order(job: Job): Lee | null {
     const w = this.world;
     if (w.phase !== 'running' || w.result) return null;
-    if (job === 'sail' && w.canRetreat()) {
-      w.retreat();
-      this.notify();
-      return null;
-    }
+    // ⏩ while connected reads RETREAT, but it only puts a Lee on the oars: the lines have to be cut (a tap on each) and you steer away.
     return w.order(job);
   }
 
@@ -763,7 +877,7 @@ function freshSandbox(t: Tuning): SandboxState {
   const run = newRun('basic', 12345, t);
   for (const type of ['hard', 'loud']) addCrew(run, type, 1, t);
   autoEquipAll(run, t);
-  return { run, enemies: [{ ship: 'basic', ai: 'standard', crew: [{ type: 'basic', count: 4 }] }] };
+  return { run, enemies: [{ ship: 'basic', ai: 'standard', crew: [{ type: 'basic', count: 4 }] }], nesses: [] };
 }
 
 function assignDeep(target: Record<string, any>, source: Record<string, any>): void {

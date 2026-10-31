@@ -6,9 +6,18 @@
 
 import type { Tuning } from '../config/tuning';
 import { applyDamage, partAt, type Boat, type PartState } from './boat';
-import { hurtLee, leeStat, standingTile, type Lee } from './crew';
+import { departed, hurtLee, leeStat, standingTile, type Lee } from './crew';
 import { itemParam } from './loadout';
 import { dist, lerp, toWorld, type Rng, type Vec } from './math';
+
+/** Something that isn't a Lee a pistol may shoot (a surfaced Ness's part), for Lees on the other side. */
+export interface PistolMark {
+  nessId: number;
+  part: number;
+  pos: Vec;
+  /** A shot landing within this distance of `pos` (plus the pistol's hit radius) hits it, m. */
+  radius: number;
+}
 
 export interface CombatContext {
   tuning: Tuning;
@@ -17,11 +26,14 @@ export interface CombatContext {
   /** Every Lee in the world. */
   lees: Lee[];
   boats: Boat[];
+  /** Surfaced Ness parts: shot at by the player's side only when no Lee is in range. */
+  marks?: PistolMark[];
 }
 
 export type CombatEvent =
   | { type: 'melee'; attacker: Lee; target: Lee; damage: number; killed: boolean; pos: Vec }
-  | { type: 'pistol'; shooter: Lee; target: Lee; from: Vec; to: Vec; hit: boolean; damage: number; killed: boolean; boat: Boat | null; part: PartState | null; boatDamage: number };
+  | { type: 'pistol'; shooter: Lee; target: Lee; from: Vec; to: Vec; hit: boolean; damage: number; killed: boolean; boat: Boat | null; part: PartState | null; boatDamage: number }
+  | { type: 'pistolMark'; shooter: Lee; mark: PistolMark; from: Vec; to: Vec; hit: boolean; damage: number };
 
 /** World position of a Lee (mid-swing: along an arc between the two decks). */
 export function leeWorldPos(lee: Lee): Vec {
@@ -38,6 +50,7 @@ export function updateEngagement(lees: Lee[]): void {
   const byTile = new Map<string, Lee[]>();
   for (const l of lees) {
     l.engaged = false;
+    l.locked = false;
     l.meleeTarget = null;
     if (!l.alive || l.swing) continue;
     const k = `${l.deck.id}:${standingTile(l)}`;
@@ -45,9 +58,16 @@ export function updateEngagement(lees: Lee[]): void {
     byTile.get(k)!.push(l);
   }
   for (const group of byTile.values()) {
+    const count = { player: 0, enemy: 0 };
+    for (const l of group) count[l.side]++;
     for (const l of group) {
-      // Walking through a tile isn't a fight; the wounded fall back instead of swinging a sword.
-      if (l.path.length || l.retreating) continue;
+      // Walking through a tile isn't a fight.
+      if (departed(l)) continue;
+      const foes = count[l.side === 'player' ? 'enemy' : 'player'];
+      // Outnumbered on its tile: locked in. It can't leave, and it fights whatever else it was doing.
+      l.locked = foes > count[l.side];
+      // The wounded fall back instead of swinging a sword (a retreat that's stuck behind someone is a fight).
+      if (l.retreating && !l.locked && !l.path.length) continue;
       const target = meleeTarget(l, group);
       if (!target) continue;
       l.engaged = true;
@@ -142,7 +162,24 @@ export function stepPistols(ctx: CombatContext, dt: number): CombatEvent[] {
       }
     }
     if (!target) {
-      l.pistolCd = 0; // ready the moment someone comes in range
+      // Nobody to shoot but a Ness that is up: the player's side may fire at its parts.
+      const mark = l.side === 'player' ? nearestMark(ctx.marks ?? [], from, range) : null;
+      if (mark) {
+        l.pistolCd = 1;
+        l.firedAt = ctx.time;
+        l.stats.pistolShots++;
+        const d = dist(from, mark.pos);
+        const accuracy = Math.max(0.05, leeStat(l, 'pistolAccuracy', l.boat, t));
+        const off = ctx.rng.inDisk((Math.max(0, p.spread) + Math.max(0, p.spreadPerMeter) * d) / accuracy);
+        const to = { x: mark.pos.x + off.x, y: mark.pos.y + off.y };
+        const hit = dist(to, mark.pos) <= mark.radius + Math.max(0, p.hitRadius);
+        const damage = hit ? Math.max(0, p.damage) * leeStat(l, 'pistolDamage', l.boat, t) : 0;
+        if (hit) {
+          l.stats.pistolHits++;
+          l.stats.pistolDealt += damage;
+        }
+        out.push({ type: 'pistolMark', shooter: l, mark, from, to, hit, damage });
+      } else l.pistolCd = 0; // ready the moment someone comes in range
       continue;
     }
     l.pistolCd = 1;
@@ -179,4 +216,19 @@ export function stepPistols(ctx: CombatContext, dt: number): CombatEvent[] {
     out.push({ type: 'pistol', shooter: l, target, from, to, hit, damage, killed, boat, part, boatDamage });
   }
   return out;
+}
+
+/** The nearest mark in pistol range (the head first on a tie: it is what kills). */
+function nearestMark(marks: PistolMark[], from: Vec, range: number): PistolMark | null {
+  let best: PistolMark | null = null;
+  let bestD = Infinity;
+  for (const m of marks) {
+    const d = dist(from, m.pos) - m.radius;
+    if (d > range) continue;
+    if (d < bestD - 1e-9 || (Math.abs(d - bestD) <= 1e-9 && best && m.part < best.part)) {
+      best = m;
+      bestD = d;
+    }
+  }
+  return best;
 }

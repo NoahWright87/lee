@@ -15,6 +15,8 @@ import { World, type Shell } from '../src/sim/world';
 function quiet(t: Tuning): Tuning {
   t.boat.flooding.bilgeRate = 0;
   t.boat.flooding.leakRate = 0;
+  t.spoils.midSurrender = 0;
+  for (const p of Object.values(t.ai)) p.hooks = 0;
   return t;
 }
 
@@ -191,6 +193,8 @@ describe('rail items', () => {
     let planked = 0;
     run(w, 4, () => {
       hold();
+      // Phase 7: a plank carries Lees only once it's lowered.
+      for (const tile of w.player.grid.tiles) for (const r of tile.rails) if (r.kind === 'planks') r.lowered = true;
       for (const l of w.player.crew.lees) if (l.swing && !l.swing.back && l.swing.t === 0) {
         if (l.boardBuff) planked++;
         expect(l.swing.dur).toBeLessThanOrEqual(t.boarding.swingTime + 1e-9);
@@ -201,27 +205,30 @@ describe('rail items', () => {
 });
 
 describe('stations', () => {
-  test('Swinging Ropes: ⚔️ Lees swing across from farther away, and faster', () => {
+  test('Swinging Ropes: a rail item that carries one Lee at a time, only once a crossing is ordered, from farther than a plank reaches', () => {
     const t = quiet(defaultTuning());
-    const crossed = (treasures: string[]) => {
+    const crossed = (loadout: Record<string, string>, gap: number, order: boolean) => {
       const w = new World(t, 1, {
         enemies: [setupOf(defaultBuild('basic'), basic([sloopTile(1, 1)]))],
-        player: setupOf({ ship: 'basic', loadout: {}, treasures }, basic([sloopTile(2, 0)], 'board')),
+        player: setupOf({ ship: 'basic', loadout }, basic([sloopTile(2, 0)], 'board')),
       });
       w.start();
       const e = w.enemies[0];
       let dur = 0;
-      // Just out of plain boarding range, inside the ropes' range.
-      const gap = t.boarding.range * 1.25;
+      w.boardTargetId = e.id;
       run(w, 4, () => {
         pin(w, w.player, { x: 0, y: 0 });
         pin(w, e, { x: -(10 + gap), y: 0 });
+        if (order) for (const tile of w.player.grid.tiles) for (const r of tile.rails) if (r.kind === 'rope') r.pending = 1;
         for (const l of w.player.crew.lees) if (l.swing && !l.swing.back && l.swing.t === 0) dur = l.swing.dur;
       });
       return { boardings: w.stats.player.boardings, dur };
     };
-    expect(crossed([]).boardings).toBe(0);
-    const roped = crossed(['ropes']);
+    const ropes = { 'rail:2,0:port': 'ropes' };
+    expect(crossed({}, 2, true).boardings).toBe(0); // no rope, no plank: it can't board
+    expect(crossed(ropes, 2, false).boardings).toBe(0); // nobody ordered a crossing
+    expect(crossed(ropes, t.lines.ropeRange * 2, true).boardings).toBe(0); // too far for the rope
+    const roped = crossed(ropes, 3.5, true);
     expect(roped.boardings).toBeGreaterThan(0);
     expect(roped.dur).toBeCloseTo(t.boarding.swingTime * t.items.ropes.swing);
   });
@@ -252,6 +259,7 @@ describe('stations', () => {
 describe('guns shoot differently', () => {
   test('a scrap cannon fires a burst of pellets with one shaded area telegraph; a mortar gets a bigger X', () => {
     const t = quiet(defaultTuning());
+    t.ai.standard.boardShare = 0; // against an empty deck it would otherwise send its gunners to ⚔️
     const enemyBuild: BoatBuild = { ship: 'basic', loadout: { 'fix:1,2': 'scrap', 'fix:1,1': 'mortar' }, facings: { 'fix:1,1': 'starboard' } };
     const w = new World(t, 2, {
       enemies: [setupOf(enemyBuild, basic([sloopTile(1, 2), sloopTile(1, 1)]), { ...t.ai.standard })],

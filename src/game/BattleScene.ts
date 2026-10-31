@@ -27,12 +27,17 @@ import {
   type GunState,
 } from '../sim/boat';
 import { leeWorldPos } from '../sim/combat';
+import type { Ness } from '../sim/ness';
 import { activity, workerAt } from '../sim/crew';
+import { deckFitBoats, oceanFit } from '../sim/framing';
 import { clamp, DEG, dist, lerp, rotate, toLocal, toWorld, type Vec } from '../sim/math';
 import { FIXED_DT, predictPath } from '../sim/steering';
 import { TelegraphSystem } from '../sim/telegraph';
 import type { World, WorldEvent } from '../sim/world';
+import { deckTargets, pickTarget } from '../sim/targets';
 import { BoatView, lerpColor } from './BoatView';
+import { drawCharges, drawLines, drawOrderMarkers, drawTargets, drawZones } from './QuartersView';
+import { drawEmergeRing, drawNessBodies, drawNessShadows } from './NessView';
 import type { Controller } from './Controller';
 import { CrewView } from './CrewView';
 import {
@@ -47,8 +52,46 @@ import {
 /** Fraction of the screen height given to the ocean view during a fight (setup mode uses tuning.layout). */
 export const OCEAN_FRACTION = 0.75;
 const WATER_TILE_M = 48;
+/** World bounding box of the hulls of some boats. */
+function boundsOf(boats: Boat[], nesses: Ness[] = []): { x0: number; y0: number; x1: number; y1: number } {
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  for (const b of boats) {
+    const hl = b.layout.length / 2;
+    const hb = b.layout.beam / 2;
+    for (const c of [{ x: -hl, y: -hb }, { x: hl, y: -hb }, { x: hl, y: hb }, { x: -hl, y: hb }]) {
+      const w = toWorld(c, b.motion, b.motion.heading);
+      x0 = Math.min(x0, w.x);
+      x1 = Math.max(x1, w.x);
+      y0 = Math.min(y0, w.y);
+      y1 = Math.max(y1, w.y);
+    }
+  }
+  for (const n of nesses) {
+    for (const p of n.parts) {
+      x0 = Math.min(x0, p.pos.x - p.radius);
+      x1 = Math.max(x1, p.pos.x + p.radius);
+      y0 = Math.min(y0, p.pos.y - p.radius);
+      y1 = Math.max(y1, p.pos.y + p.radius);
+    }
+    // A rising Ness: the whole ring.
+    if (n.emergeAt) {
+      const r = 12;
+      x0 = Math.min(x0, n.emergeAt.x - r);
+      x1 = Math.max(x1, n.emergeAt.x + r);
+      y0 = Math.min(y0, n.emergeAt.y - r);
+      y1 = Math.max(y1, n.emergeAt.y + r);
+    }
+  }
+  return { x0, y0, x1, y1 };
+}
+
 /** Height of the HUD's top bar, CSS px. The ocean camera frames boats below it. */
 const TOP_INSET_CSS = 52;
+/** Width of the role icons pinned down the left of the ocean, CSS px: the "Fit" camera keeps boats clear of them. */
+const LEFT_INSET_CSS = 60;
 
 const COLOR = {
   threat: 0xff2b2b,
@@ -113,6 +156,9 @@ export class BattleScene extends Phaser.Scene {
   private waterOcean!: Phaser.GameObjects.TileSprite;
   private waterStrip!: Phaser.GameObjects.TileSprite;
   private gOcean!: Phaser.GameObjects.Graphics;
+  private gShadow!: Phaser.GameObjects.Graphics;
+  private gNess!: Phaser.GameObjects.Graphics;
+  private gNessStrip!: Phaser.GameObjects.Graphics;
   private gStrip!: Phaser.GameObjects.Graphics;
   private views: BoatView[] = [];
   private crewView: CrewView | null = null;
@@ -133,6 +179,8 @@ export class BattleScene extends Phaser.Scene {
   private expandK = 0;
   /** Strip camera framing (local to your boat): center offset and zoom, smoothed. */
   private stripFrame: { x: number; y: number; zoom: number } | null = null;
+  /** The strip camera's projection this frame (to turn a tap into a world point). */
+  private stripView: { c: Vec; sz: number; SH: number; heading: number } | null = null;
   private acc = 0;
   private runId = -1;
   private lastPhase = '';
@@ -144,6 +192,8 @@ export class BattleScene extends Phaser.Scene {
   private dragSteers = false;
   /** Enemies the ocean camera keeps in view (in gun range, with hysteresis). */
   private inView = new Set<number>();
+  /** Enemies the "Fit" ocean camera is framing (with hysteresis). */
+  private fitSet = new Set<number>();
   private clock = 0;
 
   constructor() {
@@ -183,6 +233,13 @@ export class BattleScene extends Phaser.Scene {
     this.onlyOcean(this.waterOcean);
     this.onlyStrip(this.waterStrip);
 
+    // Nesses: the shadow of one that is down sits under the hulls; one that is up is drawn over them.
+    this.gShadow = this.add.graphics().setDepth(9);
+    this.gNess = this.add.graphics().setDepth(20);
+    this.onlyOcean(this.gShadow);
+    this.onlyOcean(this.gNess);
+    this.gNessStrip = this.add.graphics().setDepth(20);
+    this.onlyStrip(this.gNessStrip);
     this.gOcean = this.add.graphics().setDepth(40);
     this.gStrip = this.add.graphics().setDepth(40);
     this.onlyOcean(this.gOcean);
@@ -225,6 +282,8 @@ export class BattleScene extends Phaser.Scene {
     this.setupK = this.ctl.world.phase === 'ready' ? 1 : 0;
     this.frac = this.targetFrac();
     this.setupInput();
+    this.ctl.tapTargets = () =>
+      this.deckTargetsNow().map((t) => ({ id: t.id, kind: t.kind, label: t.label, css: this.ctl.stripProjection?.worldToCss(t.b ? { x: (t.a.x + t.b.x) / 2, y: (t.a.y + t.b.y) / 2 } : t.a) ?? null }));
     this.scale.on('resize', () => {
       this.layout();
       this.snapCamera = true;
@@ -287,6 +346,10 @@ export class BattleScene extends Phaser.Scene {
   private setupInput(): void {
     const inOcean = (p: Phaser.Input.Pointer) => p.y < this.oceanH;
     this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
+      if (!inOcean(p) && !this.ctl.blocked) {
+        this.tapDeck({ x: p.x, y: p.y });
+        return;
+      }
       if (this.pointerId !== null || !inOcean(p) || this.ctl.blocked) return;
       this.pointerId = p.id;
       this.pointerScreen = { x: p.x, y: p.y };
@@ -332,6 +395,37 @@ export class BattleScene extends Phaser.Scene {
     return true;
   }
 
+  /** A screen point in the deck view → world. */
+  private stripWorld(screen: Vec): Vec | null {
+    const v = this.stripView;
+    if (!v) return null;
+    const r = { x: (screen.x - this.W / 2) / v.sz, y: (screen.y - this.oceanH - v.SH / 2) / v.sz };
+    const w = rotate(r, v.heading);
+    return { x: v.c.x + w.x, y: v.c.y + w.y };
+  }
+
+  /** The decks the deck view shows right now. */
+  private deckTargetsNow(): ReturnType<typeof deckTargets> {
+    return deckTargets(this.ctl.world, this.stripDecks(this.ctl.world));
+  }
+
+  /**
+   * A tap on the deck view always commands: a rail item, a line, a plank, a rope with a Lee on
+   * it, a flooded or damaged tile, an enemy tile where your boarders are. The world picks the Lee.
+   */
+  private tapDeck(screen: Vec): void {
+    const world = this.ctl.world;
+    if (world.phase !== 'running' || world.result || world.player.sinkingSince !== null) return;
+    const p = this.stripWorld(screen);
+    if (!p) return;
+    const grab = this.px(this.stripCam, 16);
+    const hit = pickTarget(this.deckTargetsNow(), p, grab);
+    if (!hit) return;
+    const why = hit.tap();
+    if (why) this.ctl.toast(why[0].toUpperCase() + why.slice(1));
+    this.rings.push({ x: hit.a.x, y: hit.a.y, t: this.clock, dur: 0.35, r: 2.2, color: why ? 0xff8a6a : 0xffd27a });
+  }
+
   /** Steer toward a screen point: a heading through it, or a circle around an enemy it's near. */
   private steerAt(screen: Vec): void {
     const world = this.ctl.world;
@@ -353,7 +447,7 @@ export class BattleScene extends Phaser.Scene {
     this.clock += dt;
     this.animatePanels(dt);
     if (!ctl.blocked && !ctl.paused && world.phase !== 'ready') {
-      this.acc += dt * ctl.speed;
+      this.acc += dt * ctl.effectiveSpeed;
       let steps = 0;
       while (this.acc >= FIXED_DT && steps < 12) {
         world.step(FIXED_DT);
@@ -399,6 +493,7 @@ export class BattleScene extends Phaser.Scene {
     this.pointerScreen = null;
     this.dragSteers = false;
     this.inView.clear();
+    this.fitSet.clear();
     this.snapCamera = true;
     for (const e of [this.chips, this.spray, this.smoke, this.bubbles]) e.killAll();
 
@@ -419,6 +514,17 @@ export class BattleScene extends Phaser.Scene {
         this.labels.set(boat.id, label);
       }
     }
+    for (const n of this.ctl.world.nesses.list) {
+      const label = this.add.text(0, 0, n.def.name, {
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: `${Math.round(11 * this.dpr)}px`,
+        color: '#c9f2cf',
+        stroke: '#06180c',
+        strokeThickness: Math.round(3 * this.dpr),
+      }).setOrigin(0.5, 1).setDepth(45);
+      this.onlyOcean(label);
+      this.labels.set(n.id, label);
+    }
     this.rebuildCrew();
   }
 
@@ -438,6 +544,7 @@ export class BattleScene extends Phaser.Scene {
   /** Decks the strip shows: yours, then the enemies closing in (nearest two). */
   private stripDecks(world: World): Boat[] {
     if (world.phase === 'ready') return [world.player];
+    if (this.ctl.zoomFit('deck')) return deckFitBoats(world);
     return [world.player, ...world.closeBoats().slice(0, 2)];
   }
 
@@ -510,6 +617,70 @@ export class BattleScene extends Phaser.Scene {
           this.spray.explode(10, e.pos.x, e.pos.y);
           this.rings.push({ x: e.pos.x, y: e.pos.y, t: this.clock, dur: 0.4, r: 3, color: 0xe0f4ff });
           break;
+        case 'hookThrown':
+          this.rings.push({ x: e.from.x, y: e.from.y, t: this.clock, dur: 0.3, r: 2, color: COLOR.link });
+          break;
+        case 'hookLanded':
+          this.chips.explode(10, e.to.x, e.to.y);
+          this.rings.push({ x: e.to.x, y: e.to.y, t: this.clock, dur: 0.5, r: 4, color: COLOR.link });
+          break;
+        case 'hookMissed':
+          this.spray.explode(8, e.at.x, e.at.y);
+          this.rings.push({ x: e.at.x, y: e.at.y, t: this.clock, dur: 0.5, r: 3, color: 0xe0f4ff });
+          break;
+        case 'lineCut': {
+          const a = this.ctl.world.boats.find((x) => x.id === e.boatId);
+          const b = this.ctl.world.boats.find((x) => x.id === e.targetId);
+          if (a && b) {
+            const m = { x: (a.motion.x + b.motion.x) / 2, y: (a.motion.y + b.motion.y) / 2 };
+            this.chips.explode(10, m.x, m.y);
+            this.rings.push({ x: m.x, y: m.y, t: this.clock, dur: 0.4, r: 3, color: 0xfff3d6 });
+          }
+          break;
+        }
+        case 'nessSurface':
+          // It breaks the surface: a burst of spray and a wave out from the ring.
+          this.spray.explode(40, e.pos.x, e.pos.y);
+          this.rings.push({ x: e.pos.x, y: e.pos.y, t: this.clock, dur: 0.9, r: e.radius * 1.6, color: 0xe0f4ff });
+          this.rings.push({ x: e.pos.x, y: e.pos.y, t: this.clock, dur: 0.5, r: e.radius * 0.8, color: 0xffffff });
+          this.cameras.main.shake(320, 0.012);
+          break;
+        case 'zoneImpact': {
+          this.chips.explode(e.kind === 'smash' ? 26 : 8, e.pos.x, e.pos.y);
+          if (e.kind === 'slap') this.spray.explode(24, e.pos.x, e.pos.y);
+          this.rings.push({ x: e.pos.x, y: e.pos.y, t: this.clock, dur: 0.5, r: e.kind === 'smash' ? 7 : 5, color: e.kind === 'slap' ? 0x9fd0ff : 0xffd28a });
+          if (e.kind === 'smash') this.cameras.main.shake(220, 0.012);
+          break;
+        }
+        case 'chargeDrop':
+          this.spray.explode(10, e.pos.x, e.pos.y);
+          this.rings.push({ x: e.pos.x, y: e.pos.y, t: this.clock, dur: 0.5, r: 3, color: 0xe0f4ff });
+          break;
+        case 'chargeBlast':
+          // A column of water, a shock ring out to the blast radius.
+          this.spray.explode(60, e.pos.x, e.pos.y);
+          this.rings.push({ x: e.pos.x, y: e.pos.y, t: this.clock, dur: 0.9, r: e.radius, color: 0xbfe6ff });
+          this.rings.push({ x: e.pos.x, y: e.pos.y, t: this.clock, dur: 0.45, r: e.radius * 0.5, color: 0xffffff });
+          this.cameras.main.shake(260, 0.01);
+          break;
+        case 'tether':
+          this.rings.push({ x: this.ctl.world.nesses.list.find((x) => x.id === e.nessId)?.x ?? 0, y: this.ctl.world.nesses.list.find((x) => x.id === e.nessId)?.y ?? 0, t: this.clock, dur: 0.5, r: 5, color: COLOR.link });
+          break;
+        case 'nessDive':
+          this.spray.explode(20, e.pos.x, e.pos.y);
+          this.rings.push({ x: e.pos.x, y: e.pos.y, t: this.clock, dur: 0.8, r: 8, color: 0xe0f4ff });
+          break;
+        case 'nessHit':
+          this.chips.explode(8, e.pos.x, e.pos.y);
+          this.rings.push({ x: e.pos.x, y: e.pos.y, t: this.clock, dur: 0.3, r: 3, color: 0xffd28a });
+          break;
+        case 'nessDown':
+          this.spray.explode(40, e.pos.x, e.pos.y);
+          this.rings.push({ x: e.pos.x, y: e.pos.y, t: this.clock, dur: 1.2, r: 16, color: 0xe0f4ff });
+          break;
+        case 'tapRefused':
+          if (this.ctl.world.boats.find((x) => x.id === e.boatId)?.side === 'player') this.ctl.toast(e.why[0].toUpperCase() + e.why.slice(1));
+          break;
         case 'contact': {
           const a = this.ctl.world.boats.find((x) => x.id === e.a);
           const b = this.ctl.world.boats.find((x) => x.id === e.b);
@@ -546,41 +717,72 @@ export class BattleScene extends Phaser.Scene {
     const p = world.player.motion;
     // Mostly centered on you, leading the way you're moving. Refit: your boat alone (its gun arcs are what matter there).
     const setup = world.phase === 'ready';
-    const lead = setup ? 0 : Math.max(0, t.lookAhead);
-    const cx = p.x + p.vx * lead;
-    const cy = p.y + p.vy * lead;
-    // Keep in view every enemy within gun range (yours or theirs), with hysteresis so the zoom doesn't pump.
-    const mine = maxGunRange(world.player, world.tuning);
-    const shown: Vec[] = [];
-    for (const e of world.enemies) {
-      if (setup || world.sinkAnim(e) >= 1) {
-        this.inView.delete(e.id);
-        continue;
-      }
-      const range = Math.max(mine, maxGunRange(e, world.tuning), 60);
-      const d = dist(e.motion, p);
-      if (d <= range) this.inView.add(e.id);
-      else if (d > range * (1 + Math.max(0, t.rangeHysteresis))) this.inView.delete(e.id);
-      if (this.inView.has(e.id)) shown.push(e.motion);
-    }
+    const fit = !setup && this.ctl.zoomFit('ocean');
+    const lead = setup || fit ? 0 : Math.max(0, t.lookAhead);
+    let cx = p.x + p.vx * lead;
+    let cy = p.y + p.vy * lead;
     const W = this.W;
-    // Keep the top bar (buttons) clear: frame the boats in the area below it.
+    // Keep the top bar (buttons) clear: frame the boats in the area below it (and, on Fit, right of the role icons).
     const inset = TOP_INSET_CSS * this.dpr;
+    const leftInset = fit ? LEFT_INSET_CSS * this.dpr : 0;
     const H = this.oceanH - inset;
-    let dx = Math.abs(p.x - cx);
-    let dy = Math.abs(p.y - cy);
-    for (const m of shown) {
-      dx = Math.max(dx, Math.abs(m.x - cx));
-      dy = Math.max(dy, Math.abs(m.y - cy));
+    let visH: number;
+    if (fit) {
+      // Fit: your boat and every boat that could be fighting you (or all of them, while none is). Centered in the free area.
+      const inPlay = oceanFit(world, this.fitSet);
+      const box = boundsOf(inPlay.boats, inPlay.nesses);
+      const pad = clamp(Math.max(box.x1 - box.x0, box.y1 - box.y0) * t.fitPaddingShare, t.fitPaddingMin, Math.max(t.fitPaddingMin, t.fitPadding));
+      cx = (box.x0 + box.x1) / 2;
+      cy = (box.y0 + box.y1) / 2;
+      const needH = Math.max(box.y1 - box.y0 + 2 * pad, (box.x1 - box.x0 + 2 * pad) * (H / Math.max(1, W - leftInset)));
+      visH = clamp(needH, t.fitMinHeight, Math.max(t.fitMinHeight, t.fitMaxHeight));
+    } else {
+      // Keep in view every enemy within gun range (yours or theirs), with hysteresis so the zoom doesn't pump.
+      const mine = maxGunRange(world.player, world.tuning);
+      const shown: Vec[] = [];
+      for (const e of world.enemies) {
+        if (setup || world.sinkAnim(e) >= 1) {
+          this.inView.delete(e.id);
+          continue;
+        }
+        const range = Math.max(mine, maxGunRange(e, world.tuning), 60);
+        const d = dist(e.motion, p);
+        if (d <= range) this.inView.add(e.id);
+        else if (d > range * (1 + Math.max(0, t.rangeHysteresis))) this.inView.delete(e.id);
+        if (this.inView.has(e.id)) shown.push(e.motion);
+      }
+      for (const n of world.nesses.list) {
+        if (setup || n.state === 'dead' || !world.nessVisible(n)) {
+          this.inView.delete(n.id);
+          continue;
+        }
+        const range = Math.max(mine, 60);
+        const d = dist({ x: n.x, y: n.y }, p);
+        if (d <= range || n.state !== 'submerged') this.inView.add(n.id);
+        else if (d > range * (1 + Math.max(0, t.rangeHysteresis))) this.inView.delete(n.id);
+        if (this.inView.has(n.id)) shown.push({ x: n.x, y: n.y }, n.parts[n.parts.length - 1].pos);
+      }
+      let dx = Math.abs(p.x - cx);
+      let dy = Math.abs(p.y - cy);
+      for (const m of shown) {
+        dx = Math.max(dx, Math.abs(m.x - cx));
+        dy = Math.max(dy, Math.abs(m.y - cy));
+      }
+      const needH = Math.max(2 * (dy + t.padding), 2 * (dx + t.padding) * (H / W));
+      visH = setup
+        ? Math.max(20, world.player.layout.length * Math.max(1, t.refitView))
+        : clamp(needH, t.minVisibleHeight, Math.max(t.minVisibleHeight, t.maxVisibleHeight)) * this.ctl.zoomMul('ocean');
     }
-    const needH = Math.max(2 * (dy + t.padding), 2 * (dx + t.padding) * (H / W));
-    const visH = setup
-      ? Math.max(20, world.player.layout.length * Math.max(1, t.refitView))
-      : clamp(needH, t.minVisibleHeight, Math.max(t.minVisibleHeight, t.maxVisibleHeight));
     const zoom = H / visH;
     if (this.snapCamera) {
       this.cam = { x: cx, y: cy, zoom };
       this.snapCamera = false;
+    } else if (fit) {
+      // Position and zoom move together, so a boat never outruns the frame while the zoom catches up.
+      const k = 1 - Math.exp(-Math.max(0.01, t.fitSmoothing) * dt);
+      this.cam.x += (cx - this.cam.x) * k;
+      this.cam.y += (cy - this.cam.y) * k;
+      this.cam.zoom = Math.exp(lerp(Math.log(this.cam.zoom), Math.log(zoom), k));
     } else {
       const k = 1 - Math.exp(-Math.max(0.01, t.smoothing) * dt);
       this.cam.x += (cx - this.cam.x) * k;
@@ -589,9 +791,10 @@ export class BattleScene extends Phaser.Scene {
     }
     // Refit: the boat sits a little high, clear of the selection card at the bottom of the ocean.
     const shiftY = inset / 2 / this.cam.zoom - (setup ? (0.12 * H) / this.cam.zoom : 0);
+    const shiftX = leftInset / 2 / this.cam.zoom;
     this.oceanCam.setZoom(this.cam.zoom);
-    this.oceanCam.centerOn(this.cam.x, this.cam.y - shiftY);
-    this.coverWithWater(this.waterOcean, this.cam.x, this.cam.y - shiftY, W / this.cam.zoom, this.oceanH / this.cam.zoom);
+    this.oceanCam.centerOn(this.cam.x - shiftX, this.cam.y - shiftY);
+    this.coverWithWater(this.waterOcean, this.cam.x - shiftX, this.cam.y - shiftY, W / this.cam.zoom, this.oceanH / this.cam.zoom);
 
     // Strip: player boat, bow right. Fight: centered. Setup: larger (tiles at touch size)
     // and near the top, leaving room for the tray below. Attached: zoomed out to frame
@@ -604,9 +807,11 @@ export class BattleScene extends Phaser.Scene {
     let fx = 0;
     let fy = 0;
     const decks = this.stripDecks(world);
-    // The close-up eases from your deck alone to every close deck as they close in.
-    const closeK = clamp(this.expandK, 0, 1);
-    if (decks.length > 1 && closeK > 0) {
+    // The close-up eases from your deck alone to every close deck as they close in. Fit: whenever another deck is in play.
+    const deckFit = !setup && this.ctl.zoomFit('deck');
+    const closeK = deckFit ? 1 : clamp(this.expandK, 0, 1);
+    const monsters = setup ? [] : world.nessesAtRail();
+    if ((decks.length > 1 || monsters.length) && closeK > 0) {
       // Bounding box of every deck in your boat's frame.
       let x0 = Infinity;
       let y0 = Infinity;
@@ -623,14 +828,29 @@ export class BattleScene extends Phaser.Scene {
           y1 = Math.max(y1, l.y);
         }
       }
-      const zoom = Math.min(fightZ, (W * 0.94) / (x1 - x0), (SH * 0.86) / (y1 - y0));
+      // A Ness alongside: every part of it is part of the picture.
+      for (const n of monsters) {
+        for (const part of n.parts) {
+          const l = toLocal(part.pos, p, p.heading);
+          x0 = Math.min(x0, l.x - part.radius);
+          x1 = Math.max(x1, l.x + part.radius);
+          y0 = Math.min(y0, l.y - part.radius);
+          y1 = Math.max(y1, l.y + part.radius);
+        }
+      }
+      const zoom = Math.max(
+        deckFit ? fightZ * clamp(t.deckFitMinScale, 0.05, 1) : 0,
+        Math.min(fightZ, (W * (deckFit ? t.deckFitWidth : 0.94)) / (x1 - x0), (SH * (deckFit ? t.deckFitHeight : 0.86)) / (y1 - y0)),
+      );
       const s = closeK * closeK * (3 - 2 * closeK);
       fightZ = Math.exp(lerp(Math.log(fightZ), Math.log(zoom), s));
       fx = lerp(0, (x0 + x1) / 2, s);
       fy = lerp(0, (y0 + y1) / 2, s);
     }
-    // Smooth the framing so the strip doesn't jump when a deck arrives or leaves.
-    const k = this.stripFrame ? 1 - Math.exp(-6 * dt) : 1;
+    // The player's chosen deck zoom ("normal" is the framing above).
+    if (!deckFit) fightZ *= this.ctl.zoomMul('deck');
+    // Smooth the framing so the strip doesn't jump when a deck arrives or leaves (Fit glides more slowly).
+    const k = this.stripFrame ? 1 - Math.exp(-(deckFit ? Math.max(0.1, t.deckFitSmoothing) : 6) * dt) : 1;
     const f = this.stripFrame ?? { x: fx, y: fy, zoom: fightZ };
     f.x += (fx - f.x) * k;
     f.y += (fy - f.y) * k;
@@ -649,6 +869,7 @@ export class BattleScene extends Phaser.Scene {
     this.stripCam.setZoom(sz);
     this.stripCam.setRotation(-p.heading);
     this.stripCam.centerOn(c.x, c.y);
+    this.stripView = { c: { x: c.x, y: c.y }, sz, SH, heading: p.heading };
     const diag = Math.hypot(W, SH) / sz;
     this.coverWithWater(this.waterStrip, c.x, c.y, diag, diag);
     // Local boat frame → CSS px, for the DOM setup grid; and world → CSS px for strip buttons.
@@ -689,9 +910,16 @@ export class BattleScene extends Phaser.Scene {
     const cam = this.oceanCam;
     const px = (n: number) => this.px(cam, n);
     g.clear();
+    this.gShadow.clear();
+    this.gNess.clear();
+    drawNessShadows(this.gShadow, world, px, this.clock);
+    drawNessBodies(this.gNess, world, px, this.clock);
 
     this.drawRings(g, px);
     this.drawTracers(g, px);
+    drawLines(g, world, px);
+    drawCharges(g, world, px, this.clock);
+    drawZones(g, world, px, this.clock);
     if (this.ctl.debug) this.drawDebug(g, world, px);
     if (world.phase === 'ready') this.drawRangeRing(g, world, px);
     // Minimum-range rings while your finger is on the ocean (and always in debug).
@@ -740,6 +968,17 @@ export class BattleScene extends Phaser.Scene {
       if (label.text !== text) label.setText(text);
       label.setScale(1 / this.oceanCam.zoom).setPosition(e.motion.x, e.motion.y - e.layout.length / 2 - px(23));
       label.setAlpha(1 - world.sinkAnim(e));
+    }
+    // Ness names over the ones that are up (a shadow stays unnamed).
+    for (const n of world.nesses.list) {
+      const label = this.labels.get(n.id);
+      if (!label) continue;
+      const show = n.state === 'surfaced' || n.state === 'emerging';
+      label.setVisible(show);
+      if (!show) continue;
+      const h = n.parts[0];
+      label.setScale(1 / this.oceanCam.zoom).setPosition(h.pos.x, h.pos.y - h.radius - px(20));
+      label.setAlpha(n.state === 'emerging' ? 0.5 : 1);
     }
   }
 
@@ -955,6 +1194,10 @@ export class BattleScene extends Phaser.Scene {
       const fadeIn = clamp(t.elapsed / Math.max(0.01, tt.fadeInTime), 0, 1);
       const fadeOut = t.impacted ? clamp(t.linger / Math.max(0.01, tt.lingerTime), 0, 1) : 1;
       const a = fadeIn * fadeOut;
+      if (t.kind === 'emerge') {
+        drawEmergeRing(g, t, k, a, px, this.clock);
+        continue;
+      }
       if (t.kind === 'area') {
         // A burst of pellets: one shaded disk where they'll land, a ring closing in for timing.
         const r = Math.max(t.size, px(10));
@@ -1204,6 +1447,8 @@ export class BattleScene extends Phaser.Scene {
     const cam = this.stripCam;
     const px = (n: number) => this.px(cam, n);
     g.clear();
+    this.gNessStrip.clear();
+    drawNessBodies(this.gNessStrip, world, px, this.clock);
     this.drawRings(g, px);
 
     const b = world.player;
@@ -1229,6 +1474,13 @@ export class BattleScene extends Phaser.Scene {
     this.drawTracers(g, px);
     const fight = world.phase !== 'ready';
     const decks = this.stripDecks(world);
+    if (fight) {
+      drawLines(g, world, px);
+      drawCharges(g, world, px, this.clock);
+      drawZones(g, world, px, this.clock);
+      drawOrderMarkers(g, world, px, this.clock);
+      if (this.ctl.debug) drawTargets(g, this.deckTargetsNow(), px);
+    }
     if (this.crewView) {
       this.crewView.update(world, g, px, decks, fight, this.clock, this.ctl.debug, m.heading);
       for (const p of this.crewView.splashes) {
