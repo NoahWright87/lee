@@ -23,7 +23,8 @@ const MAX_DECKS = 3;
 export function oceanFit(w: World, prev: Set<number>): { boats: Boat[]; nesses: Ness[] } {
   const me = w.player;
   const live = w.enemies.filter((e) => w.sinkAnim(e) < 1);
-  const monsters = w.liveNesses();
+  // Only the ones you can see (an unseen shadow doesn't give itself away by where the camera points).
+  const monsters = w.liveNesses().filter((n) => w.nessVisible(n));
   const mine = maxGunRange(me, w.tuning);
   const slack = 1 + Math.max(0, w.tuning.camera.rangeHysteresis);
   const inPlay = new Set<number>();

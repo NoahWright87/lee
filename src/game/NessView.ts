@@ -44,7 +44,7 @@ export function sinkK(world: World, n: Ness): number {
 /** Under the hulls: the dark shape of every Ness that is down (and of one that is rising, growing darker and closer). */
 export function drawNessShadows(g: G, world: World, px: (n: number) => number, clock: number): void {
   for (const n of world.nesses.list) {
-    if (n.state === 'surfaced' || n.state === 'dead') continue;
+    if (n.state === 'surfaced' || n.state === 'dead' || !world.nessVisible(n)) continue;
     const rising = n.state === 'emerging' ? clamp(n.stateT / Math.max(0.1, world.tuning.ness.kinds[n.kind]?.warn ?? 2), 0, 1) : 0;
     const fadeIn = n.state === 'submerged' ? since(world, n) : 1;
     // A Quiet Ness is a faint shadow, unless a Lookout is manned.

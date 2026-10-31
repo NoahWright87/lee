@@ -39,7 +39,7 @@ import { defaultBuild, itemParam, slotById } from './loadout';
 import type { EnemyOutcome } from './run';
 import { combineMods } from './levels';
 import { DEG, dist, distToPolygon, NORTH, Rng, rotate, toLocal, toWorld, wrapAngle, type Vec } from './math';
-import { createNess, nessKind, NessSystem, partAt as nessPartAt, predict as nessPredict, type Ness, type NessPart, type NessSpec } from './ness';
+import { abortRise, createNess, nessKind, NessSystem, partAt as nessPartAt, predict as nessPredict, type Ness, type NessPart, type NessSpec } from './ness';
 import { archetypeSetup, autoArrange, basicCrew, type BoatSetup, type CrewSpec } from './setup';
 import { stepMotion } from './steering';
 import { TelegraphSystem } from './telegraph';
@@ -54,7 +54,9 @@ export interface Shell {
   ownerSide: Side;
   /** Gun item that fired it (visuals). */
   gun: string;
-  mode: 'shell' | 'lob' | 'burst';
+  mode: 'shell' | 'lob' | 'burst' | 'harpoon';
+  /** Harpoons: the slot of the gun that fired it (its line is fixed to that gun's tile). */
+  slot?: string;
   from: Vec;
   to: Vec;
   elapsed: number;
@@ -66,6 +68,16 @@ export interface Shell {
   impactRadius: number;
   /** The Lee who fired it (for per-Lee stats). */
   leeId: number | null;
+}
+
+/** A depth charge sinking: it blows where it was dropped. */
+export interface Charge {
+  id: number;
+  pos: Vec;
+  fuse: number;
+  radius: number;
+  damage: number;
+  side: Side;
 }
 
 export type WorldEvent =
@@ -106,6 +118,10 @@ export type WorldEvent =
   | { type: 'nessHit'; nessId: number; part: number; pos: Vec; damage: number }
   | { type: 'nessDown'; nessId: number; pos: Vec }
   | { type: 'nessLift'; nessId: number }
+  | { type: 'chargeDrop'; boatId: number; pos: Vec; fuse: number; radius: number }
+  | { type: 'chargeBlast'; pos: Vec; radius: number; hits: number }
+  | { type: 'tether'; nessId: number; boatId: number }
+  | { type: 'tetherLost'; nessId: number; by: 'cut' | 'broke' }
   | { type: 'zoneWarn'; boatId: number; zoneId: number; kind: ZoneKind; nessId: number; warn: number }
   | { type: 'zoneImpact'; boatId: number; kind: ZoneKind; pos: Vec; tiles: number[] }
   | { type: 'pushed'; boatId: number; leeId: number; hard: boolean };
@@ -309,6 +325,10 @@ export class World {
   readonly nesses = new NessSystem();
   /** Tiles of a deck that will be hit in a moment (Ness bites, smashes and slaps). */
   readonly zones = new ZoneSystem();
+  /** Depth charges sinking. */
+  readonly charges: Charge[] = [];
+  private nextChargeId = 1;
+  private nextAutoCharge = 0;
   /** Hooks in the air and the lines between hulls. */
   readonly lines = new LineSystem();
   /** Taps on a deck waiting for, or being worked by, a Lee. */
@@ -669,6 +689,8 @@ export class World {
       time: this.time,
       foes: this.gunTargets(b),
       marks: b.side === 'player' ? this.nessTargets().map((t) => t.part.pos) : undefined,
+      underMarks: b.side === 'player' ? this.underTargets().filter((t) => this.nessVisible(t.ness)).map((t) => t.part.pos) : undefined,
+      monsters: b.side === 'player' && this.nesses.alive().length > 0,
       lees: this.allLees(),
       boardTarget: this.boardTargetOf(b),
       retreating: b === this.player && this.retreating,
@@ -859,6 +881,8 @@ export class World {
       this.autoBoard();
       this.stepSurrender();
       this.nesses.step(this, dt);
+      this.autoCharge();
+      this.stepCharges(dt);
       this.stepCombat(dt);
     }
     this.zones.step(this, dt);
@@ -1274,6 +1298,10 @@ export class World {
         if (!foeNear(Math.max(0, t.lines.plankReach))) return this.refuse(boat, 'too far to lower the plank');
         this.orders.place(this, { boat, kind: 'lower', role: 'nearest', tile: ref.tile.index, rail: ref });
         return null;
+      case 'charge':
+        if (r.readyAt > this.time) return this.refuse(boat, 'the charge is not ready');
+        this.orders.place(this, { boat, kind: 'drop', role: 'gunner', tile: ref.tile.index, rail: ref });
+        return null;
       case 'pole':
         if (r.readyAt > this.time) return this.refuse(boat, 'the poles are not ready');
         if (!foeNear(Math.max(1, t.boarding.range) * 3)) return this.refuse(boat, 'nothing to push off');
@@ -1390,6 +1418,8 @@ export class World {
       this.events.push({ type: 'hookThrown', boatId: boat.id, targetId: f.target.id, from: f.from, to: f.to, flight: f.flight });
       // The throw is telegraphed to whoever it's aimed at.
       if (f.target.side === 'player') this.telegraphs.add('area', f.to, f.flight, t.telegraph.lingerTime, Math.max(1.5, t.lines.hookCatch));
+    } else if (o.kind === 'drop') {
+      if (ref.rail.readyAt <= this.time) this.dropCharge(ref);
     } else if (o.kind === 'lower') {
       ref.rail.lowered = true;
       this.events.push({ type: 'plank', boatId: boat.id, tile: ref.tile.index, down: true, destroyed: false });
@@ -1715,6 +1745,11 @@ export class World {
       }
       g.load = Math.min(1, g.load + (dt * speed) / reload);
       if (g.load < 1) return;
+      // One harpoon out at a time: a gun that has a line out (or a harpoon in the air) waits for it to be cut.
+      if (g.mode === 'harpoon') {
+        const hr = this.harpoonRef(b, g);
+        if (hr.rail.out || hr.rail.readyAt > this.time) return;
+      }
       // Threat budget: a loaded enemy gun holds fire while enough red X's are already up.
       if (b.side !== 'player' && cap > 0 && this.incomingShells() >= cap) return;
       const from = this.muzzle(b, g);
@@ -1760,7 +1795,8 @@ export class World {
           ownerId: b.id,
           ownerSide: b.side,
           gun: g.item,
-          mode: g.mode === 'lob' ? 'lob' : burst ? 'burst' : 'shell',
+          mode: g.mode === 'lob' ? 'lob' : g.mode === 'harpoon' ? 'harpoon' : burst ? 'burst' : 'shell',
+          slot: g.mode === 'harpoon' ? g.slot : undefined,
           from,
           to,
           elapsed: 0,
@@ -1774,6 +1810,7 @@ export class World {
         this.stats[b.side].shellsFired++;
         gunner.stats.shellsFired++;
       }
+      if (g.mode === 'harpoon') this.harpoonRef(b, g).rail.out = true;
       // Only threats to the player get a telegraph: a red X per shell (bigger for a big splash), one shaded area per burst.
       if (b.side !== 'player') {
         if (burst) this.telegraphs.add('area', aim, time, this.tuning.telegraph.lingerTime, Math.max(1.5, scatter));
@@ -1795,7 +1832,9 @@ export class World {
   /** The closest surfaced Ness part this gun can hit from `from` (the head wins a tie: it is what kills). */
   private pickNess(b: Boat, g: GunState, from: Vec): { ness: Ness; part: NessPart; d: number } | null {
     let best: { ness: Ness; part: NessPart; d: number } | null = null;
-    for (const t of this.nessTargets()) {
+    // A mortar's steep shell reaches a Ness under the water too; nothing else does.
+    const pool = g.mode === 'lob' ? [...this.nessTargets(), ...this.underTargets().filter((x) => this.nessVisible(x.ness))] : this.nessTargets();
+    for (const t of pool) {
       const d = dist(from, t.part.pos);
       if (!this.canHit(b, g, from, t.part.pos)) continue;
       if (!best || d < best.d - 1e-6 || (Math.abs(d - best.d) <= 1e-6 && t.part.index < best.part.index)) best = { ...t, d };
@@ -1834,6 +1873,42 @@ export class World {
     }
   }
 
+  /** The stand-in rail a harpoon gun's line hangs on (made the first time it is needed). */
+  harpoonRef(b: Boat, g: GunState): RailRef {
+    const tile = b.grid.tiles[g.station];
+    if (!g.harpoon) {
+      g.harpoon = { slot: g.slot, item: g.item, kind: 'hook', facing: tile.edges[0] ?? 'starboard', hp: 1, maxHp: 1, destroyed: false, lowered: false, readyAt: 0, out: false, pending: 0 };
+    }
+    return { boat: b, tile, rail: g.harpoon };
+  }
+
+  /** A harpoon came down on a surfaced Ness: the line holds it (it can't dive) and reels it toward the gun. */
+  private harpoonNess(s: Shell, n: Ness): void {
+    const boat = this.boats.find((b) => b.id === s.ownerId);
+    const g = boat?.guns.find((x) => x.slot === s.slot);
+    if (!boat || !g) return;
+    const ref = this.harpoonRef(boat, g);
+    if (n.tether) this.nesses.release(this, n, 'cut');
+    const k = nessKind(this.tuning, n.kind);
+    const hp = Math.max(0.1, k.tetherHp) * Math.max(0.1, itemParam(this.tuning, g.item, 'hp') || 1);
+    const anchor = toWorld(ref.tile.center, boat.motion, boat.motion.heading);
+    n.tether = { boat, tile: ref.tile.index, hp, maxHp: hp, limit: Math.max(k.tetherClose, dist({ x: n.x, y: n.y }, anchor)), ref };
+    ref.rail.out = true;
+    this.events.push({ type: 'tether', nessId: n.id, boatId: boat.id });
+  }
+
+  /** A harpoon struck a hull: a line from the gun, like a hook that landed. */
+  private harpoonShip(s: Shell, target: Boat): void {
+    const boat = this.boats.find((b) => b.id === s.ownerId);
+    const g = boat?.guns.find((x) => x.slot === s.slot);
+    if (!boat || !g || target === boat) return;
+    const ref = this.harpoonRef(boat, g);
+    if (this.lines.between(boat, target).some((l) => l.ref.rail === ref.rail)) return;
+    const line = this.lines.land(ref, target, s.to, this.tuning, this.time);
+    this.stats[boat.side].hooksLanded++;
+    this.events.push({ type: 'hookLanded', boatId: boat.id, targetId: target.id, line: line.id, from: toWorld(ref.tile.center, boat.motion, boat.motion.heading), to: s.to });
+  }
+
   /**
    * A Ness breaks the surface at `at`: every part of every hull under the ring takes massive damage
    * (a whole part's HP, and a hole), the tiles and Lees under it too. Steering off the ring is the dodge.
@@ -1864,6 +1939,90 @@ export class World {
       this.hurtOnTiles(boat, under, k.emergeLeeDamage, 'ness');
       for (const ti of under.keys()) this.damageTile(boat, ti, k.emergeTileDamage);
     }
+  }
+
+  /** Is someone working a Hydrophone on this boat (shadows show further out, a Ness gives more warning)? */
+  hydrophoneManned(b: Boat = this.player): boolean {
+    return b.grid.tiles.some((t) => t.station === 'lookout' && t.fixture?.item === 'hydrophone' && !t.fixture.destroyed && !!workerAt(b, t.index));
+  }
+
+  /** Can you see this Ness? One that is rising or up, always; a shadow only within sight of your hull (further with a Hydrophone). */
+  nessVisible(n: Ness, b: Boat = this.player): boolean {
+    if (n.state !== 'submerged') return true;
+    const C = this.tuning.ness.common;
+    const sight = Math.max(0, C.sight) * (this.hydrophoneManned(b) ? Math.max(1, C.hydroSight) : 1);
+    return distanceToHull(b, { x: n.x, y: n.y }) <= sight;
+  }
+
+  /** Every part of every Ness that is under the water (a depth charge or a mortar shell can reach it). */
+  underTargets(): { ness: Ness; part: NessPart }[] {
+    const out: { ness: Ness; part: NessPart }[] = [];
+    for (const n of this.nesses.list) {
+      if (n.state !== 'submerged' && n.state !== 'emerging') continue;
+      for (const part of n.parts) if (part.hp > 0) out.push({ ness: n, part });
+    }
+    return out;
+  }
+
+  /** Drop a depth charge from this rail: it sinks where it was dropped, then blows. */
+  dropCharge(ref: RailRef): void {
+    const t = this.tuning;
+    const r = ref.rail;
+    const at = railPoint(ref.boat, ref.tile, r);
+    const c: Charge = {
+      id: this.nextChargeId++,
+      pos: at,
+      fuse: Math.max(0.1, itemParam(t, r.item, 'delay')),
+      radius: Math.max(1, itemParam(t, r.item, 'radius')),
+      damage: Math.max(0, itemParam(t, r.item, 'damage')),
+      side: ref.boat.side,
+    };
+    r.readyAt = this.time + Math.max(0, itemParam(t, r.item, 'cooldown'));
+    this.charges.push(c);
+    this.events.push({ type: 'chargeDrop', boatId: ref.boat.id, pos: at, fuse: c.fuse, radius: c.radius });
+  }
+
+  /** Charges sink, then blow: every Ness part under the water within the radius takes damage (half at the edge); a rising Ness hit on the head is driven back down. */
+  private stepCharges(dt: number): void {
+    for (let i = this.charges.length - 1; i >= 0; i--) {
+      const c = this.charges[i];
+      c.fuse -= dt;
+      if (c.fuse > 0) continue;
+      this.charges.splice(i, 1);
+      let hits = 0;
+      for (const { ness: n, part } of this.underTargets()) {
+        const d = dist(part.pos, c.pos);
+        if (d > c.radius + part.radius) continue;
+        const dealt = this.nesses.hurt(this, n, part, c.damage * (1 - 0.5 * Math.min(1, Math.max(0, d - part.radius) / c.radius))).dealt;
+        if (dealt > 0) hits++;
+        this.stats[c.side].damageDealt += dealt;
+        if (part.role === 'head' && n.state === 'emerging') abortRise(this, n, nessKind(this.tuning, n.kind).submergedMax);
+      }
+      this.events.push({ type: 'chargeBlast', pos: c.pos, radius: c.radius, hits });
+    }
+  }
+
+  /**
+   * The 🔫 Lees drop depth charges by themselves at a shadow that will be within the blast when it goes off:
+   * the shadow's head is led by the fuse time. Only while you can see it.
+   */
+  private autoCharge(): void {
+    if (this.time < this.nextAutoCharge) return;
+    this.nextAutoCharge = this.time + 0.3;
+    const me = this.player;
+    if (this.isSinking(me) || !me.crew.lees.some((l) => l.alive && l.job === 'fire')) return;
+    const marks = this.underTargets().filter((x) => x.part.role === 'head' && this.nessVisible(x.ness));
+    if (!marks.length) return;
+    this.quietTaps = true;
+    for (const ref of railsOf(me, 'charge')) {
+      if (ref.rail.readyAt > this.time || this.orders.find(me, 'drop', { rail: ref })) continue;
+      const fuse = Math.max(0.1, itemParam(this.tuning, ref.rail.item, 'delay'));
+      const radius = Math.max(1, itemParam(this.tuning, ref.rail.item, 'radius'));
+      const from = railPoint(me, ref.tile, ref.rail);
+      const hit = marks.some(({ ness: n, part }) => dist(from, { x: part.pos.x + n.vx * fuse, y: part.pos.y + n.vy * fuse }) <= radius * 0.7);
+      if (hit && this.tapRail(ref) === null) break;
+    }
+    this.quietTaps = false;
   }
 
   /** A danger zone lands. */
@@ -1990,8 +2149,22 @@ export class World {
         const part = nessPartAt(n, s.to, s.impactRadius);
         if (!part || part.hp <= 0) continue;
         this.hitNess(s, n, part);
+        if (s.mode === 'harpoon') this.harpoonNess(s, n);
         this.events.push({ type: 'splash', pos: s.to, ownerSide: s.ownerSide });
         return;
+      }
+      // A mortar shell comes down steeply and bursts: it hurts what is under the water near where it lands.
+      if (s.mode === 'lob') {
+        const C = this.tuning.ness.common;
+        const reach = s.impactRadius + 2 + s.splash;
+        let hit = false;
+        for (const { ness: n, part } of this.underTargets()) {
+          if (dist(part.pos, s.to) > reach + part.radius) continue;
+          const dealt = this.nesses.hurt(this, n, part, s.damage * Math.max(0, C.mortarUnderwater)).dealt;
+          this.stats[s.ownerSide].damageDealt += dealt;
+          if (dealt > 0) hit = true;
+        }
+        if (hit) this.stats[s.ownerSide].shellsHit++;
       }
     }
     let hitBoat: Boat | null = null;
@@ -2009,6 +2182,7 @@ export class World {
     }
 
     if (!hitBoat || !hitPart) {
+      if (s.mode === 'harpoon') this.harpoonMiss(s);
       this.events.push({ type: 'splash', pos: s.to, ownerSide: s.ownerSide });
       if (s.ownerSide !== 'player' && !this.isSinking(this.player) && s.mode !== 'burst') {
         const near = this.tuning.global.dodgeRadiusHulls * this.player.layout.length;
@@ -2053,6 +2227,17 @@ export class World {
       this.events.push({ type: 'offline', boatId: hitBoat.id, part: hitPart.index });
     }
     if (!wasWrecked && isWrecked(hitPart)) this.events.push({ type: 'wrecked', boatId: hitBoat.id, part: hitPart.index });
+    if (s.mode === 'harpoon') this.harpoonShip(s, hitBoat);
+  }
+
+  /** A harpoon fell in the water: the gun can try again soon. */
+  private harpoonMiss(s: Shell): void {
+    const boat = this.boats.find((b) => b.id === s.ownerId);
+    const g = boat?.guns.find((x) => x.slot === s.slot);
+    if (!boat || !g) return;
+    const r = this.harpoonRef(boat, g).rail;
+    r.out = false;
+    r.readyAt = Math.max(r.readyAt, this.time + Math.max(0, this.tuning.lines.hookCooldown) * 0.25);
   }
 
   // ------------------------------------------------------------ tiles

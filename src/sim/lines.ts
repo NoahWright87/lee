@@ -235,6 +235,17 @@ export class LineSystem {
     return f;
   }
 
+  /** A harpoon (or anything shot) that struck `target` holds on: a line from this gun, like a hook that landed. */
+  land(ref: RailRef, target: Boat, at: Vec, t: Tuning, time: number): Line {
+    const mult = Math.max(0.1, itemParam(t, ref.rail.item, 'hp') || 1);
+    const hp = Math.max(0.1, t.lines.lineHp) * mult;
+    const line: Line = { id: this.nextId++, owner: ref.boat, target, ref, attach: toLocal(nearestHullPoint(target, at), target.motion, target.motion.heading), hp, maxHp: hp, since: time, limit: 0 };
+    line.limit = Math.max(t.lines.closeGap, hullGap(ref.boat, target).gap);
+    ref.rail.out = true;
+    this.lines.push(line);
+    return line;
+  }
+
   /** Cut a line (its hook can be thrown again after the cooldown). */
   cut(line: Line, t: Tuning, time: number, by: 'hacked' | 'broke' | 'sank' = 'hacked'): LineEvent {
     const i = this.lines.indexOf(line);

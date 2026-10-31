@@ -23,10 +23,10 @@ import { headOf } from './ness';
 import type { DangerZone } from './zones';
 import type { World } from './world';
 
-export type OrderKind = 'throw' | 'lower' | 'push' | 'cutLine' | 'wreckPlank' | 'cutRope' | 'bail' | 'repair' | 'man' | 'flee' | 'stab';
+export type OrderKind = 'throw' | 'lower' | 'push' | 'cutLine' | 'wreckPlank' | 'cutRope' | 'bail' | 'repair' | 'man' | 'flee' | 'stab' | 'drop';
 
-/** Who answers: a cutter is ⚔️ or 🛠️ (whichever is closer and free), a fixer is 🛠️, anyone else: whoever is nearest. */
-export type OrderRole = 'cutter' | 'fixer' | 'nearest';
+/** Who answers: a cutter is ⚔️ or 🛠️ (whichever is closer and free), a fixer is 🛠️, a gunner is 🔫, anyone else: whoever is nearest. */
+export type OrderRole = 'cutter' | 'fixer' | 'gunner' | 'nearest';
 
 export interface DeckOrder {
   id: number;
@@ -75,10 +75,11 @@ export const ORDER_LABEL: Record<OrderKind, string> = {
   man: 'Man this station',
   flee: 'Step out of the way',
   stab: 'Stab the head',
+  drop: 'Drop a depth charge',
 };
 
 /** Jobs that answer an order of each role straight away; anyone else only after a short wait (you're never stuck). */
-const ROLE_JOBS: Record<OrderRole, Job[] | null> = { cutter: ['board', 'fix'], fixer: ['fix'], nearest: null };
+const ROLE_JOBS: Record<OrderRole, Job[] | null> = { cutter: ['board', 'fix'], fixer: ['fix'], gunner: ['fire'], nearest: null };
 
 export class OrderSystem {
   readonly list: DeckOrder[] = [];
@@ -176,6 +177,7 @@ export class OrderSystem {
       case 'lower':
         return !o.rail!.rail.destroyed && !o.rail!.rail.lowered && w.boats.some((b) => b !== o.boat && b.side !== o.boat.side && !w.isSinking(b) && railGap(o.boat, o.rail!.tile, b, o.rail!.rail) <= t.lines.plankReach);
       case 'push':
+      case 'drop':
         return !o.rail!.rail.destroyed && o.rail!.rail.readyAt <= w.time;
       case 'cutLine':
         return w.lines.lines.includes(o.line!);
@@ -229,6 +231,7 @@ export class OrderSystem {
       case 'throw':
       case 'lower':
       case 'push':
+      case 'drop':
         return o.rail!.tile.index;
       case 'cutLine':
         return o.line!.owner === boat ? o.line!.ref.tile.index : nearest(w.lines.attachWorld(o.line!));
@@ -386,7 +389,8 @@ export class OrderSystem {
         }
         case 'throw':
         case 'lower':
-        case 'push': {
+        case 'push':
+        case 'drop': {
           o.left -= dt;
           o.progress = 1 - Math.max(0, o.left) / Math.max(1e-6, t.lines.workTime);
           if (o.left <= 0) {
@@ -407,6 +411,7 @@ function workTime(w: World, kind: OrderKind): number {
     case 'throw':
     case 'lower':
     case 'push':
+    case 'drop':
       return w.tuning.lines.workTime;
     default:
       return 0;

@@ -9,7 +9,7 @@ import { ITEMS, type GunMode } from '../config/items';
 import { SHIPS, type ShipDef, type ShipStats } from '../config/ships';
 import type { Side, Tuning } from '../config/tuning';
 import type { CrewState } from './crew';
-import { buildGrid, type Grid } from './grid';
+import { buildGrid, type Grid, type RailState } from './grid';
 import { attachmentMods, cleanBuild, computeMods, furnishGrid, gunFacing, muzzleLocal, slotById, type BoatBuild, type BoatMods } from './loadout';
 import { clamp, DEG, distToPolygon, polygonCentroid, toLocal, type Vec } from './math';
 import type { MotionParams, MotionState } from './steering';
@@ -64,6 +64,8 @@ export interface GunState {
   aim: AimPlan | null;
   /** World time before which this gun holds fire (an ally is near where the shot would land). */
   holdUntil: number;
+  /** Harpoon guns: the line's end on this gun (a stand-in rail: out while a harpoon is in flight or its line holds, then cooling down). */
+  harpoon?: RailState;
 }
 
 /** A gunner's aim for one shot: which boat, which part, where on it, and how well it leads. */

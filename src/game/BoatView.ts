@@ -308,6 +308,18 @@ export class BoatView {
         g.lineStyle(0.12, 0x6b4a22, alpha);
         g.lineBetween(W({ x: m.x, y: m.y }).x, W({ x: m.x, y: m.y }).y, W({ x: m.x + nx * reach, y: m.y + ny * reach }).x, W({ x: m.x + nx * reach, y: m.y + ny * reach }).y);
       }
+    } else if (kind === 'charge') {
+      if (destroyed) return;
+      const m = { x: (p0.x + p1.x) / 2, y: (p0.y + p1.y) / 2 };
+      const ready = rail.readyAt <= time;
+      const c = W({ x: m.x + nx * 0.4, y: m.y + ny * 0.4 });
+      // A barrel on the rail, with a band: dark and dim while it cools down.
+      g.fillStyle(ready ? 0x3b4650 : 0x2a3036, alpha);
+      g.fillCircle(c.x, c.y, 0.62);
+      g.lineStyle(0.16, ready ? 0xc9ced3 : 0x6a6e72, alpha);
+      g.strokeCircle(c.x, c.y, 0.62);
+      g.lineStyle(0.14, ready ? 0xffd24a : 0x6a6e72, alpha);
+      g.strokeCircle(c.x, c.y, 0.32);
     } else if (kind === 'rope' || kind === 'hook' || kind === 'pole') {
       if (destroyed) return;
       const m = { x: (p0.x + p1.x) / 2, y: (p0.y + p1.y) / 2 };

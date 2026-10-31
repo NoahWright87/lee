@@ -36,7 +36,7 @@ import { TelegraphSystem } from '../sim/telegraph';
 import type { World, WorldEvent } from '../sim/world';
 import { deckTargets, pickTarget } from '../sim/targets';
 import { BoatView, lerpColor } from './BoatView';
-import { drawLines, drawOrderMarkers, drawTargets, drawZones } from './QuartersView';
+import { drawCharges, drawLines, drawOrderMarkers, drawTargets, drawZones } from './QuartersView';
 import { drawEmergeRing, drawNessBodies, drawNessShadows } from './NessView';
 import type { Controller } from './Controller';
 import { CrewView } from './CrewView';
@@ -652,6 +652,20 @@ export class BattleScene extends Phaser.Scene {
           if (e.kind === 'smash') this.cameras.main.shake(220, 0.012);
           break;
         }
+        case 'chargeDrop':
+          this.spray.explode(10, e.pos.x, e.pos.y);
+          this.rings.push({ x: e.pos.x, y: e.pos.y, t: this.clock, dur: 0.5, r: 3, color: 0xe0f4ff });
+          break;
+        case 'chargeBlast':
+          // A column of water, a shock ring out to the blast radius.
+          this.spray.explode(60, e.pos.x, e.pos.y);
+          this.rings.push({ x: e.pos.x, y: e.pos.y, t: this.clock, dur: 0.9, r: e.radius, color: 0xbfe6ff });
+          this.rings.push({ x: e.pos.x, y: e.pos.y, t: this.clock, dur: 0.45, r: e.radius * 0.5, color: 0xffffff });
+          this.cameras.main.shake(260, 0.01);
+          break;
+        case 'tether':
+          this.rings.push({ x: this.ctl.world.nesses.list.find((x) => x.id === e.nessId)?.x ?? 0, y: this.ctl.world.nesses.list.find((x) => x.id === e.nessId)?.y ?? 0, t: this.clock, dur: 0.5, r: 5, color: COLOR.link });
+          break;
         case 'nessDive':
           this.spray.explode(20, e.pos.x, e.pos.y);
           this.rings.push({ x: e.pos.x, y: e.pos.y, t: this.clock, dur: 0.8, r: 8, color: 0xe0f4ff });
@@ -738,7 +752,7 @@ export class BattleScene extends Phaser.Scene {
         if (this.inView.has(e.id)) shown.push(e.motion);
       }
       for (const n of world.nesses.list) {
-        if (setup || n.state === 'dead') {
+        if (setup || n.state === 'dead' || !world.nessVisible(n)) {
           this.inView.delete(n.id);
           continue;
         }
@@ -904,6 +918,7 @@ export class BattleScene extends Phaser.Scene {
     this.drawRings(g, px);
     this.drawTracers(g, px);
     drawLines(g, world, px);
+    drawCharges(g, world, px, this.clock);
     drawZones(g, world, px, this.clock);
     if (this.ctl.debug) this.drawDebug(g, world, px);
     if (world.phase === 'ready') this.drawRangeRing(g, world, px);
@@ -1461,6 +1476,7 @@ export class BattleScene extends Phaser.Scene {
     const decks = this.stripDecks(world);
     if (fight) {
       drawLines(g, world, px);
+      drawCharges(g, world, px, this.clock);
       drawZones(g, world, px, this.clock);
       drawOrderMarkers(g, world, px, this.clock);
       if (this.ctl.debug) drawTargets(g, this.deckTargetsNow(), px);

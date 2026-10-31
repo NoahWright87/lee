@@ -6,7 +6,7 @@
 import Phaser from 'phaser';
 import type { DeckOrder } from '../sim/orders';
 import { railPoint } from '../sim/lines';
-import { headOf } from '../sim/ness';
+import { headOf, tetherAnchor } from '../sim/ness';
 import { clamp, dist, lerp, toWorld, type Vec } from '../sim/math';
 import type { DeckTarget } from '../sim/targets';
 import type { World } from '../sim/world';
@@ -59,6 +59,49 @@ export function drawLines(g: G, world: World, px: (n: number) => number): void {
   }
 }
 
+/** Depth charges sinking (a dark barrel under the surface, a fuse ring that closes on the blast radius), and harpoon lines on Nesses. */
+export function drawCharges(g: G, world: World, px: (n: number) => number, clock: number): void {
+  for (const c of world.charges) {
+    const fuse = Math.max(0.1, c.fuse);
+    const total = Math.max(0.1, world.tuning.items.depthCharge?.delay ?? 2);
+    const k = clamp(1 - fuse / total, 0, 1);
+    // Where it will go off: a faint ring.
+    g.lineStyle(px(1.3), 0xbfe6ff, 0.28 + 0.3 * k);
+    g.strokeCircle(c.pos.x, c.pos.y, c.radius);
+    // The barrel sinking: it shrinks and darkens.
+    const r = Math.max(px(3), 1.1) * (1 - 0.35 * k);
+    g.fillStyle(0x10202e, 0.9 - 0.3 * k);
+    g.fillCircle(c.pos.x, c.pos.y, r);
+    g.lineStyle(px(1.2), 0x9fb6c8, 0.7);
+    g.strokeCircle(c.pos.x, c.pos.y, r);
+    if (Math.sin(clock * 24) > 0) {
+      g.fillStyle(0xffd24a, 0.9);
+      g.fillCircle(c.pos.x + r * 0.6, c.pos.y - r * 0.6, px(1.4));
+    }
+  }
+  for (const n of world.nesses.list) {
+    const t = n.tether;
+    if (!t) continue;
+    const a = tetherAnchor(t);
+    const b = headOf(n).pos;
+    const len = dist(a, b);
+    const slack = clamp((len - t.limit) * -0.1 + 0.3, 0, 1);
+    const mid = { x: (a.x + b.x) / 2 + (b.y - a.y) * 0.07 * slack, y: (a.y + b.y) / 2 - (b.x - a.x) * 0.07 * slack };
+    g.lineStyle(px(3), 0x000000, 0.35);
+    strokeCurve(g, a, mid, b);
+    g.lineStyle(px(2.2), ROPE, 1);
+    strokeCurve(g, a, mid, b);
+    const worn = 1 - t.hp / Math.max(1e-6, t.maxHp);
+    if (worn > 0.02) {
+      g.lineStyle(px(1), 0xffffff, 0.25 + 0.5 * worn);
+      strokeCurve(g, a, mid, b);
+    }
+    // The barb in its head.
+    g.fillStyle(0xdfe3e6, 1);
+    g.fillCircle(b.x, b.y, px(3));
+  }
+}
+
 function strokeCurve(g: G, a: Vec, m: Vec, b: Vec): void {
   const n = 12;
   let prev = { x: a.x, y: a.y };
@@ -78,6 +121,7 @@ function orderPos(world: World, o: DeckOrder): Vec | null {
     case 'throw':
     case 'lower':
     case 'push':
+    case 'drop':
     case 'wreckPlank':
       return o.rail ? railPoint(o.rail.boat, o.rail.tile, o.rail.rail) : null;
     case 'cutLine': {

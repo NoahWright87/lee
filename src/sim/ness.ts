@@ -11,7 +11,9 @@ import { NESS, type NessAttack, type NessDef, type NessKindTuning } from '../con
 import type { Tuning } from '../config/tuning';
 import { distanceToHull, keelSegment, type Boat } from './boat';
 import { sideFacing, type ContactSide } from './contact';
-import { clamp, closestOnSegment, dist, wrapAngle, type Rng, type Vec } from './math';
+import type { RailRef } from './lines';
+import type { Telegraph } from './telegraph';
+import { clamp, closestOnSegment, dist, toWorld, wrapAngle, type Rng, type Vec } from './math';
 import { blockTiles, circleTiles, loneTile, pushAway, ZoneSystem, type DangerZone } from './zones';
 import type { World } from './world';
 
@@ -57,8 +59,9 @@ export interface Ness {
   parts: NessPart[];
   /** How long it means to stay in this state (submerged, surfaced), s. */
   hold: number;
-  /** Whether the warning ring is up yet (a Quiet Ness holds it back). */
+  /** Whether the warning ring is up yet (a Quiet Ness holds it back), and the ring itself. */
   ringShown: boolean;
+  ring: Telegraph | null;
   /** Where it is rising and from where it came (emerging). */
   emergeAt: Vec | null;
   emergeFrom: Vec | null;
@@ -77,6 +80,23 @@ export interface Ness {
   attackIdx: number;
   /** After a smash: its head rests on your deck until this world time (stunned), or null. */
   stunUntil: number | null;
+  /** A harpoon line holding it to a boat (it can't dive while it holds), or null. */
+  tether: Tether | null;
+  /** Seconds of warning this rise gives (longer with a Hydrophone). */
+  riseTime: number;
+}
+
+/** A harpoon line from a gun tile to a Ness. */
+export interface Tether {
+  boat: Boat;
+  /** The tile of the harpoon gun the line is fixed to. */
+  tile: number;
+  hp: number;
+  maxHp: number;
+  /** The widest the Ness may be from the line's end now, m: it shrinks as the line reels in. */
+  limit: number;
+  /** The gun's line, so its harpoon is free again when this is cut. */
+  ref: RailRef;
 }
 
 const TRAIL = 1;
@@ -116,6 +136,7 @@ export function createNess(id: number, spec: NessSpec, t: Tuning, pos: Vec, head
     parts,
     hold: rng.range(k.submergedMin, k.submergedMax),
     ringShown: false,
+    ring: null,
     emergeAt: null,
     emergeFrom: null,
     hurtSince: 0,
@@ -126,6 +147,8 @@ export function createNess(id: number, spec: NessSpec, t: Tuning, pos: Vec, head
     rear: 0,
     attackIdx: 0,
     stunUntil: null,
+    tether: null,
+    riseTime: k.warn,
   };
   // The body starts stretched straight out behind the head.
   const length = bodyLength(n);
@@ -245,8 +268,42 @@ export class NessSystem {
           this.surfaced(w, n, k, dt);
           break;
       }
+      this.holdOn(w, n, k, dt);
       layOut(n);
     }
+  }
+
+  /** A harpoon holds a Ness: the line reels it toward the boat (it can't get further away than the line allows), and it strains against it. */
+  private holdOn(w: World, n: Ness, k: NessKindTuning, dt: number): void {
+    const t = n.tether;
+    if (!t) return;
+    const anchor = tetherAnchor(t);
+    if (t.boat.sinkingSince !== null || t.ref.tile.blown || n.state === 'dead' || t.hp <= 0) {
+      this.release(w, n, 'broke');
+      return;
+    }
+    const reach = Math.max(0, k.tetherClose);
+    t.limit = Math.max(reach, t.limit - Math.max(0, k.tetherReel) * dt);
+    const d = dist({ x: n.x, y: n.y }, anchor);
+    if (d > t.limit) {
+      // The line is taut: the head is drawn back along it.
+      const f = (d - t.limit) / d;
+      n.x += (anchor.x - n.x) * f;
+      n.y += (anchor.y - n.y) * f;
+      trail(n);
+    }
+    // It wants to dive (its time is up) or to get away: the line takes the strain.
+    if (n.state === 'surfaced' && (n.stateT >= n.hold || n.hurtSince >= headOf(n).maxHp * Math.max(0, k.diveHurt))) t.hp -= Math.max(0, k.tetherStrain) * dt;
+  }
+
+  /** The line is gone (cut or broken): the harpoon gun is free to fire again. */
+  release(w: World, n: Ness, by: 'cut' | 'broke'): void {
+    const t = n.tether;
+    if (!t) return;
+    n.tether = null;
+    t.ref.rail.out = false;
+    t.ref.rail.readyAt = w.time + Math.max(0, w.tuning.lines.hookCooldown);
+    w.events.push({ type: 'tetherLost', nessId: n.id, by });
   }
 
   // ------------------------------------------------------------ states
@@ -270,13 +327,16 @@ export class NessSystem {
   private beginEmerge(w: World, n: Ness, k: NessKindTuning): void {
     const m = w.player.motion;
     const jitter = w.rng.inDisk(k.ringRadius * 0.35);
-    const at = { x: m.x + m.vx * k.warn + jitter.x, y: m.y + m.vy * k.warn + jitter.y };
+    const lead = k.warn + (w.hydrophoneManned() ? Math.max(0, k.hydroExtra) : 0);
+    const at = { x: m.x + m.vx * lead + jitter.x, y: m.y + m.vy * lead + jitter.y };
     n.state = 'emerging';
     n.stateT = 0;
     n.since = w.time;
     n.emergeAt = at;
     n.emergeFrom = { x: n.x, y: n.y };
     n.ringShown = false;
+    // A manned Hydrophone hears it coming: more warning.
+    n.riseTime = k.warn + (w.hydrophoneManned() ? Math.max(0, k.hydroExtra) : 0);
     this.showRing(w, n, k);
   }
 
@@ -286,10 +346,10 @@ export class NessSystem {
    */
   private showRing(w: World, n: Ness, k: NessKindTuning): void {
     if (n.ringShown || !n.emergeAt) return;
-    const left = Math.max(0.05, k.warn - n.stateT);
+    const left = Math.max(0.05, n.riseTime - n.stateT);
     if (k.stealth > 0 && left > k.quietWarn && !w.lookoutManned()) return;
     n.ringShown = true;
-    w.telegraphs.add('emerge', n.emergeAt, left, w.tuning.ness.common.ringLinger, k.ringRadius);
+    n.ring = w.telegraphs.add('emerge', n.emergeAt, left, w.tuning.ness.common.ringLinger, k.ringRadius);
     w.events.push({ type: 'nessWarn', nessId: n.id, pos: { ...n.emergeAt }, radius: k.ringRadius, warn: left });
   }
 
@@ -297,7 +357,7 @@ export class NessSystem {
   private rise(w: World, n: Ness, k: NessKindTuning, dt: number): void {
     const at = n.emergeAt!;
     const from = n.emergeFrom!;
-    const f = clamp(n.stateT / Math.max(0.05, k.warn), 0, 1);
+    const f = clamp(n.stateT / Math.max(0.05, n.riseTime), 0, 1);
     const ease = f * f * (3 - 2 * f);
     const nx = from.x + (at.x - from.x) * ease;
     const ny = from.y + (at.y - from.y) * ease;
@@ -310,7 +370,7 @@ export class NessSystem {
     n.y = ny;
     trail(n);
     this.showRing(w, n, k);
-    if (n.stateT < k.warn) return;
+    if (n.stateT < n.riseTime) return;
     n.vx = 0;
     n.vy = 0;
     n.state = 'surfaced';
@@ -431,6 +491,8 @@ export class NessSystem {
   }
 
   private dive(w: World, n: Ness, k: NessKindTuning): void {
+    // A harpoon holds it up until the line gives.
+    if (n.tether && n.tether.hp > 0) return;
     n.state = 'submerged';
     n.stateT = 0;
     n.since = w.time;
@@ -509,4 +571,26 @@ function standoffPoint(me: Boat, from: Vec, standoff: number, circle: number): V
   if (d > standoff + 3) return { x: c.x, y: c.y };
   const out = r + (standoff - d);
   return { x: c.x + Math.cos(a + circle * 0.25) * out, y: c.y + Math.sin(a + circle * 0.25) * out };
+}
+
+/** Where a harpoon line is fixed on its boat, world. */
+export function tetherAnchor(t: Tether): { x: number; y: number } {
+  const tile = t.boat.grid.tiles[t.tile];
+  return toWorld(tile.center, t.boat.motion, t.boat.motion.heading);
+}
+
+/** An emerging Ness is driven back down (a depth charge went off under its head): its ring goes, and it lurks a while. */
+export function abortRise(w: World, n: Ness, hold: number): void {
+  if (n.state !== 'emerging') return;
+  n.state = 'submerged';
+  n.stateT = 0;
+  n.since = w.time;
+  n.hold = hold;
+  n.emergeAt = null;
+  n.emergeFrom = null;
+  n.ringShown = false;
+  const at = n.ring ? w.telegraphs.list.indexOf(n.ring) : -1;
+  if (at >= 0) w.telegraphs.list.splice(at, 1);
+  n.ring = null;
+  w.events.push({ type: 'nessDive', nessId: n.id, pos: { x: n.x, y: n.y } });
 }

@@ -43,9 +43,9 @@ export interface EffectDef {
 }
 
 export type StationKind = 'gun' | 'oars' | 'sails' | 'lookout' | 'pump' | 'powder';
-export type RailKind = 'spikes' | 'fence' | 'planks' | 'rope' | 'hook' | 'pole';
+export type RailKind = 'spikes' | 'fence' | 'planks' | 'rope' | 'hook' | 'pole' | 'charge';
 /** How a gun's shot travels and is telegraphed. */
-export type GunMode = 'shell' | 'lob' | 'stream' | 'burst';
+export type GunMode = 'shell' | 'lob' | 'stream' | 'burst' | 'harpoon';
 
 export interface ItemDef {
   id: string;
@@ -166,6 +166,21 @@ const list: ItemDef[] = [
     rewardWeight: 1.5,
   },
   {
+    id: 'harpoon',
+    name: 'Harpoon Gun',
+    icon: '🔱',
+    description: 'A barbed harpoon on a line. What it hits, it holds: a ship is reeled toward you, a Ness is kept up and dragged alongside.',
+    tradeoff: 'Barely hurts. One harpoon out at a time; the line can be cut, and a Ness strains against it.',
+    category: 'gun',
+    fits: ['edge'],
+    tags: ['board'],
+    // pull: × the hook line's pull; hp: × a line's HP (a harpoon line is stronger than a hook's).
+    params: { ...gunParams({ arc: 50, damage: 0.3, crewDamage: 0.2, reload: 1.6, shellSpeed: 1.2, range: 0.85, minRange: 0.5, spread: 0.8 }), pull: 2, hp: 1.6 },
+    effects: [],
+    gun: { mode: 'harpoon', targets: 'hull' },
+    rewardWeight: 1,
+  },
+  {
     id: 'gatling',
     name: 'Gatling',
     icon: '🌪️',
@@ -283,6 +298,22 @@ const list: ItemDef[] = [
     rewardWeight: 1.2,
   },
 
+  {
+    id: 'hydrophone',
+    name: 'Hydrophone',
+    icon: '🎧',
+    description: 'While manned: shadows show up further out, and a Ness gives you longer warning before it rises.',
+    tradeoff: 'No help against ships. Its Lee does nothing else.',
+    category: 'station',
+    fits: ['interior'],
+    tags: ['skirmish'],
+    // Works as a lookout for noticing Nesses (a Quiet Ness gives its full warning), with no gunnery bonus.
+    params: { accuracy: 0, exposure: 1, hydro: 1 },
+    effects: [],
+    station: 'lookout',
+    rewardWeight: 1,
+  },
+
   // ------------------------------------------------------------ rail items
   {
     id: 'spikes',
@@ -354,6 +385,21 @@ const list: ItemDef[] = [
     effects: [],
     rail: 'rope',
     rewardWeight: 1.3,
+  },
+  {
+    id: 'depthCharge',
+    name: 'Depth Charge',
+    icon: '🛢️',
+    description: 'Tap to drop one over the side. It sinks, then explodes: the answer to a shadow, and it interrupts a Ness that is about to rise.',
+    tradeoff: 'Only hurts what is under the water. It stays where it was dropped: lead the shadow. Cooldown after each.',
+    category: 'rail',
+    fits: ['rail'],
+    tags: ['barrage'],
+    // delay: seconds to sink and blow; radius: m; damage: to every Ness part under the water within it (half at the edge); cooldown: s.
+    params: { delay: 2, radius: 14, damage: 24, cooldown: 7 },
+    effects: [],
+    rail: 'charge',
+    rewardWeight: 1.2,
   },
   {
     id: 'poles',

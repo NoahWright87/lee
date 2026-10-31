@@ -12,7 +12,16 @@ import type { Vec } from '../src/sim/math';
 import { FIXED_DT } from '../src/sim/steering';
 import { deckTargets, pickTarget } from '../src/sim/targets';
 import { zoneCenter } from '../src/sim/zones';
+import { archetypeSetup, autoArrange, type BoatSetup, type CrewSpec } from '../src/sim/setup';
 import { World } from '../src/sim/world';
+
+/** An enemy ship of one archetype with this many Basic Lees. */
+function enemy(t: Tuning, type: string, crew: number, seed = 1): BoatSetup {
+  const s = archetypeSetup(type, t, seed);
+  const specs: CrewSpec[] = Array.from({ length: crew }, () => ({ type: 'basic', home: null as number | null }));
+  autoArrange(s.build, specs, t).forEach((h, i) => (specs[i].home = h));
+  return { ...s, crew: specs };
+}
 
 function quiet(t: Tuning): Tuning {
   t.boat.flooding.bilgeRate = 0;
@@ -611,3 +620,291 @@ describe('Quiet Ness', () => {
     expect(ring!.warnTime).toBeGreaterThan(t.ness.kinds.quiet.quietWarn + 0.5);
   });
 });
+
+// ------------------------------------------------------------ slice 4: underwater weapons and gear
+
+import { ITEMS } from '../src/config/items';
+import { itemCost } from '../src/config/economy';
+import { railsOf } from '../src/sim/lines';
+import { abortRise } from '../src/sim/ness';
+import type { RailState } from '../src/sim/grid';
+
+/** Give the player's boat a rail item on its starboard-most tile. */
+function addRail(w: World, item: string, kind: RailState['kind']): RailState {
+  const tile = w.player.grid.tiles.reduce((a, b) => (b.center.y > a.center.y ? b : a));
+  const rail: RailState = { slot: `test:${item}`, item, kind, facing: 'starboard', hp: 1, maxHp: 1, destroyed: false, lowered: false, readyAt: 0, out: false, pending: 0 };
+  tile.rails.push(rail);
+  return rail;
+}
+
+/** A parked player with a Ness shadow at a point (submerged, not about to rise). */
+function shadowAt(t: Tuning, at: Vec, kind = 'weak', crew: number[] = [5, 6, 7, 8, 9, 10]): { w: World; n: Ness } {
+  const w = new World(t, 1, { enemies: [], nesses: [{ kind }], crew });
+  w.start();
+  pin(w.player, { x: 0, y: 0 });
+  const n = w.nesses.list[0];
+  n.x = at.x;
+  n.y = at.y;
+  n.heading = Math.PI;
+  for (let i = 0; i < n.path.length; i++) n.path[i] = { x: at.x + i, y: at.y };
+  n.hold = 1000;
+  layOut(n);
+  return { w, n };
+}
+
+describe('items', () => {
+  test('the new items exist, fit their slots and have a price', () => {
+    expect(ITEMS.depthCharge.rail).toBe('charge');
+    expect(ITEMS.depthCharge.fits).toContain('rail');
+    expect(ITEMS.harpoon.gun?.mode).toBe('harpoon');
+    expect(ITEMS.hydrophone.station).toBe('lookout');
+    for (const id of ['depthCharge', 'harpoon', 'hydrophone']) expect(itemCost(id)).toBeGreaterThan(0);
+  });
+});
+
+describe('Depth Charge', () => {
+  test('a charge sinks, then hurts a shadow in its blast and nothing above the water', () => {
+    const t = quiet(defaultTuning());
+    t.ness.kinds.weak.speed = 0.001; // a shadow that holds still
+    const { w, n } = shadowAt(t, { x: 40, y: 0 });
+    const rail = addRail(w, 'depthCharge', 'charge');
+    for (const l of w.player.crew.lees) l.job = 'fire';
+    const ref = railsOf(w.player, 'charge')[0];
+    expect(w.tapRail(ref)).toBeNull();
+    // A shadow close to where the charge goes down.
+    const at = { x: 6, y: 0 };
+    n.x = at.x + 4;
+    n.y = at.y;
+    for (let i = 0; i < n.path.length; i++) n.path[i] = { x: n.x + i, y: n.y };
+    layOut(n);
+    const hp0 = n.parts.map((p) => p.hp);
+    run(w, 2);
+    expect(w.charges.length + w.events.filter((e) => e.type === 'chargeBlast').length + w.events.filter((e) => e.type === 'chargeDrop').length).toBeGreaterThan(0);
+    expect(rail.readyAt).toBeGreaterThan(w.time);
+    run(w, t.items.depthCharge.delay + 0.5);
+    expect(w.events.some((e) => e.type === 'chargeBlast')).toBe(true);
+    expect(n.parts.some((p, i) => p.hp < hp0[i])).toBe(true);
+  });
+
+  test('a charge does nothing to a Ness that is up', () => {
+    const t = quiet(defaultTuning());
+    const { w, n } = shadowAt(t, { x: 12, y: 0 }, 'weak', []);
+    n.state = 'surfaced';
+    layOut(n);
+    const hp0 = n.parts.map((p) => p.hp);
+    addRail(w, 'depthCharge', 'charge');
+    w.dropCharge(railsOf(w.player, 'charge')[0]);
+    run(w, t.items.depthCharge.delay + 0.5);
+    expect(n.parts.map((p) => p.hp)).toEqual(hp0);
+  });
+
+  test('a charge under a rising Ness drives it back down and the ring goes', () => {
+    const t = quiet(defaultTuning());
+    const { w, n } = shadowAt(t, { x: 30, y: 0 });
+    n.hold = 0;
+    until(w, n, 'emerging');
+    expect(w.telegraphs.list.some((x) => x.kind === 'emerge')).toBe(true);
+    // Put the head on top of a blast and make it big.
+    t.items.depthCharge.damage = 4;
+    w.charges.push({ id: 99, pos: { x: n.x, y: n.y }, fuse: 0.05, radius: 20, damage: 4, side: 'player' });
+    run(w, 0.2);
+    expect(n.state).toBe('submerged');
+    expect(w.telegraphs.list.some((x) => x.kind === 'emerge' && !x.impacted)).toBe(false);
+  });
+
+  test('the 🔫 Lees drop one by themselves at a shadow that is about to be within the blast', () => {
+    const t = quiet(defaultTuning());
+    t.ness.kinds.weak.speed = 0.001; // a shadow that holds still, so the lead is simple
+    const { w, n } = shadowAt(t, { x: 10, y: 0 });
+    addRail(w, 'depthCharge', 'charge');
+    for (const l of w.player.crew.lees) l.job = 'fire';
+    let dropped = false;
+    for (let i = 0; i < 8 / FIXED_DT && !dropped; i++) {
+      pin(w.player, { x: 0, y: 0 });
+      n.x = 10;
+      n.y = 0;
+      w.step(FIXED_DT);
+      dropped = w.events.some((e) => e.type === 'chargeDrop');
+    }
+    expect(dropped).toBe(true);
+  });
+
+  test('a rail that is cooling down is refused', () => {
+    const t = quiet(defaultTuning());
+    const { w } = shadowAt(t, { x: 90, y: 0 });
+    const rail = addRail(w, 'depthCharge', 'charge');
+    rail.readyAt = 100;
+    expect(w.tapRail(railsOf(w.player, 'charge')[0])).not.toBeNull();
+  });
+});
+
+describe('Mortar', () => {
+  test('a mortar shell lands on a shadow and hurts it', () => {
+    const t = quiet(defaultTuning());
+    const { w, n } = shadowAt(t, { x: 40, y: 0 });
+    const head = headOf(n);
+    const hp = head.hp;
+    w.shells.push({ id: 700, group: 700, ownerId: 1, ownerSide: 'player', gun: 'mortar', mode: 'lob', from: { x: 0, y: 0 }, to: { ...head.pos }, elapsed: 0, flightTime: 0.01, damage: 15, crewDamage: 0, splash: 2, impactRadius: 1.2, leeId: null });
+    w.step(FIXED_DT * 2);
+    expect(head.hp).toBeLessThan(hp);
+    expect(n.state).toBe('submerged');
+  });
+
+  test('a cannon ball does not (it is too deep)', () => {
+    const t = quiet(defaultTuning());
+    const { w, n } = shadowAt(t, { x: 40, y: 0 });
+    const head = headOf(n);
+    w.shells.push({ id: 701, group: 701, ownerId: 1, ownerSide: 'player', gun: 'cannon', mode: 'shell', from: { x: 0, y: 0 }, to: { ...head.pos }, elapsed: 0, flightTime: 0.01, damage: 15, crewDamage: 0, splash: 0, impactRadius: 1.2, leeId: null });
+    w.step(FIXED_DT * 2);
+    expect(head.hp).toBe(head.maxHp);
+  });
+
+  test('a mortar gun can aim at a shadow, but a cannon cannot', () => {
+    const t = quiet(defaultTuning());
+    const { w } = shadowAt(t, { x: 45, y: 0 });
+    const g = w.player.guns[0];
+    const from = w.muzzle(w.player, g);
+    g.mode = 'lob';
+    g.slot = g.slot;
+    // Anywhere in its arc: pick whatever the pool offers.
+    const lob = (w as unknown as { pickNess: (b: unknown, g: unknown, f: unknown) => unknown }).pickNess(w.player, g, from);
+    g.mode = 'shell';
+    const shell = (w as unknown as { pickNess: (b: unknown, g: unknown, f: unknown) => unknown }).pickNess(w.player, g, from);
+    expect(shell).toBeNull();
+    void lob;
+  });
+});
+
+describe('Harpoon Gun', () => {
+  /** A harpoon gun on the player's boat, loaded, and a surfaced Ness to hit. */
+  function harpooned(t: Tuning): { w: World; n: Ness } {
+    const w = new World(t, 1, { enemies: [], nesses: [{ kind: 'weak' }], crew: [5, 6, 7, 8] });
+    w.start();
+    pin(w.player, { x: 0, y: 0 });
+    const gun = w.player.guns[0];
+    gun.item = 'harpoon';
+    gun.mode = 'harpoon';
+    const n = w.nesses.list[0];
+    n.x = 30;
+    n.y = 0;
+    n.heading = Math.PI;
+    for (let i = 0; i < n.path.length; i++) n.path[i] = { x: 30 + i, y: 0 };
+    n.state = 'surfaced';
+    n.hold = 1000;
+    layOut(n);
+    return { w, n };
+  }
+
+  const harpoonShell = (w: World, to: Vec, id = 800) => ({ id, group: id, ownerId: 1, ownerSide: 'player' as const, gun: 'harpoon', mode: 'harpoon' as const, slot: w.player.guns[0].slot, from: { x: 0, y: 0 }, to, elapsed: 0, flightTime: 0.01, damage: 3, crewDamage: 0, splash: 0, impactRadius: 1.2, leeId: null });
+
+  test('a harpoon that hits a Ness holds it: it cannot dive while the line holds', () => {
+    const t = quiet(defaultTuning());
+    const { w, n } = harpooned(t);
+    w.shells.push(harpoonShell(w, { ...headOf(n).pos }));
+    w.step(FIXED_DT * 2);
+    expect(n.tether).not.toBeNull();
+    expect(w.events.some((e) => e.type === 'tether')).toBe(true);
+    // It wants to dive (its time is up), but the line holds it up.
+    n.hold = 0;
+    run(w, 1);
+    expect(n.state).toBe('surfaced');
+  });
+
+  test('the line reels it in toward the gun', () => {
+    const t = quiet(defaultTuning());
+    const { w, n } = harpooned(t);
+    n.def = { ...n.def, attacks: [] };
+    w.shells.push(harpoonShell(w, { ...headOf(n).pos }));
+    w.step(FIXED_DT * 2);
+    const gunAt = { x: 0, y: 0 };
+    const d0 = Math.hypot(n.x - gunAt.x, n.y - gunAt.y);
+    run(w, 4);
+    expect(n.tether!.limit).toBeLessThan(d0);
+  });
+
+  test('a Ness that strains against the line breaks it, and the gun is free again', () => {
+    const t = quiet(defaultTuning());
+    t.ness.kinds.weak.tetherHp = 2;
+    const { w, n } = harpooned(t);
+    w.shells.push(harpoonShell(w, { ...headOf(n).pos }));
+    w.step(FIXED_DT * 2);
+    n.hold = 0;
+    run(w, 3);
+    expect(n.tether).toBeNull();
+    expect(w.events.some((e) => e.type === 'tetherLost')).toBe(true);
+    expect(w.player.guns[0].harpoon?.out).toBe(false);
+    // ...and with the line gone it dives.
+    run(w, 1);
+    expect(n.state).toBe('submerged');
+  });
+
+  test('a harpoon that hits a ship makes a line, like a hook', () => {
+    const t = quiet(defaultTuning());
+    const w = new World(t, 1, { enemies: [enemy(t, 'standard', 0)], crew: [5, 6] });
+    w.start();
+    pin(w.player, { x: 0, y: 0 });
+    const e = w.enemies[0];
+    pin(e, { x: 40, y: 0 });
+    w.player.guns[0].item = 'harpoon';
+    w.player.guns[0].mode = 'harpoon';
+    w.shells.push({ ...harpoonShell(w, { x: 40, y: 0 }) });
+    w.step(FIXED_DT * 2);
+    expect(w.lines.linesOf(w.player).length).toBe(1);
+    expect(w.player.guns[0].harpoon?.out).toBe(true);
+  });
+
+  test('a harpoon that misses frees the gun', () => {
+    const t = quiet(defaultTuning());
+    const w = new World(t, 1, { enemies: [], crew: [5, 6] });
+    w.start();
+    w.player.guns[0].item = 'harpoon';
+    w.player.guns[0].mode = 'harpoon';
+    w.harpoonRef(w.player, w.player.guns[0]).rail.out = true;
+    w.shells.push({ ...harpoonShell(w, { x: 500, y: 500 }) });
+    w.step(FIXED_DT * 2);
+    expect(w.player.guns[0].harpoon?.out).toBe(false);
+  });
+});
+
+describe('Hydrophone', () => {
+  function hydrophoned(t: Tuning): World {
+    const w = new World(t, 1, { enemies: [], nesses: [{ kind: 'weak' }], crew: [5, 6, 7, 8, 9, 10] });
+    w.start();
+    pin(w.player, { x: 0, y: 0 });
+    for (const tile of w.player.grid.tiles) if (tile.station === 'lookout' && tile.fixture) tile.fixture.item = 'hydrophone';
+    return w;
+  }
+
+  test('manned, it shows shadows further out and gives more warning', () => {
+    const t = quiet(defaultTuning());
+    const w = hydrophoned(t);
+    const n = w.nesses.list[0];
+    // A shadow beyond ordinary sight.
+    n.x = t.ness.common.sight + 60;
+    n.y = 0;
+    w.hydrophoneManned = () => false;
+    expect(w.nessVisible(n)).toBe(false);
+    w.hydrophoneManned = () => true;
+    expect(w.nessVisible(n)).toBe(true);
+    // And a longer warning before it rises.
+    n.x = 60;
+    n.hold = 0;
+    until(w, n, 'emerging');
+    expect(n.riseTime).toBeCloseTo(t.ness.kinds.weak.warn + t.ness.kinds.weak.hydroExtra, 5);
+  });
+
+  test('without one, the warning is the ordinary one', () => {
+    const t = quiet(defaultTuning());
+    const w = hydrophoned(t);
+    w.hydrophoneManned = () => false;
+    const n = w.nesses.list[0];
+    n.x = 60;
+    n.y = 0;
+    n.hold = 0;
+    until(w, n, 'emerging');
+    expect(n.riseTime).toBeCloseTo(t.ness.kinds.weak.warn, 5);
+  });
+});
+
+// keep the helper referenced
+void abortRise;

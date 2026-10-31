@@ -243,6 +243,10 @@ export interface CrewContext {
   foes: Boat[];
   /** Other things its guns may shoot at: surfaced Ness parts (world points). */
   marks?: Vec[];
+  /** Ness parts under the water: a mortar can shell them. */
+  underMarks?: Vec[];
+  /** A Ness is about (a Lookout or Hydrophone has something to listen for). */
+  monsters?: boolean;
   /** Every Lee in the world (boarders on our deck, enemies on other decks). Defaults to this boat's crew. */
   lees?: Lee[];
   /** Where this crew's ⚔️ Lees are headed: the boat they gather toward and board (null = none). */
@@ -781,6 +785,7 @@ export function gunEngages(boat: Boat, g: GunState, ctx: CrewContext, at: number
     if (inArc(muzzle, face, p, spec.arcHalf, spec.minRange, spec.range)) return true;
   }
   for (const m of ctx.marks ?? []) if (inArc(muzzle, face, m, spec.arcHalf, spec.minRange, spec.range)) return true;
+  if (g.mode === 'lob') for (const m of ctx.underMarks ?? []) if (inArc(muzzle, face, m, spec.arcHalf, spec.minRange, spec.range)) return true;
   return false;
 }
 
@@ -928,7 +933,7 @@ export function computeNeeds(boat: Boat, ctx: CrewContext): Need[] {
   const offlineAt = t.boat.function.gunOfflineAt;
   let maxFill = 0;
   for (const p of boat.parts) maxFill = Math.max(maxFill, p.capacity > 0 ? p.water / p.capacity : 0);
-  const spotting = ctx.foes.length > 0 || (ctx.marks?.length ?? 0) > 0;
+  const spotting = ctx.foes.length > 0 || (ctx.marks?.length ?? 0) > 0 || !!ctx.monsters;
   const stopped = boat.stopped;
 
   // Stations, in tile order.

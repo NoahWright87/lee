@@ -164,6 +164,13 @@ export function defaultNessKind() {
     inkTime: 8,
     inkBlind: 0.35,
     inkCooldown: 4.5,
+    /** Harpooned: the line's HP, how fast it strains against it (HP/s, while it wants to dive), how fast the line reels it in (m/s) and the closest it is pulled to your hull (m). */
+    tetherHp: 30,
+    tetherStrain: 3,
+    tetherReel: 2.5,
+    tetherClose: 3,
+    /** A Hydrophone manned: extra seconds of warning before it rises. */
+    hydroExtra: 1,
     /** Quiet: 1 = a faint shadow, and the ring only goes up this many seconds before it rises, unless a Lookout is manned. */
     stealth: 0,
     quietWarn: 0.9,
@@ -182,6 +189,11 @@ export function defaultNessTuning() {
       levelScale: 0.25,
       /** Pistols and cannons: damage to a Ness part × this. */
       damageTaken: 1,
+      /** A mortar shell that lands on a shadow hurts it: × the shell's damage. */
+      mortarUnderwater: 0.7,
+      /** How far from your hull you can see a Ness's shadow, m (a manned Hydrophone ×`hydroSight`). */
+      sight: 130,
+      hydroSight: 2.2,
       /** Seconds a dead Ness takes to sink away. */
       sinkTime: 2.5,
       /** Seconds a Ness stays hidden behind a diving or rising animation (drawn only). */
