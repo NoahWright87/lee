@@ -141,7 +141,6 @@ function drawBody(g: G, world: World, n: Ness, alpha: number, px: (n: number) =>
   if (alpha > 0.5) {
     drawNeck(g, n, k.neckRadius, k.headRadius, base, alpha, clock, dead, world, px);
     for (const h of n.hands) if (h.state === 'reaching' || h.state === 'holding') drawHand(g, n, h, base, alpha, px, k.handRadius);
-    if (!dead && n.depth <= k.surfacedMax) drawHealth(g, n, px, alpha);
   }
 }
 
@@ -243,17 +242,30 @@ function drawHand(g: G, n: Ness, h: Ness['hands'][number], base: number, alpha: 
   }
 }
 
-function drawHealth(g: G, n: Ness, px: (n: number) => number, alpha: number): void {
-  const w = px(46);
-  const hgt = px(5);
-  const at = bodyWorld(n, { x: 0, y: 0 });
-  const x = at.x - w / 2;
-  const y = at.y - n.beam / 2 - px(15);
-  g.fillStyle(HP_BACK, 0.7 * alpha);
-  g.fillRect(x - px(1), y - px(1), w + px(2), hgt + px(2));
-  const frac = clamp(n.hp / Math.max(1, n.maxHp), 0, 1);
-  g.fillStyle(frac > 0.5 ? HP_GOOD : frac > 0.25 ? HP_LOW : HP_BAD, alpha);
-  g.fillRect(x, y, w * frac, hgt);
+/** An HP bar over every live Ness at any depth (a diving or fleeing one too), kept upright on the screen: `up` is the screen's "up" in world terms. */
+export function drawNessHealth(g: G, world: World, px: (n: number) => number, up: Vec = { x: 0, y: -1 }): void {
+  const right = { x: -up.y, y: up.x };
+  for (const n of world.nesses.list) {
+    if (n.mode === 'gone' || n.mode === 'dead') continue;
+    const w = px(44);
+    const hgt = px(5);
+    const frac = clamp(n.hp / Math.max(1, n.maxHp), 0, 1);
+    const lift = n.beam / 2 + px(16);
+    const c = { x: n.motion.x + up.x * lift, y: n.motion.y + up.y * lift };
+    const alpha = lerp(1, 0.6, smooth(0.3, 1, n.depth));
+    const quad = (x0: number, x1: number, y0: number, y1: number) => [
+      { x: c.x + right.x * x0 + up.x * y0, y: c.y + right.y * x0 + up.y * y0 },
+      { x: c.x + right.x * x1 + up.x * y0, y: c.y + right.y * x1 + up.y * y0 },
+      { x: c.x + right.x * x1 + up.x * y1, y: c.y + right.y * x1 + up.y * y1 },
+      { x: c.x + right.x * x0 + up.x * y1, y: c.y + right.y * x0 + up.y * y1 },
+    ];
+    g.fillStyle(HP_BACK, 0.75 * alpha);
+    g.fillPoints(quad(-w / 2 - px(1), w / 2 + px(1), -px(1), hgt + px(1)), true);
+    if (frac > 0) {
+      g.fillStyle(frac > 0.5 ? HP_GOOD : frac > 0.25 ? HP_LOW : HP_BAD, alpha);
+      g.fillPoints(quad(-w / 2, -w / 2 + w * frac, 0, hgt), true);
+    }
+  }
 }
 
 /** The ⚠️ where it will break the surface (on the shadow if it is still, ahead of it if it is moving). */

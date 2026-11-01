@@ -244,6 +244,67 @@ describe('what reaches it, by depth', () => {
   });
 });
 
+describe('under and over the hull', () => {
+  const under = (n: Ness, depth: number) => {
+    Object.assign(n.motion, { x: 0, y: 0, heading: -Math.PI / 2, vx: 0, vy: 0, omega: 0 });
+    n.mode = 'circle';
+    n.circleFor = 1e9;
+    n.neck.cool = 1e9;
+    n.depth = depth;
+    n.depthTarget = depth;
+  };
+
+  test('a Ness that is up (surfaced or shallow) is solid: it and the boat knock each other clear', () => {
+    for (const depth of [0, 0.4]) {
+      const t = quiet(defaultTuning());
+      const { w, n } = setup(t);
+      const k = nessKind(t, 'ness');
+      Object.assign(n.motion, { x: -3, y: 2, heading: -Math.PI / 2, vx: 0, vy: 0, omega: 0 });
+      n.mode = 'circle';
+      n.circleFor = 1e9;
+      n.neck.cool = 1e9;
+      n.depth = depth;
+      n.depthTarget = depth;
+      expect(bodyGap(n, w.player).gap).toBeLessThan(0);
+      run(w, 2, () => {
+        n.depth = depth;
+        n.depthTarget = depth;
+        n.motion.vx = n.motion.vy = 0;
+      });
+      expect(bodyGap(n, w.player).gap).toBeGreaterThan(-0.3);
+      void k;
+    }
+  });
+
+  test('a deep Ness passes under the boat and is not pushed', () => {
+    const t = quiet(defaultTuning());
+    const { w, n } = setup(t);
+    under(n, 0.9);
+    run(w, 1, () => {
+      pin(w.player);
+      n.depth = 0.9;
+      n.depthTarget = 0.9;
+      Object.assign(n.motion, { x: 0, y: 0, vx: 0, vy: 0 });
+    });
+    expect(Math.hypot(n.motion.x, n.motion.y)).toBeLessThan(0.01);
+    expect(n.depth).toBeGreaterThan(0.85);
+  });
+
+  test('it will not come up through a hull: it stays submerged until it is clear', () => {
+    const t = quiet(defaultTuning());
+    const { w, n } = setup(t);
+    const k = nessKind(t, 'ness');
+    under(n, 0.9);
+    run(w, 6, () => {
+      pin(w.player);
+      n.depthTarget = 0;
+      n.mode = 'circle';
+      Object.assign(n.motion, { x: 0, y: 0, vx: 0, vy: 0 });
+    });
+    expect(n.depth).toBeGreaterThan(k.shallowMax);
+  });
+});
+
 describe('the bite', () => {
   test('alongside, it rears back and puts up a red rectangle and a bubble before it bites, with time to react', () => {
     const t = quiet(defaultTuning());

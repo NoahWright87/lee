@@ -492,7 +492,7 @@ export class NessSystem {
           this.dead(w, n, dt);
           break;
       }
-      this.stepDepth(n, k, dt);
+      this.stepDepth(w, n, k, dt);
       // Breaking the surface, and going under, are moments the sea notices.
       if (wasDepth > k.surfacedMax && n.depth <= k.surfacedMax) w.events.push({ type: 'nessSurface', nessId: n.id, pos: { x: n.motion.x, y: n.motion.y }, radius: n.beam });
       if (wasDepth <= k.surfacedMax && n.depth > k.surfacedMax && n.mode !== 'dead') w.events.push({ type: 'nessDive', nessId: n.id, pos: { x: n.motion.x, y: n.motion.y } });
@@ -505,8 +505,10 @@ export class NessSystem {
 
   // ------------------------------------------------------------ depth
 
-  private stepDepth(n: Ness, k: NessKindTuning, dt: number): void {
-    const want = n.mode === 'dead' ? 0 : n.depthTarget;
+  private stepDepth(w: World, n: Ness, k: NessKindTuning, dt: number): void {
+    let want = n.mode === 'dead' ? 0 : n.depthTarget;
+    // It can pass under a hull only while it is submerged: it won't come up through one (it waits below until it is clear).
+    if (want < n.depth && n.depth > k.shallowMax && w.boats.some((b) => !w.isSinking(b) && bodyGap(n, b).gap < 0.5)) want = Math.max(want, k.shallowMax + 0.05);
     if (n.depth > want) {
       const rate = n.depth > k.shallowDepth ? 0.35 : Math.max(0.05, k.shallowDepth) / Math.max(0.2, k.emergeTime);
       n.depth = Math.max(want, n.depth - rate * dt);
@@ -629,9 +631,9 @@ export class NessSystem {
 
   // ------------------------------------------------------------ bumping
 
-  /** On the surface it is solid: it shoves off any hull it overlaps (with a thump), and a hull shoves it. */
+  /** Once it is up out of the deep (shallow or surfaced, so you can see its body) it is solid: it shoves off any hull it overlaps (with a thump), and a hull shoves it. */
   private bump(w: World, n: Ness, k: NessKindTuning): void {
-    if (n.depth > k.surfacedMax || n.mode === 'gone') return;
+    if (n.depth > k.shallowMax || n.mode === 'gone') return;
     for (const b of w.boats) {
       if (w.isSinking(b)) continue;
       const g = bodyGap(n, b);

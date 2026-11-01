@@ -37,7 +37,7 @@ import type { World, WorldEvent } from '../sim/world';
 import { deckTargets, pickTarget } from '../sim/targets';
 import { BoatView, lerpColor } from './BoatView';
 import { drawCharges, drawLines, drawNessBubbles, drawOrderMarkers, drawTargets, drawZones } from './QuartersView';
-import { drawNessBodies, drawNessShadows } from './NessView';
+import { drawNessBodies, drawNessHealth, drawNessShadows } from './NessView';
 import type { Controller } from './Controller';
 import { CrewView } from './CrewView';
 import {
@@ -919,6 +919,7 @@ export class BattleScene extends Phaser.Scene {
     this.gNess.clear();
     drawNessShadows(this.gShadow, world, px, this.clock);
     drawNessBodies(this.gNess, world, px, this.clock);
+    drawNessHealth(this.gNess, world, px);
 
     this.drawRings(g, px);
     this.drawTracers(g, px);
@@ -1449,6 +1450,7 @@ export class BattleScene extends Phaser.Scene {
     g.clear();
     this.gNessStrip.clear();
     drawNessBodies(this.gNessStrip, world, px, this.clock);
+    drawNessHealth(this.gNessStrip, world, px, rotate({ x: 0, y: -1 }, world.player.motion.heading));
     this.drawRings(g, px);
 
     const b = world.player;
