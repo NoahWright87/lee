@@ -38,7 +38,7 @@ import { defaultBuild, itemParam, slotById } from './loadout';
 import type { EnemyOutcome } from './run';
 import { combineMods } from './levels';
 import { DEG, dist, NORTH, Rng, rotate, toLocal, toWorld, wrapAngle, type Vec } from './math';
-import { bandOf, bodyGap, createNess, gunReaches, hitAt, marks as nessMarksOf, isHeadOpen, neckReach, nessKind, NessSystem, ovalGap, type Ness, type NessBand, type NessHand, type NessPartKind, type NessSpec } from './ness';
+import { bandOf, bodyGap, createNess, gunReaches, hitAt, marks as nessMarksOf, isHeadOpen, neckAnchor, neckReach, nessKind, NessSystem, ovalGap, type Ness, type NessBand, type NessHand, type NessPartKind, type NessSpec } from './ness';
 import { archetypeSetup, autoArrange, basicCrew, type BoatSetup, type CrewSpec } from './setup';
 import { stepMotion } from './steering';
 import { TelegraphSystem } from './telegraph';
@@ -1993,6 +1993,11 @@ export class World {
     const n = this.nesses.list.find((x) => x.id === z.source);
     const k = nessKind(this.tuning, n?.kind ?? 'ness');
     const center = zoneCenter(z);
+    // Your boat pulled out of the neck's reach: it bites the water.
+    if (n && dist(neckAnchor(n), center) > neckReach(k) + 2) {
+      this.events.push({ type: 'zoneImpact', boatId: boat.id, pos: center, tiles: [] });
+      return;
+    }
     this.events.push({ type: 'zoneImpact', boatId: boat.id, pos: center, tiles: z.tiles });
     const parts = new Set<number>();
     for (const [ti, wgt] of z.weights) {

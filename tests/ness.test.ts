@@ -10,7 +10,7 @@ import { defaultTuning, type Tuning } from '../src/config/tuning';
 import { motionParams, type Boat } from '../src/sim/boat';
 import { standingTile } from '../src/sim/crew';
 import { bandOf, bodyGap, createNess, gunReaches, isHeadOpen, nessKind, ovalGap, type Ness } from '../src/sim/ness';
-import { Rng, type Vec } from '../src/sim/math';
+import { Rng, toLocal, type Vec } from '../src/sim/math';
 import { FIXED_DT } from '../src/sim/steering';
 import { deckTargets, pickTarget } from '../src/sim/targets';
 import { zoneCenter } from '../src/sim/zones';
@@ -52,7 +52,9 @@ function alongside(t: Tuning, crew: number[] = CREW): { w: World; n: Ness; hold:
   n.neck.side = 1;
   n.boatSide = -1;
   const x = -(w.player.layout.beam / 2 + n.beam / 2 + k.standoff);
-  Object.assign(n.motion, { x, y: 0, heading: -Math.PI / 2, vx: 0, vy: 0, omega: 0 });
+  // Its nose (forward is -y here) sits `noseAhead` ahead of your middle, so the rest of it lies back along your stern.
+  const y = n.length / 2 - k.noseAhead;
+  Object.assign(n.motion, { x, y, heading: -Math.PI / 2, vx: 0, vy: 0, omega: 0 });
   n.mode = 'alongside';
   n.depth = 0;
   n.depthTarget = 0;
@@ -328,7 +330,7 @@ describe('the bite', () => {
     expect(['strike', 'hold']).toContain(n.neck.state);
   });
 
-  test('the zone is in the world: sail out from under it and nothing is hit', () => {
+  test('pull clear of the neck and it bites the water: nothing is hit', () => {
     const t = quiet(defaultTuning());
     const { w, n } = alongside(t);
     run(w, 0.3, () => pin(w.player));
@@ -344,20 +346,24 @@ describe('the bite', () => {
     expect(w.player.grid.tiles.map((x) => x.hp)).toEqual(tiles);
   });
 
-  test('the aim point and its bubble are fixed in the world: they do not follow a moving boat or Ness', () => {
+  test('the aim point and its bubble stay put on your deck while the boats move together', () => {
     const t = quiet(defaultTuning());
     const { w, n } = alongside(t);
     run(w, 0.3, () => pin(w.player));
     const z = w.zones.pending(w.player)[0];
-    const at = { ...zoneCenter(z) };
-    const aim = { ...z.shape().b };
-    // The boat shifts a little (still under the bite) and the Ness drifts: the aim point stays where it was.
-    run(w, 0.5, () => pin(w.player, { x: w.player.motion.x + 0.6, y: w.player.motion.y }));
+    const onDeck = (p: Vec) => toLocal(p, w.player.motion, w.player.motion.heading);
+    const at = onDeck(zoneCenter(z));
+    // Both boats sail on (the Ness keeps station with a nudge each step): the spot on the deck is where it was.
+    run(w, 0.8, () => {
+      for (const m of [w.player.motion, n.motion]) {
+        m.x += 0.15;
+        m.y -= 0.1;
+      }
+    });
     expect(w.zones.pending(w.player)[0]).toBe(z);
-    expect(zoneCenter(z)).toEqual(at);
-    expect(z.shape().b).toEqual(aim);
-    n.motion.x += 0.5;
-    expect(zoneCenter(z)).toEqual(at);
+    const now = onDeck(zoneCenter(z));
+    expect(Math.abs(now.x - at.x)).toBeLessThan(0.2);
+    expect(Math.abs(now.y - at.y)).toBeLessThan(0.2);
   });
 
   test('it hits the tip hardest, and Lees there are hurt, the neck line less', () => {
@@ -460,14 +466,17 @@ describe('hands', () => {
     const { w, n, hold } = withHands(t);
     let thrown = false;
     let telegraphed = false;
+    let held = false;
+    // (The gunners cut a hand loose within a couple of seconds, so look for the grab as it happens.)
     run(w, 3, () => {
       hold();
       if (w.drainEvents().some((e) => e.type === 'handThrown')) thrown = true;
       if (w.telegraphs.list.some((x) => x.kind === 'area')) telegraphed = true;
+      if (n.hands.some((h) => h.state === 'holding')) held = true;
     });
     expect(thrown).toBe(true);
     expect(telegraphed).toBe(true);
-    expect(n.hands.some((h) => h.state === 'holding')).toBe(true);
+    expect(held).toBe(true);
   });
 
   test('a holding hand keeps the hulls together: you cannot sail away', () => {
@@ -507,7 +516,7 @@ describe('hands', () => {
   test('tap the hand and a Lee hacks it free; pistols hit it too', () => {
     const t = quiet(defaultTuning());
     const { w, n } = withHands(t);
-    run(w, 3, () => pin(w.player));
+    run(w, 1.5, () => pin(w.player));
     const hand = n.hands.find((h) => h.state === 'holding')!;
     const target = pickTarget(deckTargets(w, [w.player]), hand.pos, 0);
     expect(target?.kind).toBe('hand');

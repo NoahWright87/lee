@@ -82,9 +82,10 @@ export function defaultNessKind() {
     /** Depth bands: at or below `surfacedMax` it is on the surface (cannons and pistols hit it); to `shallowMax` it is shallow (cannons still do; a depth charge too); deeper only mortars and depth charges reach. */
     surfacedMax: 0.15,
     shallowMax: 0.6,
-    /** Beside your boat: the gap between hulls (m). */
+    /** Beside your boat: the gap between hulls (m), and how far its nose (where the neck grows from) sits ahead of your boat's middle (m): the rest of it lies back along your stern. */
     standoff: 3.5,
-    /** Neck: segments, each this long (m), so it reaches about segments × length from the flank; it can bite within this cone ahead of the neck (degrees, total); head size. */
+    noseAhead: 3,
+    /** Neck: it grows from the nose (the skinny end of the oval, centered). Segments, each this long (m), so it reaches about segments × length from the nose; it can bite within this cone ahead of the nose (degrees, total); head size. */
     neckSegments: 3,
     neckLength: 3.6,
     neckCone: 170,

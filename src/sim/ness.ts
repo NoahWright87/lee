@@ -23,7 +23,7 @@ import { NESS, NESS_SLOTS, type NessDef, type NessKindTuning, type NessSlotDef }
 import type { Tuning } from '../config/tuning';
 import { distanceToHull, hullCapsule, keelSegment, motionParams, type Boat } from './boat';
 import { mass, nearestHullPoint } from './lines';
-import { clamp, closestSegments, DEG, dist, lerp, toLocal, toWorld, type Rng, type Vec } from './math';
+import { clamp, closestSegments, DEG, dist, lerp, toLocal, toWorld, wrapAngle, type Rng, type Vec } from './math';
 import { alongsideCommand, stepMotion, type MotionParams, type MotionState } from './steering';
 import { leeStat, standingTile } from './crew';
 import type { DangerZone } from './zones';
@@ -68,8 +68,10 @@ export interface Neck {
   side: -1 | 1;
   state: NeckState;
   t: number;
-  /** The bite: where the head is going (a fixed point in the WORLD, chosen when the wind-up starts: if your boat moves it does not follow, which is the dodge), and the warning on your deck. */
+  /** The bite: where the head is going (a fixed spot on your DECK, chosen when the wind-up starts: it stays put on your deck while the boats move, so the bubble does not slide about; if your boat pulls clear of the neck's reach the bite whiffs), and the warning on your deck. */
   target: Vec | null;
+  /** The same spot in your boat's own frame (a point on your deck): it stays put on your deck while both boats move, and `target` follows it. */
+  deckPoint: Vec | null;
   zone: DangerZone | null;
   /** The head now (world), and the neck's joints from the flank to it. */
   head: Vec;
@@ -155,7 +157,7 @@ export function createNess(id: number, spec: NessSpec, t: Tuning, pos: Vec, head
     bites: 0,
     alongT: 0,
     emergeAt: null,
-    neck: { side, state: 'rest', t: 0, target: null, zone: null, head: { ...pos }, pts: [], cool: k.biteFirst },
+    neck: { side, state: 'rest', t: 0, target: null, deckPoint: null, zone: null, head: { ...pos }, pts: [], cool: k.biteFirst },
     hands: NESS_SLOTS.filter((s) => s.type === 'hand').map((slot) => ({
       slot,
       state: 'stowed' as HandState,
@@ -210,8 +212,8 @@ export function ovalGap(n: Ness, p: Vec): number {
   return (Math.hypot(l.x / a, l.y / b) - 1) * Math.min(a, b);
 }
 
-/** Where the neck grows from (the middle of its flank), in the body's frame and the world. */
-export const neckAnchorLocal = (n: Ness): Vec => ({ x: 0, y: n.neck.side * (n.beam / 2) });
+/** Where the neck grows from (the nose: the middle of the oval's front end), in the body's frame and the world. */
+export const neckAnchorLocal = (n: Ness): Vec => ({ x: n.length / 2, y: 0 });
 export const neckAnchor = (n: Ness): Vec => bodyWorld(n, neckAnchorLocal(n));
 
 /** The neck's longest reach from its flank, m. */
@@ -280,9 +282,9 @@ export function extentPoints(n: Ness): Vec[] {
 
 // ------------------------------------------------------------ neck
 
-/** The head where it rests, tucked against its flank (the body's frame). */
+/** The head where it rests: just ahead of the nose, a little toward the side the boat is on (the body's frame). */
 function restLocal(n: Ness, k: NessKindTuning): Vec {
-  return { x: 0, y: n.neck.side * (n.beam / 2 + k.headRadius * 0.9) };
+  return { x: n.length / 2 + k.headRadius + 1.2, y: n.neck.side * 0.8 };
 }
 
 /** Rearing back: the head pulled in from rest, away from the target. */
@@ -337,7 +339,7 @@ export function layoutNeck(n: Ness, k: NessKindTuning, _time: number): void {
       head = rest;
   }
   neck.head = bodyWorld(n, head);
-  // Joints: along the line from the flank to the head, bowed more the more the neck is curled up.
+  // Joints: along the line from the nose to the head, bowed more the more the neck is curled up.
   const a = neckAnchorLocal(n);
   const len = Math.hypot(head.x - a.x, head.y - a.y);
   const ext = clamp(len / Math.max(1, neckReach(k)), 0, 1);
@@ -538,13 +540,16 @@ export class NessSystem {
     if (!w.isSinking(w.player) && n.modeT >= n.circleFor && d < R + 40) this.setMode(w, n, 'approach');
   }
 
-  /** The slot beside your hull this Ness runs for (its neck side faces the boat). */
-  private slot(w: World, n: Ness, k: NessKindTuning): { spec: { other: MotionState; offset: number; side: number }; point: Vec } {
+  /** The slot beside your hull this Ness runs for (its nose by your middle, the boat on its `neck.side`). */
+  private slot(w: World, n: Ness, k: NessKindTuning): { spec: { other: MotionState; offset: number; side: number; along: number }; point: Vec } {
     const me = w.player;
     const offset = me.layout.beam / 2 + n.beam / 2 + Math.max(0, k.standoff);
+    // Its nose (the neck) is by your middle, the rest of it back along your stern.
+    const along = k.noseAhead - n.length / 2;
     const o = me.motion;
     const perp = { x: -Math.sin(o.heading), y: Math.cos(o.heading) };
-    return { spec: { other: o, offset, side: n.boatSide }, point: { x: o.x + perp.x * offset * n.boatSide, y: o.y + perp.y * offset * n.boatSide } };
+    const fwd = { x: Math.cos(o.heading), y: Math.sin(o.heading) };
+    return { spec: { other: o, offset, side: n.boatSide, along }, point: { x: o.x + perp.x * offset * n.boatSide + fwd.x * along, y: o.y + perp.y * offset * n.boatSide + fwd.y * along } };
   }
 
   /** Run in: shallow first (the shadow shrinks and darkens), then break the surface beside your hull. */
@@ -664,7 +669,7 @@ export class NessSystem {
 
   // ------------------------------------------------------------ the neck
 
-  /** The tile of your deck the head will bite: a target in reach and in the cone, preferring the one with the most Lees. Null if nothing is in reach. */
+  /** The tile of your deck the head will bite (its center in your boat's frame): a target in reach and in the cone, preferring the one with the most Lees. Null if nothing is in reach. */
   private biteTarget(w: World, n: Ness, k: NessKindTuning): Vec | null {
     const me = w.player;
     const a = neckAnchorLocal(n);
@@ -678,13 +683,13 @@ export class NessSystem {
       const vy = l.y - a.y;
       const d = Math.hypot(vx, vy);
       if (d > reach || d < 1) continue;
-      // Within the cone ahead of the neck (straight out from its flank).
-      if ((vy * n.neck.side) / d < Math.cos(cone)) continue;
+      // Within the cone ahead of the nose (the head faces forward, so it can't reach behind itself).
+      if (vx / d < Math.cos(cone) || vx < 1) continue;
       const lees = w.allLees().filter((x) => x.alive && !x.swing && x.deck === me && standingTile(x) === tile.index).length;
       const score = lees * 10 - d;
       if (score > bestScore) {
         bestScore = score;
-        best = toWorld(tile.center, me.motion, me.motion.heading);
+        best = { ...tile.center };
       }
     }
     return best;
@@ -698,13 +703,17 @@ export class NessSystem {
       layoutNeck(n, k, w.time);
       return;
     }
+    // The aim spot rides on your deck.
+    if (neck.deckPoint && neck.state !== 'rest') neck.target = toWorld(neck.deckPoint, w.player.motion, w.player.motion.heading);
     switch (neck.state) {
       case 'rest':
         neck.cool -= dt;
-        if (n.mode === 'alongside' && neck.cool <= 0 && !w.result) {
+        // It bites once it has settled beside you (not while it is still drifting into place).
+        if (n.mode === 'alongside' && neck.cool <= 0 && !w.result && Math.hypot(n.motion.vx - w.player.motion.vx, n.motion.vy - w.player.motion.vy) < 2.5 && Math.abs(wrapAngle(n.motion.heading - w.player.motion.heading)) < 0.2) {
           const target = this.biteTarget(w, n, k);
           if (target) {
-            neck.target = target;
+            neck.deckPoint = target;
+            neck.target = toWorld(target, w.player.motion, w.player.motion.heading);
             neck.state = 'windup';
             neck.t = 0;
             layoutNeck(n, k, w.time);
@@ -744,6 +753,7 @@ export class NessSystem {
           neck.state = 'rest';
           neck.t = 0;
           neck.target = null;
+          neck.deckPoint = null;
           neck.zone = null;
           neck.cool = k.biteCooldown;
         }
