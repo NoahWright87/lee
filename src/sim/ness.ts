@@ -109,6 +109,8 @@ export interface Ness {
   boatSide: 1 | -1;
   /** Bites this pass, and seconds alongside. */
   bites: number;
+  /** How many times it has broken off already. */
+  retreats: number;
   alongT: number;
   /** Where it will break the surface (for the ⚠️), or null. */
   emergeAt: Vec | null;
@@ -155,6 +157,7 @@ export function createNess(id: number, spec: NessSpec, t: Tuning, pos: Vec, head
     circleFor: rng.range(k.circleMin, k.circleMax) + 3,
     boatSide: side === 1 ? -1 : 1,
     bites: 0,
+    retreats: 0,
     alongT: 0,
     emergeAt: null,
     neck: { side, state: 'rest', t: 0, target: null, deckPoint: null, zone: null, head: { ...pos }, pts: [], cool: k.biteFirst },
@@ -388,7 +391,7 @@ export class NessSystem {
     };
   }
 
-  /** Hurt it: head shots count double. Past `fleeAt` it breaks off; at zero it dies. */
+  /** Hurt it: head shots count double. Past `fleeAt` (then that share of it again) it breaks off for a while; at zero it dies. */
   hurt(w: World, n: Ness, amount: number, part: NessPartKind = 'body', at?: Vec): { dealt: number; killed: boolean } {
     if (!isAlive(n) || amount <= 0) return { dealt: 0, killed: false };
     const k = nessKind(w.tuning, n.kind);
@@ -400,7 +403,10 @@ export class NessSystem {
       this.die(w, n);
       return { dealt: dmg, killed: true };
     }
-    if (n.hp <= n.maxHp * Math.max(0, k.fleeAt) && n.mode !== 'flee') this.setMode(w, n, 'flee');
+    if (n.mode !== 'flee' && n.retreats < Math.round(k.fleeMax) && n.hp <= n.maxHp * Math.pow(clamp(k.fleeAt, 0, 1), n.retreats + 1)) {
+      n.retreats++;
+      this.setMode(w, n, 'flee');
+    }
     return { dealt: dmg, killed: false };
   }
 
@@ -612,7 +618,7 @@ export class NessSystem {
     }
   }
 
-  /** Hurt enough: let go, dive, and swim away. It can't dive while a hand holds, so the hands go first. */
+  /** Hurt enough: let go, dive, and swim away for a while, then come back. It can't dive while a hand holds, so the hands go first. */
   private flee(w: World, n: Ness, k: NessKindTuning, dt: number): void {
     const me = w.player.motion;
     const params = this.params(w, n, 1);
@@ -621,10 +627,11 @@ export class NessSystem {
     n.emergeAt = null;
     for (const h of n.hands) if (h.state === 'holding' && h.letGoAt !== null && w.time >= h.letGoAt) this.letGo(w, n, h, false);
     n.depthTarget = this.holding(n) ? 0 : 1;
-    if (n.depth >= 0.95 && dist(n.motion, me) > k.fleeGone) {
-      n.mode = 'gone';
-      n.diedAt = w.time;
-      w.events.push({ type: 'nessGone', nessId: n.id });
+    // Having had its breather it turns and comes back (hurt as it is), circling before it attacks again.
+    if (n.modeT >= Math.max(1, k.fleeTime) && n.depth >= 0.9 && !this.holding(n)) {
+      this.setMode(w, n, 'circle');
+      n.circleFor = w.rng.range(k.circleMin, k.circleMax);
+      n.dir = w.rng.next() < 0.5 ? -1 : 1;
     }
   }
 

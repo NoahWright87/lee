@@ -118,9 +118,10 @@ export function defaultNessKind() {
     handCooldown: 5,
     handFirst: 2.5,
     handRadius: 1.4,
-    /** Hurt to this share of its HP (or less) and it breaks off: it lets go, dives, and swims away. Past this distance (m) it is gone. */
+    /** Hurt to this share of its HP (or less) and it breaks off: it lets go, dives and swims away for `fleeTime` s, then comes back (still hurt). It does this up to `fleeMax` times, each at this share of the last (50%, then 25%); after that it fights on to the end. */
     fleeAt: 0.5,
-    fleeGone: 150,
+    fleeTime: 9,
+    fleeMax: 2,
     /** Seconds to let go of a hull before diving. */
     releaseTime: 1.2,
   };

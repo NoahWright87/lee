@@ -542,14 +542,39 @@ describe('fleeing and dying', () => {
     expect(n.mode).toBe('dead');
   });
 
-  test('left alone, a fleeing Ness gets away: it is gone, and the fight is over without a kill', () => {
+  test('it retreats briefly, then comes back (still hurt) and can be finished off', () => {
+    const t = quiet(defaultTuning());
+    const k = nessKind(t, 'ness');
+    const { w, n } = alongside(t, []);
+    w.nesses.hurt(w, n, n.maxHp * 0.55, 'body');
+    const hp = n.hp;
+    expect(n.mode).toBe('flee');
+    let far = 0;
+    run(w, k.fleeTime + 4, () => {
+      pin(w.player);
+      far = Math.max(far, Math.hypot(n.motion.x, n.motion.y));
+    });
+    expect(far).toBeGreaterThan(30);
+    expect(['circle', 'approach', 'alongside']).toContain(n.mode);
+    expect(n.hp).toBe(hp);
+    expect(w.foesLeft()).toBe(1);
+    w.nesses.hurt(w, n, n.hp + 1, 'body');
+    expect(n.mode).toBe('dead');
+  });
+
+  test('it breaks off again at a quarter of its health, and after that fights on to the end', () => {
     const t = quiet(defaultTuning());
     const { w, n } = alongside(t, []);
     w.nesses.hurt(w, n, n.maxHp * 0.55, 'body');
-    run(w, 80, () => pin(w.player));
-    expect(n.mode).toBe('gone');
-    expect(w.foesLeft()).toBe(0);
-    expect(w.nessOutcomes()).toHaveLength(0);
+    expect(n.retreats).toBe(1);
+    n.mode = 'alongside';
+    w.nesses.hurt(w, n, n.hp - n.maxHp * 0.2, 'body');
+    expect(n.mode).toBe('flee');
+    expect(n.retreats).toBe(2);
+    n.mode = 'alongside';
+    w.nesses.hurt(w, n, n.hp - 5, 'body');
+    expect(n.mode).toBe('alongside');
+    expect(n.retreats).toBe(2);
   });
 
   test('killed, it floats on the surface with its neck at rest, and counts as slain', () => {
