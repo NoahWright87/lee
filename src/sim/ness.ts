@@ -68,7 +68,7 @@ export interface Neck {
   side: -1 | 1;
   state: NeckState;
   t: number;
-  /** The bite: where the head is going (the body's frame, so it stays put while the boats keep station), and the warning on your deck. */
+  /** The bite: where the head is going (a fixed point in the WORLD, chosen when the wind-up starts: if your boat moves it does not follow, which is the dodge), and the warning on your deck. */
   target: Vec | null;
   zone: DangerZone | null;
   /** The head now (world), and the neck's joints from the flank to it. */
@@ -288,11 +288,20 @@ function restLocal(n: Ness, k: NessKindTuning): Vec {
 /** Rearing back: the head pulled in from rest, away from the target. */
 function rearLocal(n: Ness, k: NessKindTuning): Vec {
   const r = restLocal(n, k);
-  const t = n.neck.target ?? r;
+  const t = n.neck.target ? bodyLocal(n, n.neck.target) : r;
   const a = neckAnchorLocal(n);
   const d = Math.hypot(t.x - a.x, t.y - a.y) || 1;
   const pull = 1.8;
   return { x: r.x - ((t.x - a.x) / d) * pull, y: r.y - ((t.y - a.y) / d) * pull * 0.6 };
+}
+
+/** A body-frame point pulled back to the neck's reach. */
+function reachClamp(n: Ness, k: NessKindTuning, p: Vec): Vec {
+  const a = neckAnchorLocal(n);
+  const d = Math.hypot(p.x - a.x, p.y - a.y);
+  const reach = neckReach(k);
+  if (d <= reach || d === 0) return p;
+  return { x: a.x + ((p.x - a.x) / d) * reach, y: a.y + ((p.y - a.y) / d) * reach };
 }
 
 const ease = (f: number): number => f * f * (3 - 2 * f);
@@ -301,7 +310,8 @@ const ease = (f: number): number => f * f * (3 - 2 * f);
 export function layoutNeck(n: Ness, k: NessKindTuning, _time: number): void {
   const neck = n.neck;
   const rest = restLocal(n, k);
-  const target = neck.target ?? rest;
+  // The aim point is fixed in the world; the head can only stretch as far as the neck reaches from where the body is now.
+  const target = reachClamp(n, k, neck.target ? bodyLocal(n, neck.target) : rest);
   const rear = rearLocal(n, k);
   let head: Vec;
   switch (neck.state) {
@@ -672,7 +682,7 @@ export class NessSystem {
       const score = lees * 10 - d;
       if (score > bestScore) {
         bestScore = score;
-        best = l;
+        best = toWorld(tile.center, me.motion, me.motion.heading);
       }
     }
     return best;
@@ -700,7 +710,7 @@ export class NessSystem {
               boat: w.player,
               warn: Math.max(0.1, k.biteWarn) + Math.max(0.05, k.biteStrike),
               source: n.id,
-              shape: () => ({ a: bodyWorld(n, rearLocal(n, k)), b: bodyWorld(n, neck.target ?? restLocal(n, k)), width: k.biteWidth, tip: k.biteTipRadius, neckShare: k.biteNeckShare }),
+              shape: () => ({ a: bodyWorld(n, rearLocal(n, k)), b: neck.target ?? bodyWorld(n, restLocal(n, k)), width: k.biteWidth, tip: k.biteTipRadius, neckShare: k.biteNeckShare }),
             });
             w.events.push({ type: 'nessBite', nessId: n.id, stage: 'windup' });
           } else neck.cool = 0.4;

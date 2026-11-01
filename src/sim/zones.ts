@@ -124,27 +124,12 @@ export class ZoneSystem {
   }
 }
 
-/** The middle of the tiles in danger (world), or the tip if none are. */
+/** Where a zone's bubble and impact are: the aim point, fixed in the world (it does not follow your boat; sail or step out of it). */
 export function zoneCenter(z: DangerZone): Vec {
-  if (!z.tiles.length) return z.shape().b;
-  // Weighted toward the tip: that is where the bubble should sit.
-  let x = 0;
-  let y = 0;
-  let sum = 0;
-  for (const i of z.tiles) {
-    const wgt = z.weights.get(i) ?? 0;
-    const p = toWorld(z.boat.grid.tiles[i].center, z.boat.motion, z.boat.motion.heading);
-    x += p.x * wgt;
-    y += p.y * wgt;
-    sum += wgt;
-  }
-  return sum > 0 ? { x: x / sum, y: y / sum } : z.shape().b;
+  return z.shape().b;
 }
 
-/** How far out from its center the tiles in danger reach, m (for a tap target). */
+/** How far out from the aim point a tap still counts, m. */
 export function zoneRadius(z: DangerZone): number {
-  const c = zoneCenter(z);
-  let r = 0;
-  for (const i of z.tiles) r = Math.max(r, dist(c, toWorld(z.boat.grid.tiles[i].center, z.boat.motion, z.boat.motion.heading)));
-  return r + Math.min(z.boat.grid.tileW, z.boat.grid.tileH) * 0.5;
+  return z.shape().tip + 1;
 }

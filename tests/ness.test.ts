@@ -283,6 +283,22 @@ describe('the bite', () => {
     expect(w.player.grid.tiles.map((x) => x.hp)).toEqual(tiles);
   });
 
+  test('the aim point and its bubble are fixed in the world: they do not follow a moving boat or Ness', () => {
+    const t = quiet(defaultTuning());
+    const { w, n } = alongside(t);
+    run(w, 0.3, () => pin(w.player));
+    const z = w.zones.pending(w.player)[0];
+    const at = { ...zoneCenter(z) };
+    const aim = { ...z.shape().b };
+    // The boat shifts a little (still under the bite) and the Ness drifts: the aim point stays where it was.
+    run(w, 0.5, () => pin(w.player, { x: w.player.motion.x + 0.6, y: w.player.motion.y }));
+    expect(w.zones.pending(w.player)[0]).toBe(z);
+    expect(zoneCenter(z)).toEqual(at);
+    expect(z.shape().b).toEqual(aim);
+    n.motion.x += 0.5;
+    expect(zoneCenter(z)).toEqual(at);
+  });
+
   test('it hits the tip hardest, and Lees there are hurt, the neck line less', () => {
     const t = quiet(defaultTuning());
     const { w, hold } = alongside(t);
