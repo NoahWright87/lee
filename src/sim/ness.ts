@@ -745,14 +745,14 @@ export class NessSystem {
     const eta = d / speed;
     const surfaceIn = Math.max(0.5, k.emergeTime) + 0.4;
     if (d > k.approachFrom) n.depthTarget = k.circleDepth - 0.15;
-    else if (eta > surfaceIn) n.depthTarget = k.shallowDepth;
+    else if (eta > surfaceIn && d > 35) n.depthTarget = k.shallowDepth;
     else n.depthTarget = 0;
     if (n.depthTarget < n.depth && n.depth > k.surfacedMax && n.depth <= k.shallowMax + 0.25) {
       const rate = Math.max(0.05, k.shallowDepth) / Math.max(0.2, k.emergeTime);
       const tt = Math.max(0, n.depth - k.surfacedMax) / rate;
       n.emergeAt = { x: n.motion.x + n.motion.vx * tt, y: n.motion.y + n.motion.vy * tt };
     } else n.emergeAt = null;
-    if (d <= 14 && n.depth <= k.surfacedMax) {
+    if (d <= 20 && n.depth <= k.surfacedMax) {
       this.setMode(w, n, 'spit');
       n.spit.shots = 0;
       n.spit.cool = k.spitFirst;
@@ -763,7 +763,7 @@ export class NessSystem {
     } else if (n.modeT > 40 || w.isSinking(w.player)) this.setMode(w, n, 'withdraw');
   }
 
-  /** Up and holding its range: rear, spit, a few times, then sink away. */
+  /** Up and holding its range: it fires whenever your boat is in range, like a cannon, until something threatens it, then sinks away. */
   private spitting(w: World, n: Ness, k: NessKindTuning, dt: number): void {
     const { spec } = this.spitSlot(w, n, k);
     const params = this.params(w, n, 1);
@@ -773,9 +773,14 @@ export class NessSystem {
     n.alongT += dt;
     n.emergeAt = null;
     const me = w.player;
+    const R = Math.max(10, k.spitRange);
     const range = distanceToHull(me, { x: n.motion.x, y: n.motion.y });
-    const inRange = range <= Math.max(10, k.spitRange) && n.depth <= k.surfacedMax && !w.isSinking(me);
+    const up = n.depth <= k.surfacedMax;
     const neck = n.neck;
+    if (w.isSinking(me)) {
+      this.setMode(w, n, 'withdraw');
+      return;
+    }
     // It shifts to a quieter side when you bring guns to bear, but slowly: turn fast and it is caught out.
     n.spit.recheck -= dt;
     if (n.spit.recheck <= 0) {
@@ -785,23 +790,22 @@ export class NessSystem {
         if (this.cover(w, k, b) < this.cover(w, k, n.spit.bearing)) n.spit.bearing = b;
       }
     }
-    if (neck.state === 'rest') {
-      n.spit.cool -= dt;
-      if (n.spit.shots >= Math.max(1, Math.round(k.spitsPerPass))) {
-        this.setMode(w, n, 'withdraw');
-        return;
-      }
-      // The head rears back for `biteWarn` s, then the glob goes.
-      if (n.spit.cool <= Math.max(0.05, k.biteWarn) && inRange) {
-        n.spit.aim = this.spitAim(w, n, k);
-        neck.target = n.spit.aim;
-        neck.deckPoint = null;
-        neck.state = 'windup';
-        neck.t = 0;
-        neck.zone = null;
-      }
+    // Threatened: your hull is close, or it is hurt. It still takes its one shot first, then goes under.
+    const threatened = range <= R * Math.max(0, k.spitThreat) || n.hp <= n.maxHp * Math.max(0, k.spitDiveHp);
+    if (neck.state === 'rest' && ((threatened && n.spit.shots >= 1) || (n.spit.shots === 0 && n.alongT > Math.max(2, k.spitMaxUp)))) {
+      this.setMode(w, n, 'withdraw');
+      return;
     }
-    if (w.isSinking(me)) this.setMode(w, n, 'withdraw');
+    // The reload runs while the head swings; the glob goes when the head has reared back.
+    n.spit.cool -= dt;
+    if (neck.state === 'rest' && up && range <= R && n.spit.cool <= Math.max(0.05, k.biteWarn)) {
+      n.spit.aim = this.spitAim(w, n, k);
+      neck.target = n.spit.aim;
+      neck.deckPoint = null;
+      neck.state = 'windup';
+      neck.t = 0;
+      neck.zone = null;
+    }
   }
 
   /** Where the next glob goes: a spot on your deck, led by how you are moving, with a little scatter. */
@@ -810,11 +814,12 @@ export class NessSystem {
     const tiles = me.grid.tiles;
     const tile = tiles[Math.min(tiles.length - 1, Math.floor(w.rng.next() * tiles.length))];
     const from = neckAnchor(n);
-    let aim = toWorld(tile.center, me.motion, me.motion.heading);
-    let flight = dist(from, aim) / Math.max(5, k.spitSpeed);
+    const at = toWorld(tile.center, me.motion, me.motion.heading);
+    let aim = at;
+    let flight = w.spitFlight(dist(from, aim), k);
     for (let i = 0; i < 3; i++) {
-      aim = { x: toWorld(tile.center, me.motion, me.motion.heading).x + me.motion.vx * flight, y: toWorld(tile.center, me.motion, me.motion.heading).y + me.motion.vy * flight };
-      flight = dist(from, aim) / Math.max(5, k.spitSpeed);
+      aim = { x: at.x + me.motion.vx * flight, y: at.y + me.motion.vy * flight };
+      flight = w.spitFlight(dist(from, aim), k);
     }
     const spread = Math.max(0, k.spitSpread) + Math.max(0, k.spitSpreadPerM) * dist(from, aim);
     const off = w.rng.inDisk(spread);
@@ -826,7 +831,7 @@ export class NessSystem {
     const aim = n.spit.aim ?? n.neck.target;
     if (!aim) return;
     n.spit.shots++;
-    n.spit.cool = Math.max(0.3, k.spitInterval);
+    n.spit.cool = Math.max(0.3, w.tuning.guns.reloadTime * Math.max(0.1, k.spitReload));
     n.spit.aim = null;
     w.fireSpit(n, n.neck.head, aim, k);
   }

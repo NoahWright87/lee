@@ -139,25 +139,29 @@ export function defaultNessKind() {
     /** Seconds to let go of a hull before diving. */
     releaseTime: 1.2,
     /**
-     * Spitting (the spitting kinds only; 0 range = doesn't spit). It keeps `spitNear`..`spitFar` of its range from your boat (m), on the side with the fewest
-     * manned guns that reach, surfaces, waits `spitFirst` s, then spits `spitsPerPass` times `spitInterval` s apart (the head rears for `biteWarn` s first)
-     * and dives again. A glob flies `spitSpeed` m/s (so its red X is up for dist ÷ speed s, like a shell), lands within `spitSpread` m (+ `spitSpreadPerM` per m of
-     * range), and does `spitDamage` × a cannon ball to the part it hits and `spitCrewDamage` × to the Lees there, but lets in `spitWater` units of water
-     * (a cannon hit is ~1.5): bail it, or sail slowly.
+     * Spitting (the spitting kinds only; 0 range = doesn't spit). It keeps `spitNear`..`spitFar` of its range (m) from your boat, on the side with the fewest
+     * manned guns, surfaces, and then spits like a cannon: any time your boat is in range, one glob every `spitReload` × a cannon's reload (a little slower,
+     * since a neck swings through a wide arc), the head rearing for `biteWarn` s first. A glob flies as long as a cannon ball (`spitShellSpeed` × a cannon's) with
+     * its red X up for that time, lands within `spitSpread` m (+ `spitSpreadPerM` per m), and does `spitDamage` × a cannon ball to the part it hits and
+     * `spitCrewDamage` × to the Lees there, but lets in `spitWater` units of water (a cannon hit is ~1.5): bail it, or sail slowly.
+     * It stays up until it feels threatened, but never before one shot: your hull within `spitThreat` of its range, or its HP at or below `spitDiveHp` of full.
+     * Then it dives and circles again. (It also gives up a pass that has had no shot in `spitMaxUp` s.)
      */
     spitRange: 0,
     spitNear: 0.7,
     spitFar: 0.9,
-    spitFirst: 1.2,
-    spitInterval: 2.2,
-    spitsPerPass: 4,
-    spitSpeed: 36,
+    spitFirst: 0.3,
+    spitReload: 1.25,
+    spitShellSpeed: 1,
     spitSpread: 1.5,
     spitSpreadPerM: 0.03,
     spitDamage: 0.5,
     spitCrewDamage: 0.4,
     spitWater: 8,
     spitSplash: 1,
+    spitThreat: 0.35,
+    spitDiveHp: 0.7,
+    spitMaxUp: 12,
     spitRadius: 1.8,
   };
 }
@@ -199,10 +203,12 @@ export function defaultNessTuning() {
         speedMul: 1.2,
         chargeMul: 1.25,
         turnRate: 20,
-        circleRange: 140,
-        circleWobble: 20,
-        circleMin: 6,
-        circleMax: 10,
+        circleRange: 112,
+        circleWobble: 8,
+        circleMin: 2,
+        circleMax: 4,
+        emergeTime: 1.6,
+        diveTime: 2.5,
         approachFrom: 70,
         headRadius: 1.8,
         neckLength: 3,

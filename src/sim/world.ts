@@ -1863,10 +1863,17 @@ export class World {
     });
   }
 
+  /** How long a spat glob flies: as long as a cannon ball over the same distance (× its own speed). */
+  spitFlight(distance: number, k: NessKindTuning): number {
+    const G = this.tuning.guns;
+    const t = (G.flightTimeBase + G.flightTimePerMeter * distance) / Math.max(0.05, k.spitShellSpeed);
+    return Math.max(this.tuning.telegraph.minWarningTime, t);
+  }
+
   /** A spitting Ness lets a glob go from its head at `to`: a shell that lands in a moment (a red X goes up for you), light on damage and heavy on water. */
   fireSpit(n: Ness, head: Vec, to: Vec, k: NessKindTuning): void {
     const G = this.tuning.guns;
-    const flight = Math.max(0.4, dist(head, to) / Math.max(5, k.spitSpeed));
+    const flight = this.spitFlight(dist(head, to), k);
     const start = { x: head.x, y: head.y };
     this.shells.push({
       id: this.nextShellId++,

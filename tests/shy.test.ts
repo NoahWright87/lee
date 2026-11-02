@@ -47,41 +47,41 @@ describe('the Shyness', () => {
     expect(n.length).toBeLessThan(nessKind(t, 'ness').length);
   });
 
-  test('it circles out of reach, rises at 70-90% of its range, spits a few times and sinks again', () => {
+  test('it circles at a safe distance, rises at 70-90% of its range, and fires whenever you are in range', () => {
     const t = quiet(defaultTuning());
     const k = nessKind(t, 'shy');
     const { w, n } = setup(t);
-    n.circleFor = 4;
+    n.circleFor = 3;
     const ranges: number[] = [];
-    let spits = 0;
+    const times: number[] = [];
     let maxDepthWhileSpitting = 0;
     let circledFar = Infinity;
     const modes = new Set<string>();
     run(w, 60, () => {
       pin(w.player);
       modes.add(n.mode);
-      if (n.mode === 'circle' && n.modeT > 4) circledFar = Math.min(circledFar, Math.hypot(n.motion.x, n.motion.y));
+      if (n.mode === 'circle' && n.modeT > 2) circledFar = Math.min(circledFar, Math.hypot(n.motion.x, n.motion.y));
       if (n.mode === 'spit') {
         ranges.push(Math.hypot(n.motion.x, n.motion.y));
         maxDepthWhileSpitting = Math.max(maxDepthWhileSpitting, n.depth);
       }
-      for (const e of w.drainEvents()) if (e.type === 'fire' && e.gun === 'spit') spits++;
+      for (const e of w.drainEvents()) if (e.type === 'fire' && e.gun === 'spit') times.push(w.time);
     });
     expect(modes.has('approach')).toBe(true);
     expect(modes.has('spit')).toBe(true);
-    // Safe while circling: beyond its own spitting range.
-    expect(circledFar).toBeGreaterThan(k.spitRange);
-    // Up while it spits, at its chosen range.
+    // Safe while circling: about its own range or further.
+    expect(circledFar).toBeGreaterThan(k.spitRange * 0.95);
     expect(maxDepthWhileSpitting).toBeLessThanOrEqual(k.surfacedMax + 1e-6);
     const settled = ranges.slice(Math.floor(ranges.length / 2));
     expect(Math.min(...settled)).toBeGreaterThan(k.spitRange * (k.spitNear - 0.08));
     expect(Math.max(...settled)).toBeLessThan(k.spitRange * (k.spitFar + 0.08));
-    // A few spits a pass, then it goes under (and comes round again).
-    expect(spits).toBeGreaterThanOrEqual(k.spitsPerPass);
-    expect(modes.has('withdraw')).toBe(true);
+    // It keeps firing while it is up: at least a handful in the minute, never faster than a cannon would.
+    expect(times.length).toBeGreaterThanOrEqual(5);
+    const cannon = t.guns.reloadTime;
+    for (let i = 1; i < times.length; i++) if (times[i] - times[i - 1] < 20) expect(times[i] - times[i - 1]).toBeGreaterThanOrEqual(cannon - 0.05);
   });
 
-  test('its spit has a red X like a cannon ball, and lands later the further it flies', () => {
+  test('it stays up and fires on a loop while nothing threatens it, a little slower than a cannon', () => {
     const t = quiet(defaultTuning());
     const k = nessKind(t, 'shy');
     const { w, n } = setup(t);
@@ -90,13 +90,80 @@ describe('the Shyness', () => {
     n.depth = 0;
     n.depthTarget = 0;
     n.spit.cool = 0.1;
-    run(w, 1.2, () => pin(w.player));
+    n.spit.bearing = Math.PI / 2;
+    let shots = 0;
+    let first = 0;
+    let last = 0;
+    run(w, 25, () => {
+      pin(w.player);
+      for (const e of w.drainEvents()) {
+        if (e.type === 'fire' && e.gun === 'spit') {
+          shots++;
+          first = first || w.time;
+          last = w.time;
+        }
+      }
+    });
+    expect(n.mode).toBe('spit');
+    expect(shots).toBeGreaterThanOrEqual(5);
+    const gap = (last - first) / (shots - 1);
+    expect(gap).toBeGreaterThanOrEqual(t.guns.reloadTime * 1.2 - 0.05);
+    expect(gap).toBeLessThan(t.guns.reloadTime * k.spitReload + 0.4);
+  });
+
+  test('a glob takes as long as a cannon ball to land, and its red X is up for that long', () => {
+    const t = quiet(defaultTuning());
+    const k = nessKind(t, 'shy');
+    const { w, n } = setup(t);
+    w.fireSpit(n, { x: 70, y: 0 }, { x: 0, y: 0 }, k);
+    const G = t.guns;
+    const expected = Math.max(t.telegraph.minWarningTime, G.flightTimeBase + G.flightTimePerMeter * 70);
+    const shell = w.shells[w.shells.length - 1];
+    expect(shell.flightTime).toBeCloseTo(expected, 5);
     const x = w.telegraphs.list.find((tg) => tg.kind === 'shell');
     expect(x).toBeDefined();
-    const shell = w.shells.find((s) => s.gun === 'spit');
-    expect(shell).toBeDefined();
-    expect(shell!.flightTime).toBeGreaterThan(1.2);
-    expect(shell!.flightTime).toBeLessThan(80 / k.spitSpeed + 1.5);
+  });
+
+  test('threatened it dives, but only after taking a shot: your hull close, or its HP low', () => {
+    const t = quiet(defaultTuning());
+    const k = nessKind(t, 'shy');
+    // No shot yet: it takes one first even with you on top of it.
+    {
+      const { w, n } = setup(t);
+      Object.assign(n.motion, { x: 20, y: 0, heading: -Math.PI / 2 });
+      n.mode = 'spit';
+      n.depth = 0;
+      n.depthTarget = 0;
+      n.spit.cool = 0.1;
+      n.spit.bearing = Math.PI / 2;
+      let shots = 0;
+      let dived = false;
+      run(w, 8, () => {
+        pin(w.player);
+        for (const e of w.drainEvents()) if (e.type === 'fire' && e.gun === 'spit') shots++;
+        if (n.mode === 'withdraw') dived = true;
+      });
+      expect(shots).toBeGreaterThanOrEqual(1);
+      expect(dived).toBe(true);
+    }
+    // Hurt: below the threshold it fires once and sinks.
+    {
+      const { w, n } = setup(t);
+      Object.assign(n.motion, { x: 80, y: 0, heading: Math.PI });
+      n.mode = 'spit';
+      n.depth = 0;
+      n.depthTarget = 0;
+      n.spit.cool = 0.1;
+      n.spit.bearing = Math.PI / 2;
+      n.hp = n.maxHp * (k.spitDiveHp - 0.05);
+      let shots = 0;
+      run(w, 8, () => {
+        pin(w.player);
+        for (const e of w.drainEvents()) if (e.type === 'fire' && e.gun === 'spit') shots++;
+      });
+      expect(shots).toBe(1);
+      expect(['withdraw', 'circle', 'approach']).toContain(n.mode);
+    }
   });
 
   test('a spit hit does little damage but dumps a lot of water, which slows the boat', () => {
