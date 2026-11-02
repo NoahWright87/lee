@@ -595,7 +595,8 @@ export class NessSystem {
       const tt = Math.max(0, n.depth - k.surfacedMax) / rate;
       n.emergeAt = { x: n.motion.x + n.motion.vx * tt, y: n.motion.y + n.motion.vy * tt };
     } else n.emergeAt = null;
-    if (d <= 12 && n.depth <= k.surfacedMax) {
+    // Up and at your hull (in its slot, or just jammed against you at a bad angle) is alongside: it attacks from wherever it is.
+    if (n.depth <= k.surfacedMax && (d <= 12 || bodyGap(n, w.player).gap <= k.standoff + 4)) {
       this.setMode(w, n, 'alongside');
       n.alongT = 0;
       n.bites = 0;
@@ -756,7 +757,8 @@ export class NessSystem {
       const tt = Math.max(0, n.depth - k.surfacedMax) / rate;
       n.emergeAt = { x: n.motion.x + n.motion.vx * tt, y: n.motion.y + n.motion.vy * tt };
     } else n.emergeAt = null;
-    if (d <= 20 && n.depth <= k.surfacedMax) {
+    // Up and in range is enough: it starts spitting as soon as it can reach you, even if it has not got to its spot yet.
+    if (n.depth <= k.surfacedMax && (d <= 20 || distanceToHull(w.player, { x: n.motion.x, y: n.motion.y }) <= Math.max(10, k.spitRange))) {
       this.setMode(w, n, 'spit');
       n.spit.shots = 0;
       n.spit.cool = k.spitFirst;
@@ -881,8 +883,7 @@ export class NessSystem {
     switch (neck.state) {
       case 'rest':
         neck.cool -= dt;
-        // It bites once it has settled beside you (not while it is still drifting into place).
-        if (n.mode === 'alongside' && neck.cool <= 0 && !w.result && Math.hypot(n.motion.vx - w.player.motion.vx, n.motion.vy - w.player.motion.vy) < 2.5 && Math.abs(wrapAngle(n.motion.heading - w.player.motion.heading)) < 0.2) {
+        if (n.mode === 'alongside' && neck.cool <= 0 && !w.result) {
           const target = this.biteTarget(w, n, k);
           if (target) {
             neck.deckPoint = target;

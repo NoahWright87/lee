@@ -246,6 +246,31 @@ describe('what reaches it, by depth', () => {
   });
 });
 
+describe('jammed against the hull', () => {
+  test('a surfaced Ness against your boat at a bad angle (not in its slot) still attacks', () => {
+    const t = quiet(defaultTuning());
+    const { w, n } = setup(t, []);
+    // Crosswise to your boat, nose to the rail, surfaced, still in "approach" with its slot somewhere else.
+    n.neck.side = 1;
+    Object.assign(n.motion, { x: -12, y: 4, heading: 0, vx: 0, vy: 0, omega: 0 });
+    n.boatSide = -1;
+    n.mode = 'approach';
+    n.depth = 0;
+    n.depthTarget = 0;
+    n.neck.cool = 0;
+    for (const h of n.hands) h.readyAt = 1e9;
+    const states = new Set<string>();
+    const modes = new Set<string>();
+    run(w, 8, () => {
+      pin(w.player);
+      states.add(n.neck.state);
+      modes.add(n.mode);
+    });
+    expect(modes.has('alongside')).toBe(true);
+    expect(states.has('windup')).toBe(true);
+  });
+});
+
 describe('cannon balls and a diving Ness', () => {
   const lob = (w: World, at: Vec, flight: number) =>
     w.shells.push({ id: 9000 + w.shells.length, group: 9000 + w.shells.length, ownerId: w.player.id, ownerSide: 'player', gun: 'cannon', mode: 'shell', from: { x: 0, y: 0 }, to: { ...at }, elapsed: 0, flightTime: flight, damage: 10, crewDamage: 0, splash: 0, impactRadius: 3, leeId: null });

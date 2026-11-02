@@ -166,6 +166,24 @@ describe('the Shyness', () => {
     }
   });
 
+  test('it fires as soon as it is up and in range, even before it reaches its spot', () => {
+    const t = quiet(defaultTuning());
+    const { w, n } = setup(t);
+    // Surfaced 60 m off the bow, still "approaching" a spot 80 m off the beam.
+    Object.assign(n.motion, { x: 0, y: -60, heading: -Math.PI / 2 });
+    n.mode = 'approach';
+    n.depth = 0;
+    n.depthTarget = 0;
+    n.spit.bearing = Math.PI / 2;
+    n.modeT = 5;
+    let shots = 0;
+    run(w, 4, () => {
+      pin(w.player);
+      for (const e of w.drainEvents()) if (e.type === 'fire' && e.gun === 'spit') shots++;
+    });
+    expect(shots).toBeGreaterThanOrEqual(1);
+  });
+
   test('a spit hit does little damage but dumps a lot of water, which slows the boat', () => {
     const t = quiet(defaultTuning());
     const k = nessKind(t, 'shy');
