@@ -37,7 +37,7 @@ export function oceanFit(w: World, prev: Set<number>): { boats: Boat[]; nesses: 
   // A Ness is in play while it is near the surface, or its shadow is within your guns' reach.
   for (const n of monsters) {
     const reach = Math.max(mine, 60) * (prev.has(n.id) ? slack : 1);
-    if (n.mode === 'alongside' || n.mode === 'approach' || distanceToHull(me, { x: n.motion.x, y: n.motion.y }) <= reach) inPlay.add(n.id);
+    if (n.mode === 'alongside' || n.mode === 'approach' || n.mode === 'spit' || distanceToHull(me, { x: n.motion.x, y: n.motion.y }) <= reach) inPlay.add(n.id);
   }
   const any = inPlay.size > 0;
   prev.clear();

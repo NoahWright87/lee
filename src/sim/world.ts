@@ -1,6 +1,7 @@
 // The one game world both views read from. Fixed-step, deterministic for a
 // given seed and input sequence.
 
+import type { NessKindTuning } from '../config/ness';
 import { ITEMS } from '../config/items';
 import { LEE_DEFS } from '../config/lees';
 import type { Side, Tuning } from '../config/tuning';
@@ -67,6 +68,8 @@ export interface Shell {
   impactRadius: number;
   /** The Lee who fired it (for per-Lee stats). */
   leeId: number | null;
+  /** Extra water a hit lets in (a Ness's spit: little damage, a lot of water). */
+  water?: number;
 }
 
 /** A depth charge sinking: it has a depth like a Ness does, and blows when its time is up or a Ness swims into it. */
@@ -1860,6 +1863,34 @@ export class World {
     });
   }
 
+  /** A spitting Ness lets a glob go from its head at `to`: a shell that lands in a moment (a red X goes up for you), light on damage and heavy on water. */
+  fireSpit(n: Ness, head: Vec, to: Vec, k: NessKindTuning): void {
+    const G = this.tuning.guns;
+    const flight = Math.max(0.4, dist(head, to) / Math.max(5, k.spitSpeed));
+    const start = { x: head.x, y: head.y };
+    this.shells.push({
+      id: this.nextShellId++,
+      group: this.nextGroup++,
+      ownerId: -n.id,
+      ownerSide: 'enemy',
+      gun: 'spit',
+      mode: 'shell',
+      from: start,
+      to,
+      elapsed: 0,
+      flightTime: flight,
+      damage: G.damage * Math.max(0, k.spitDamage),
+      crewDamage: G.crewDamage * Math.max(0, k.spitCrewDamage),
+      splash: 0,
+      impactRadius: Math.max(0.5, k.spitRadius),
+      leeId: null,
+      water: k.spitWater,
+    });
+    this.stats.enemy.shellsFired++;
+    this.telegraphs.add('shell', to, flight, this.tuning.telegraph.lingerTime, Math.max(1, k.spitSplash));
+    this.events.push({ type: 'fire', boatId: -n.id, cannon: 0, from: start, to, gun: 'spit' });
+  }
+
   // ------------------------------------------------------------ nesses
 
   /** Where each live Ness can be shot at (its body), and how deep it is: what a gun may aim at. */
@@ -2090,7 +2121,7 @@ export class World {
     const dmg = applyDamage(hitPart, s.damage);
     // Every hit lets water in; a hit on a part that's already wrecked punches straight through. Pellets let in less.
     const waterScale = Math.min(1, s.damage / Math.max(1e-6, G.damage));
-    this.stats[hitBoat.side].waterTaken += floodPart(hitBoat, hitPart, (wasWrecked ? G.holeWater : G.hitWater) * waterScale);
+    this.stats[hitBoat.side].waterTaken += floodPart(hitBoat, hitPart, (wasWrecked ? G.holeWater : G.hitWater) * waterScale + Math.max(0, s.water ?? 0));
     this.stats[s.ownerSide].shellsHit++;
     this.stats[s.ownerSide].damageDealt += dmg.dealt;
     const shooter = s.leeId !== null ? this.findLee(s.leeId) : null;

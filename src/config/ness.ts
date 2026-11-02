@@ -14,19 +14,14 @@ export interface NessDef {
   blurb: string;
   /** Body color (CSS hex). */
   color: string;
+  /** How it fights: a biter comes alongside and bites and grabs; a spitter keeps its distance and lobs spit. */
+  style: 'biter' | 'spitter';
+  /** What its slots hold (a hand on each flank for the plain Ness; the spitter has none). */
+  slots: NessSlotDef[];
 }
 
-/** The kinds, in menu order (one for now). */
-export const NESS_ORDER = ['ness'] as const;
-
-export const NESS: Record<string, NessDef> = {
-  ness: {
-    id: 'ness',
-    name: 'Ness',
-    blurb: 'A sea monster a little faster than you. It circles, then rises beside your boat, bites, and grabs on.',
-    color: '#6fae86',
-  },
-};
+/** The kinds, in menu order. */
+export const NESS_ORDER = ['ness', 'shy'] as const;
 
 /** What a slot on a Ness holds (its "edge slots": the places a boat keeps hooks and spikes). */
 export type NessSlotType = 'hand' | 'foot';
@@ -47,6 +42,25 @@ export const NESS_SLOTS: NessSlotDef[] = [
   { id: 'hand:port', type: 'hand', side: -1, along: 0.25, item: 'grab' },
   { id: 'hand:starboard', type: 'hand', side: 1, along: 0.25, item: 'grab' },
 ];
+
+export const NESS: Record<string, NessDef> = {
+  ness: {
+    id: 'ness',
+    name: 'Ness',
+    blurb: 'A sea monster a little faster than you. It circles, then rises beside your boat, bites, and grabs on.',
+    color: '#6fae86',
+    style: 'biter',
+    slots: NESS_SLOTS,
+  },
+  shy: {
+    id: 'shy',
+    name: 'Shyness',
+    blurb: 'Keeps its distance. It circles out of reach, rises on your weakest side, spits a few times (a little damage and a lot of water to bail), and sinks again.',
+    color: '#d98fa8',
+    style: 'spitter',
+    slots: [],
+  },
+};
 
 /** What one Ness kind does, in numbers. Meters, seconds, degrees per second where noted. */
 export function defaultNessKind() {
@@ -124,6 +138,27 @@ export function defaultNessKind() {
     fleeMax: 2,
     /** Seconds to let go of a hull before diving. */
     releaseTime: 1.2,
+    /**
+     * Spitting (the spitting kinds only; 0 range = doesn't spit). It keeps `spitNear`..`spitFar` of its range from your boat (m), on the side with the fewest
+     * manned guns that reach, surfaces, waits `spitFirst` s, then spits `spitsPerPass` times `spitInterval` s apart (the head rears for `biteWarn` s first)
+     * and dives again. A glob flies `spitSpeed` m/s (so its red X is up for dist ÷ speed s, like a shell), lands within `spitSpread` m (+ `spitSpreadPerM` per m of
+     * range), and does `spitDamage` × a cannon ball to the part it hits and `spitCrewDamage` × to the Lees there, but lets in `spitWater` units of water
+     * (a cannon hit is ~1.5): bail it, or sail slowly.
+     */
+    spitRange: 0,
+    spitNear: 0.7,
+    spitFar: 0.9,
+    spitFirst: 1.2,
+    spitInterval: 2.2,
+    spitsPerPass: 4,
+    spitSpeed: 36,
+    spitSpread: 1.5,
+    spitSpreadPerM: 0.03,
+    spitDamage: 0.5,
+    spitCrewDamage: 0.4,
+    spitWater: 8,
+    spitSplash: 1,
+    spitRadius: 1.8,
   };
 }
 
@@ -150,6 +185,34 @@ export function defaultNessTuning() {
       /** Seconds a dead Ness floats before it fades from the sea. */
       corpseTime: 40,
     },
-    kinds: { ness: defaultNessKind() } as Record<string, NessKindTuning>,
+    kinds: {
+      ness: defaultNessKind(),
+      // Shyness: smaller, fragile (it only has the moments it is up to be shot), quick, and it spits from afar.
+      shy: {
+        ...defaultNessKind(),
+        cost: 90,
+        weight: 1,
+        length: 18,
+        beam: 8,
+        mass: 1,
+        hp: 45,
+        speedMul: 1.2,
+        chargeMul: 1.25,
+        turnRate: 20,
+        circleRange: 140,
+        circleWobble: 20,
+        circleMin: 6,
+        circleMax: 10,
+        approachFrom: 70,
+        headRadius: 1.8,
+        neckLength: 3,
+        biteWarn: 0.8,
+        biteStrike: 0.2,
+        biteHold: 0.25,
+        biteRetract: 0.6,
+        fleeMax: 1,
+        spitRange: 100,
+      },
+    } as Record<string, NessKindTuning>,
   };
 }

@@ -19,17 +19,17 @@
 // A kind is data (config/ness.ts); slots on its flanks (hands now; feet, claws,
 // spikes, special tails later) are data too.
 
-import { NESS, NESS_SLOTS, type NessDef, type NessKindTuning, type NessSlotDef } from '../config/ness';
+import { NESS, type NessDef, type NessKindTuning, type NessSlotDef } from '../config/ness';
 import type { Tuning } from '../config/tuning';
-import { distanceToHull, hullCapsule, keelSegment, motionParams, type Boat } from './boat';
+import { distanceToHull, gunOnline, gunSpec, hullCapsule, keelSegment, motionParams, type Boat } from './boat';
 import { mass, nearestHullPoint } from './lines';
 import { clamp, closestSegments, DEG, dist, lerp, toLocal, toWorld, wrapAngle, type Rng, type Vec } from './math';
 import { alongsideCommand, stepMotion, type MotionParams, type MotionState } from './steering';
-import { leeStat, standingTile } from './crew';
+import { leeStat, standingTile, workerAt } from './crew';
 import type { DangerZone } from './zones';
 import type { World } from './world';
 
-export type NessMode = 'circle' | 'approach' | 'alongside' | 'withdraw' | 'flee' | 'dead' | 'gone';
+export type NessMode = 'circle' | 'approach' | 'alongside' | 'spit' | 'withdraw' | 'flee' | 'dead' | 'gone';
 export type NeckState = 'rest' | 'windup' | 'strike' | 'hold' | 'retract';
 export type HandState = 'stowed' | 'reaching' | 'holding' | 'retracting';
 export type NessPartKind = 'body' | 'head' | 'hand';
@@ -112,6 +112,8 @@ export interface Ness {
   /** How many times it has broken off already. */
   retreats: number;
   alongT: number;
+  /** Spitters: the side it chose (a bearing from your bow, radians, + toward starboard), globs spat this pass, seconds to the next, and where the next is going. */
+  spit: { bearing: number; shots: number; cool: number; aim: Vec | null; recheck: number };
   /** Where it will break the surface (for the ⚠️), or null. */
   emergeAt: Vec | null;
   neck: Neck;
@@ -159,9 +161,10 @@ export function createNess(id: number, spec: NessSpec, t: Tuning, pos: Vec, head
     bites: 0,
     retreats: 0,
     alongT: 0,
+    spit: { bearing: 0, shots: 0, cool: 0, aim: null, recheck: 5 },
     emergeAt: null,
     neck: { side, state: 'rest', t: 0, target: null, deckPoint: null, zone: null, head: { ...pos }, pts: [], cool: k.biteFirst },
-    hands: NESS_SLOTS.filter((s) => s.type === 'hand').map((slot) => ({
+    hands: def.slots.filter((s) => s.type === 'hand').map((slot) => ({
       slot,
       state: 'stowed' as HandState,
       t: 0,
@@ -249,7 +252,7 @@ export function gunReaches(mode: string, band: NessBand): boolean {
 
 /** Is the head on a boat now (striking or held there), so Lees can hit it? */
 export function isHeadOpen(n: Ness): boolean {
-  return isAlive(n) && (n.neck.state === 'hold' || n.neck.state === 'strike');
+  return isAlive(n) && n.def.style === 'biter' && (n.neck.state === 'hold' || n.neck.state === 'strike');
 }
 
 /** The hand's place on its flank (world). */
@@ -490,6 +493,9 @@ export class NessSystem {
         case 'alongside':
           this.alongside(w, n, k, dt);
           break;
+        case 'spit':
+          this.spitting(w, n, k, dt);
+          break;
         case 'withdraw':
           this.withdraw(w, n, k, dt);
           break;
@@ -530,7 +536,8 @@ export class NessSystem {
   /** Swim a loose circle around you, never a straight line, until it is time to attack. */
   private circle(w: World, n: Ness, k: NessKindTuning, dt: number): void {
     const me = w.player.motion;
-    const params = this.params(w, n, 0.85);
+    // (A spitter swims flat out: it has to stay clear of you, and you may be sailing toward it.)
+    const params = this.params(w, n, n.def.style === 'spitter' ? 1 : 0.85);
     const R = k.circleRange + k.circleWobble * Math.sin(n.modeT * 0.55 + n.phase);
     const toMe = Math.atan2(n.motion.y - me.y, n.motion.x - me.x);
     const d = dist(n.motion, me);
@@ -560,6 +567,10 @@ export class NessSystem {
 
   /** Run in: shallow first (the shadow shrinks and darkens), then break the surface beside your hull. */
   private approach(w: World, n: Ness, k: NessKindTuning, dt: number): void {
+    if (n.def.style === 'spitter') {
+      this.approachSpit(w, n, k, dt);
+      return;
+    }
     const { spec, point } = this.slot(w, n, k);
     const base = this.params(w, n, 1);
     // The run in is quick: faster than its ordinary swimming, so it can catch a boat that is sailing.
@@ -674,6 +685,152 @@ export class NessSystem {
     }
   }
 
+  // ------------------------------------------------------------ spitting
+
+  /** Where a spitter wants to be: `spitFar`..`spitNear` of its range from your boat, on the bearing it chose (from your bow). */
+  private spitSlot(w: World, n: Ness, k: NessKindTuning): { spec: { other: MotionState; offset: number; side: number; along: number }; point: Vec } {
+    const o = w.player.motion;
+    const D = Math.max(10, k.spitRange) * (k.spitNear + k.spitFar) * 0.5;
+    const along = Math.cos(n.spit.bearing) * D;
+    const across = Math.sin(n.spit.bearing) * D;
+    const fwd = { x: Math.cos(o.heading), y: Math.sin(o.heading) };
+    const perp = { x: -fwd.y, y: fwd.x };
+    const side = across >= 0 ? 1 : -1;
+    return { spec: { other: o, offset: Math.abs(across), side, along }, point: { x: o.x + perp.x * across + fwd.x * along, y: o.y + perp.y * across + fwd.y * along } };
+  }
+
+  /** How many of your manned guns could answer from `bearing` (from your bow, + toward starboard) at its distance. */
+  private cover(w: World, k: NessKindTuning, bearing: number): number {
+    const me = w.player;
+    const D = Math.max(10, k.spitRange) * (k.spitNear + k.spitFar) * 0.5;
+    let cover = 0;
+    for (const g of me.guns) {
+      if (!gunOnline(me, g, w.tuning) || !workerAt(me, g.station)) continue;
+      const spec = gunSpec(me, g, w.tuning);
+      if (spec.range < D * 0.85) continue;
+      // A gun covers a bearing if it points that way (its arc, a little generous: the boat turns).
+      if (Math.abs(wrapAngle(bearing - g.face)) <= spec.arcHalf + 0.15) cover++;
+    }
+    return cover;
+  }
+
+  /** The bearing with the fewest manned guns that reach; ties go to the nearest to where it is now (the least swimming). */
+  private weakBearing(w: World, n: Ness, k: NessKindTuning): number {
+    const me = w.player;
+    const now = wrapAngle(Math.atan2(n.motion.y - me.motion.y, n.motion.x - me.motion.x) - me.motion.heading);
+    let best = now;
+    let bestScore = Infinity;
+    const STEPS = 24;
+    for (let i = 0; i < STEPS; i++) {
+      const b = wrapAngle(now + (i / STEPS) * Math.PI * 2);
+      const score = this.cover(w, k, b) * 10 + Math.abs(wrapAngle(b - now));
+      if (score < bestScore - 1e-9) {
+        bestScore = score;
+        best = b;
+      }
+    }
+    return best;
+  }
+
+  /** Run in to the spitting spot, shallow first, and break the surface as it arrives. */
+  private approachSpit(w: World, n: Ness, k: NessKindTuning, dt: number): void {
+    if (n.modeT < dt * 1.5) n.spit.bearing = this.weakBearing(w, n, k);
+    const { spec, point } = this.spitSlot(w, n, k);
+    const base = this.params(w, n, 1);
+    const params = { ...base, cruiseSpeed: base.cruiseSpeed * Math.max(1, k.chargeMul) };
+    const cmd = alongsideCommand(n.motion, spec, params);
+    stepMotion(n.motion, cmd.target, { ...params, throttle: Math.max(0.25, cmd.throttle) }, dt);
+    const d = dist(n.motion, point);
+    const speed = Math.max(2, Math.hypot(n.motion.vx, n.motion.vy));
+    const eta = d / speed;
+    const surfaceIn = Math.max(0.5, k.emergeTime) + 0.4;
+    if (d > k.approachFrom) n.depthTarget = k.circleDepth - 0.15;
+    else if (eta > surfaceIn) n.depthTarget = k.shallowDepth;
+    else n.depthTarget = 0;
+    if (n.depthTarget < n.depth && n.depth > k.surfacedMax && n.depth <= k.shallowMax + 0.25) {
+      const rate = Math.max(0.05, k.shallowDepth) / Math.max(0.2, k.emergeTime);
+      const tt = Math.max(0, n.depth - k.surfacedMax) / rate;
+      n.emergeAt = { x: n.motion.x + n.motion.vx * tt, y: n.motion.y + n.motion.vy * tt };
+    } else n.emergeAt = null;
+    if (d <= 14 && n.depth <= k.surfacedMax) {
+      this.setMode(w, n, 'spit');
+      n.spit.shots = 0;
+      n.spit.cool = k.spitFirst;
+      n.spit.aim = null;
+      n.spit.recheck = 5;
+      n.alongT = 0;
+      n.emergeAt = null;
+    } else if (n.modeT > 40 || w.isSinking(w.player)) this.setMode(w, n, 'withdraw');
+  }
+
+  /** Up and holding its range: rear, spit, a few times, then sink away. */
+  private spitting(w: World, n: Ness, k: NessKindTuning, dt: number): void {
+    const { spec } = this.spitSlot(w, n, k);
+    const params = this.params(w, n, 1);
+    const cmd = alongsideCommand(n.motion, spec, params);
+    stepMotion(n.motion, cmd.target, { ...params, throttle: Math.max(0.2, cmd.throttle) }, dt);
+    n.depthTarget = 0;
+    n.alongT += dt;
+    n.emergeAt = null;
+    const me = w.player;
+    const range = distanceToHull(me, { x: n.motion.x, y: n.motion.y });
+    const inRange = range <= Math.max(10, k.spitRange) && n.depth <= k.surfacedMax && !w.isSinking(me);
+    const neck = n.neck;
+    // It shifts to a quieter side when you bring guns to bear, but slowly: turn fast and it is caught out.
+    n.spit.recheck -= dt;
+    if (n.spit.recheck <= 0) {
+      n.spit.recheck = 5;
+      if (this.cover(w, k, n.spit.bearing) > 0) {
+        const b = this.weakBearing(w, n, k);
+        if (this.cover(w, k, b) < this.cover(w, k, n.spit.bearing)) n.spit.bearing = b;
+      }
+    }
+    if (neck.state === 'rest') {
+      n.spit.cool -= dt;
+      if (n.spit.shots >= Math.max(1, Math.round(k.spitsPerPass))) {
+        this.setMode(w, n, 'withdraw');
+        return;
+      }
+      // The head rears back for `biteWarn` s, then the glob goes.
+      if (n.spit.cool <= Math.max(0.05, k.biteWarn) && inRange) {
+        n.spit.aim = this.spitAim(w, n, k);
+        neck.target = n.spit.aim;
+        neck.deckPoint = null;
+        neck.state = 'windup';
+        neck.t = 0;
+        neck.zone = null;
+      }
+    }
+    if (w.isSinking(me)) this.setMode(w, n, 'withdraw');
+  }
+
+  /** Where the next glob goes: a spot on your deck, led by how you are moving, with a little scatter. */
+  private spitAim(w: World, n: Ness, k: NessKindTuning): Vec {
+    const me = w.player;
+    const tiles = me.grid.tiles;
+    const tile = tiles[Math.min(tiles.length - 1, Math.floor(w.rng.next() * tiles.length))];
+    const from = neckAnchor(n);
+    let aim = toWorld(tile.center, me.motion, me.motion.heading);
+    let flight = dist(from, aim) / Math.max(5, k.spitSpeed);
+    for (let i = 0; i < 3; i++) {
+      aim = { x: toWorld(tile.center, me.motion, me.motion.heading).x + me.motion.vx * flight, y: toWorld(tile.center, me.motion, me.motion.heading).y + me.motion.vy * flight };
+      flight = dist(from, aim) / Math.max(5, k.spitSpeed);
+    }
+    const spread = Math.max(0, k.spitSpread) + Math.max(0, k.spitSpreadPerM) * dist(from, aim);
+    const off = w.rng.inDisk(spread);
+    return { x: aim.x + off.x, y: aim.y + off.y };
+  }
+
+  /** The glob leaves the head: the world flies it and puts up its red X, as for a cannon ball. */
+  private spitFire(w: World, n: Ness, k: NessKindTuning): void {
+    const aim = n.spit.aim ?? n.neck.target;
+    if (!aim) return;
+    n.spit.shots++;
+    n.spit.cool = Math.max(0.3, k.spitInterval);
+    n.spit.aim = null;
+    w.fireSpit(n, n.neck.head, aim, k);
+  }
+
   // ------------------------------------------------------------ the neck
 
   /** The tile of your deck the head will bite (its center in your boat's frame): a target in reach and in the cone, preferring the one with the most Lees. Null if nothing is in reach. */
@@ -738,15 +895,19 @@ export class NessSystem {
         if (neck.t >= k.biteWarn) {
           neck.state = 'strike';
           neck.t = 0;
-          w.events.push({ type: 'nessBite', nessId: n.id, stage: 'strike' });
+          // A spitter's head snaps forward and the glob leaves; a biter's bites.
+          if (n.def.style === 'spitter') this.spitFire(w, n, k);
+          else w.events.push({ type: 'nessBite', nessId: n.id, stage: 'strike' });
         }
         break;
       case 'strike':
         if (neck.t >= k.biteStrike) {
           neck.state = 'hold';
           neck.t = 0;
-          n.bites++;
-          w.events.push({ type: 'nessBite', nessId: n.id, stage: 'hold' });
+          if (n.def.style === 'biter') {
+            n.bites++;
+            w.events.push({ type: 'nessBite', nessId: n.id, stage: 'hold' });
+          }
         }
         break;
       case 'hold':
@@ -883,7 +1044,7 @@ export class NessSystem {
   /** The head is on your boat: Lees standing by it swing at it (a sword hit is a head shot). */
   private strikeHead(w: World, n: Ness, k: NessKindTuning, dt: number): void {
     const t = w.tuning;
-    const open = (n.neck.state === 'hold' || n.neck.state === 'strike') && isAlive(n) && n.depth <= k.surfacedMax;
+    const open = n.def.style === 'biter' && (n.neck.state === 'hold' || n.neck.state === 'strike') && isAlive(n) && n.depth <= k.surfacedMax;
     if (!open) {
       n.swing.clear();
       return;

@@ -13,6 +13,7 @@ The first Ness design (six kinds, surprise rings, trophies, Hydrophone) was drop
 - [ ] **Can it be outrun?** It is 1.15× your cruise speed and the chase is gentle; a boat at full sail can pull away slowly.
 - [ ] **Hands.** One per flank, cut by tapping or shooting. Do reeled hulls feel stuck rather than annoyed? (`handReel`, `handClose`, `handHp`.)
 - [ ] **Depth Charge gun.** Close range, aimed like a cannon, blows when the fuse ends or a submerged Ness touches it. Check lead (`lead`) and `trigger`/`blast` sizes.
+- [ ] **Shyness balance.** 45 HP, 4 spits per pass, 8 water a hit, 70-90% of 100 m. The sweep's scripted captain (which turns broadside) wins about half of the Shyness fights inside its 400 s limit; holding still it can't win them, because the Shyness picks the side where no manned gun points. Check it feels fair to a person: how long it is up (`spitFirst`, `spitInterval`, `spitsPerPass`), how fast it re-picks a side (5 s), whether the water is bailable, and whether `spitWater`/`spitDamage` are about right.
 - [ ] **Roster later.** Special slots (feet, tail, spikes) and special attacks plug into `NESS_SLOTS` and `defaultNessKind`; trophies, ink, rain and the Hydrophone were removed and can come back with their own kinds.
 - [ ] **Ships and Nesses together.** Ships don't hold fire near a surfaced Ness and Nesses only attack your deck.
 - [ ] **Harpoon on a Ness.** Not supported (it only works on ships now).

@@ -71,8 +71,10 @@ function fight(run: RunState, ship: string, seed: number, t: Tuning): { won: boo
     const bearing = e ? Math.atan2(e.motion.y - p.y, e.motion.x - p.x) : 0;
     const d = e ? Math.hypot(e.motion.x - p.x, e.motion.y - p.y) : 0;
     if (!e || w.isOut(e)) {
-      // Only sea monsters left: hold position and play the deck.
-      if (w.helm.kind !== 'stop') w.setHelm({ kind: 'stop' });
+      // Only sea monsters left: hold position and play the deck, but turn broadside on a spitter that keeps its distance.
+      const spitter = w.nesses.alive().find((n) => n.def.style === 'spitter' && (n.mode === 'spit' || n.mode === 'approach'));
+      if (spitter) w.setHelm({ kind: 'heading', h: Math.atan2(spitter.motion.y - p.y, spitter.motion.x - p.x) + Math.PI / 2 });
+      else if (w.helm.kind !== 'stop') w.setHelm({ kind: 'stop' });
     } else if (ship === 'friend') {
       if (w.boardTargetId !== e.id || (w.helm.kind !== 'board' && w.helm.kind !== 'ram')) w.targetEnemy(e);
       const alive = w.player.crew.lees.filter((l) => l.alive);

@@ -557,6 +557,11 @@ export class BattleScene extends Phaser.Scene {
     for (const e of events) {
       switch (e.type) {
         case 'fire': {
+          // A Ness's spit has no gunsmoke: a spray where it leaves the head.
+          if (e.gun === 'spit') {
+            this.spray.explode(6, e.from.x, e.from.y);
+            break;
+          }
           const dir = Math.atan2(e.to.y - e.from.y, e.to.x - e.from.x) / DEG;
           const puff = e.gun === 'swivel' ? 3 : e.gun === 'carronade' || e.gun === 'scrap' ? 10 : e.gun === 'mortar' ? 8 : 6;
           this.smoke.setEmitterAngle({ min: dir - (e.gun === 'scrap' ? 40 : 25), max: dir + (e.gun === 'scrap' ? 40 : 25) });
@@ -1469,8 +1474,8 @@ export class BattleScene extends Phaser.Scene {
       const h = 4 * arcH * k * (1 - k) * 0.4;
       g.fillStyle(0x000000, 0.3);
       g.fillCircle(gx, gy, 0.5);
-      g.fillStyle(0x15171a, 1);
-      g.fillCircle(gx + up.x * h, gy + up.y * h, 0.6);
+      g.fillStyle(s.gun === 'spit' ? 0x8fd16a : 0x15171a, 1);
+      g.fillCircle(gx + up.x * h, gy + up.y * h, s.gun === 'spit' ? 0.8 : 0.6);
     }
 
     this.drawTracers(g, px);
@@ -1567,6 +1572,7 @@ const SHELL_LOOK: Record<string, { size: number; arc: number; color: number }> =
   swivel: { size: 0.55, arc: 0.6, color: 0x2a2622 },
   mortar: { size: 1.6, arc: 3, color: 0x0e0e0e },
   scrap: { size: 0.35, arc: 0.3, color: 0x4a3a28 },
+  spit: { size: 1.2, arc: 1.6, color: 0x8fd16a },
 };
 
 function polygonWidth(poly: readonly Vec[]): number {
