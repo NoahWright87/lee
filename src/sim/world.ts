@@ -2089,7 +2089,10 @@ export class World {
     if (s.ownerSide === 'player') {
       for (const n of this.nesses.alive()) {
         const k = nessKind(this.tuning, n.kind);
-        if (!gunReaches(s.mode === 'burst' ? 'burst' : s.mode, bandOf(n, k))) continue;
+        // A ball that was in the air while it was still in the shallows can hit it as it dives (the Ness doesn't dodge by sinking as the shell lands).
+        let band = bandOf(n, k);
+        if (band === 'deep' && this.time - n.shallowAt <= s.flightTime + 1e-6) band = 'shallow';
+        if (!gunReaches(s.mode === 'burst' ? 'burst' : s.mode, band)) continue;
         const hit = hitAt(n, k, s.to, s.impactRadius);
         if (!hit) continue;
         this.hitNess(s, n, hit);

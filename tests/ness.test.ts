@@ -246,6 +246,59 @@ describe('what reaches it, by depth', () => {
   });
 });
 
+describe('cannon balls and a diving Ness', () => {
+  const lob = (w: World, at: Vec, flight: number) =>
+    w.shells.push({ id: 9000 + w.shells.length, group: 9000 + w.shells.length, ownerId: w.player.id, ownerSide: 'player', gun: 'cannon', mode: 'shell', from: { x: 0, y: 0 }, to: { ...at }, elapsed: 0, flightTime: flight, damage: 10, crewDamage: 0, splash: 0, impactRadius: 3, leeId: null });
+
+  test('a ball that was in the air while it was still shallow hits it even if it has dived by the time the ball lands', () => {
+    const t = quiet(defaultTuning());
+    const { w, n } = setup(t, []);
+    Object.assign(n.motion, { x: -40, y: 0, vx: 0, vy: 0 });
+    n.mode = 'circle';
+    n.circleFor = 1e9;
+    n.depth = 0.3;
+    n.depthTarget = 0.3;
+    lob(w, { x: n.motion.x, y: n.motion.y }, 1.5);
+    const hp = n.hp;
+    run(w, 1.7, () => {
+      pin(w.player);
+      Object.assign(n.motion, { x: -40, y: 0, vx: 0, vy: 0 });
+      // It dives hard after half a second.
+      if (w.time > 0.5) {
+        n.depth = 0.95;
+        n.depthTarget = 0.95;
+      } else {
+        n.depth = 0.3;
+        n.depthTarget = 0.3;
+      }
+    });
+    expect(n.hp).toBeLessThan(hp);
+  });
+
+  test('but a ball fired at a Ness that has long been deep still misses', () => {
+    const t = quiet(defaultTuning());
+    const { w, n } = setup(t, []);
+    Object.assign(n.motion, { x: -40, y: 0, vx: 0, vy: 0 });
+    n.mode = 'circle';
+    n.circleFor = 1e9;
+    run(w, 4, () => {
+      pin(w.player);
+      Object.assign(n.motion, { x: -40, y: 0, vx: 0, vy: 0 });
+      n.depth = 0.95;
+      n.depthTarget = 0.95;
+    });
+    lob(w, { x: -40, y: 0 }, 1.5);
+    const hp = n.hp;
+    run(w, 1.7, () => {
+      pin(w.player);
+      Object.assign(n.motion, { x: -40, y: 0, vx: 0, vy: 0 });
+      n.depth = 0.95;
+      n.depthTarget = 0.95;
+    });
+    expect(n.hp).toBe(hp);
+  });
+});
+
 describe('under and over the hull', () => {
   const under = (n: Ness, depth: number) => {
     Object.assign(n.motion, { x: 0, y: 0, heading: -Math.PI / 2, vx: 0, vy: 0, omega: 0 });

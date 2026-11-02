@@ -118,6 +118,8 @@ export interface Ness {
   emergeAt: Vec | null;
   neck: Neck;
   hands: NessHand[];
+  /** World time it was last up in the shallows or on the surface (a shell that was in the air while it was still there can still hit it as it dives). */
+  shallowAt: number;
   /** World time it died or got away, or null. */
   diedAt: number | null;
   /** Lees striking its head: seconds until each one's next swing. */
@@ -180,6 +182,7 @@ export function createNess(id: number, spec: NessSpec, t: Tuning, pos: Vec, head
       letGoAt: null,
       readyAt: time + k.handFirst,
     })),
+    shallowAt: time,
     diedAt: null,
     swing: new Map(),
   };
@@ -507,6 +510,7 @@ export class NessSystem {
           break;
       }
       this.stepDepth(w, n, k, dt);
+      if (n.depth <= k.shallowMax) n.shallowAt = w.time;
       // Breaking the surface, and going under, are moments the sea notices.
       if (wasDepth > k.surfacedMax && n.depth <= k.surfacedMax) w.events.push({ type: 'nessSurface', nessId: n.id, pos: { x: n.motion.x, y: n.motion.y }, radius: n.beam });
       if (wasDepth <= k.surfacedMax && n.depth > k.surfacedMax && n.mode !== 'dead') w.events.push({ type: 'nessDive', nessId: n.id, pos: { x: n.motion.x, y: n.motion.y } });
