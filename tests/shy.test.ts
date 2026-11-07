@@ -59,6 +59,7 @@ describe('the Shyness', () => {
     const modes = new Set<string>();
     run(w, 60, () => {
       pin(w.player);
+      n.hurtAt = w.time; // (restlessness has its own tests: here it is cautious throughout)
       modes.add(n.mode);
       if (n.mode === 'circle' && n.modeT > 2) circledFar = Math.min(circledFar, Math.hypot(n.motion.x, n.motion.y));
       if (n.mode === 'spit') {
@@ -96,6 +97,7 @@ describe('the Shyness', () => {
     let last = 0;
     run(w, 25, () => {
       pin(w.player);
+      n.hurtAt = w.time;
       for (const e of w.drainEvents()) {
         if (e.type === 'fire' && e.gun === 'spit') {
           shots++;
@@ -229,5 +231,98 @@ describe('the Shyness', () => {
     const { w, n } = setup(t);
     w.nesses.hurt(w, n, n.maxHp + 1, 'body');
     expect(n.mode).toBe('dead');
+  });
+});
+
+describe('pot shots and restlessness', () => {
+  const place = (n: Ness, x: number, y: number, depth: number) => {
+    Object.assign(n.motion, { x, y, vx: 0, vy: 0, heading: Math.PI });
+    n.mode = 'circle';
+    n.circleFor = 1e9;
+    n.depth = depth;
+    n.depthTarget = depth;
+    n.neck.cool = 1e9;
+  };
+
+  test('your crew takes pistol pot shots at a big sea monster from well beyond a pistol duel, but not from a long way off', () => {
+    const t = quiet(defaultTuning());
+    const near = setup(t, [0, 1, 2, 3, 4, 5, 6, 7]);
+    run(near.w, 6, () => {
+      pin(near.w.player);
+      place(near.n, -40, 0, 0);
+    });
+    expect(near.w.stats.player.pistolShots).toBeGreaterThan(3);
+    expect(near.w.stats.player.pistolHits).toBeGreaterThan(0);
+    const far = setup(t, [0, 1, 2, 3, 4, 5, 6, 7]);
+    run(far.w, 6, () => {
+      pin(far.w.player);
+      place(far.n, -90, 0, 0);
+    });
+    expect(far.w.stats.player.pistolShots).toBe(0);
+  });
+
+  test('they shoot at one that is just under the surface too (a smaller target)', () => {
+    const t = quiet(defaultTuning());
+    const { w, n } = setup(t, [0, 1, 2, 3, 4, 5, 6, 7]);
+    run(w, 6, () => {
+      pin(w.player);
+      place(n, -30, 0, 0.4);
+    });
+    expect(w.stats.player.pistolShots).toBeGreaterThan(0);
+  });
+
+  test('restlessness grows with every second it goes without being hurt, and is wiped out by a hit', () => {
+    const t = quiet(defaultTuning());
+    const { w, n } = setup(t);
+    expect(w.nesses.restless(w, n)).toBe(0);
+    n.hurtAt = w.time - t.ness.common.restlessTime / 2;
+    expect(w.nesses.restless(w, n)).toBeCloseTo(0.5, 2);
+    n.hurtAt = w.time - 1000;
+    expect(w.nesses.restless(w, n)).toBe(1);
+    w.nesses.hurt(w, n, 1, 'body');
+    expect(w.nesses.restless(w, n)).toBe(0);
+  });
+
+  test('a restless Shyness creeps in from its safe range, so pistols and cannons can finally reach it', () => {
+    const t = quiet(defaultTuning());
+    const k = nessKind(t, 'shy');
+    const settle = (restless: boolean): number => {
+      const { w, n } = setup(t);
+      Object.assign(n.motion, { x: 80, y: 0, heading: -Math.PI / 2, vx: 0, vy: 0 });
+      n.mode = 'spit';
+      n.depth = 0;
+      n.depthTarget = 0;
+      n.spit.bearing = Math.PI / 2;
+      n.spit.cool = 1e9;
+      let r = 0;
+      run(w, 25, () => {
+        pin(w.player);
+        n.hurtAt = restless ? w.time - 1000 : w.time;
+        n.spit.cool = 1e9;
+        r = Math.hypot(n.motion.x, n.motion.y);
+      });
+      return r;
+    };
+    const cautious = settle(false);
+    const bold = settle(true);
+    expect(cautious).toBeGreaterThan(k.spitRange * 0.7);
+    expect(bold).toBeLessThan(k.spitRange * 0.65);
+  });
+
+  test('a restless Ness stops circling sooner and comes in', () => {
+    const t = quiet(defaultTuning());
+    const wait = (restless: boolean): number => {
+      const { w, n } = setup(t);
+      n.circleFor = 30;
+      let at = -1;
+      run(w, 40, () => {
+        pin(w.player);
+        n.hurtAt = restless ? w.time - 1000 : w.time;
+        if (at < 0 && n.mode === 'approach') at = w.time;
+      });
+      return at < 0 ? 40 : at;
+    };
+    // (Same kind either way: the plain Ness is the default `setup` kind in tests/ness.test.ts; here the Shyness shows it too.)
+    expect(wait(true)).toBeLessThan(wait(false) - 5);
   });
 });

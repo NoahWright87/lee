@@ -30,6 +30,8 @@ export interface CombatContext {
   boats: Boat[];
   /** Surfaced Ness parts: shot at by the player's side only when no Lee is in range. */
   marks?: PistolMark[];
+  /** How far a pistol reaches a mark (a sea monster is a big target), m; at least the pistol's own range. */
+  markRange?: number;
 }
 
 export type CombatEvent =
@@ -165,7 +167,7 @@ export function stepPistols(ctx: CombatContext, dt: number): CombatEvent[] {
     }
     if (!target) {
       // Nobody to shoot but a Ness that is up: the player's side may fire at its parts.
-      const mark = l.side === 'player' ? nearestMark(ctx.marks ?? [], from, range) : null;
+      const mark = l.side === 'player' ? nearestMark(ctx.marks ?? [], from, Math.max(range, ctx.markRange ?? 0)) : null;
       if (mark) {
         l.pistolCd = 1;
         l.firedAt = ctx.time;

@@ -139,6 +139,18 @@ export function defaultNessKind() {
     /** Seconds to let go of a hull before diving. */
     releaseTime: 1.2,
     /**
+     * Restlessness: a Ness that has gone `restlessTime` s (see `common`) without being hurt is fully restless and gets bolder, so a stalemate breaks.
+     * At full: it circles for this share of the time (× `circleMin/Max`), charges this much faster (× `chargeMul`), and bites this many more times a pass.
+     */
+    restCircle: 0.4,
+    restChargeMul: 1.25,
+    restBites: 2,
+    /** (Spitters, at full restlessness.) The share of its range it settles at (instead of `spitNear`..`spitFar`), the share of its dive-when-close range that is left, the share of its reload left, and how much it still cares to keep to your weak side (1 = fully). */
+    restSpitRange: 0.55,
+    restSpitThreat: 0.3,
+    restSpitReload: 0.8,
+    restSpitCover: 0,
+    /**
      * Spitting (the spitting kinds only; 0 range = doesn't spit). It keeps `spitNear`..`spitFar` of its range (m) from your boat, on the side with the fewest
      * manned guns, surfaces, and then spits like a cannon: any time your boat is in range, one glob every `spitReload` × a cannon's reload (a little slower,
      * since a neck swings through a wide arc), the head rearing for `biteWarn` s first. A glob flies as long as a cannon ball (`spitShellSpeed` × a cannon's) with
@@ -182,6 +194,10 @@ export function defaultNessTuning() {
       maxPerFight: 3,
       /** Pistols and cannons: damage to a Ness × this. */
       damageTaken: 1,
+      /** Your Lees take pot shots at any Ness that is up (or shallow) within this many m of them (a sea monster is a big target: a pistol's own range is much shorter). */
+      pistolRange: 55,
+      /** Seconds without taking damage for a Ness to reach full restlessness (see each kind's `rest*`): the longer a fight goes without it being hurt, the bolder it gets. */
+      restlessTime: 30,
       /** A gun can shoot a Ness this much closer than its ordinary minimum range (× it). */
       minRangeShare: 0.2,
       /** A mortar shell at a deep Ness scatters this much more per unit of depth (an inaccurate answer, not no answer). */

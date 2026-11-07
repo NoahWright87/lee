@@ -940,10 +940,12 @@ export class World {
     const marks: PistolMark[] = [];
     for (const n of this.nesses.alive()) {
       const k = nessKind(this.tuning, n.kind);
-      if (n.depth > k.surfacedMax) continue;
-      for (const m of nessMarksOf(n, k)) marks.push({ nessId: n.id, part: m.part, hand: m.hand ? n.hands.indexOf(m.hand) : undefined, pos: m.pos, radius: m.radius });
+      if (n.depth > k.shallowMax) continue;
+      // Just under the surface only a hump shows: a smaller target.
+      const scale = n.depth <= k.surfacedMax ? 1 : 0.6;
+      for (const m of nessMarksOf(n, k)) marks.push({ nessId: n.id, part: m.part, hand: m.hand ? n.hands.indexOf(m.hand) : undefined, pos: m.pos, radius: m.radius * scale });
     }
-    const ctx = { tuning: this.tuning, time: this.time, rng: this.rng, lees, boats: this.boats, marks };
+    const ctx = { tuning: this.tuning, time: this.time, rng: this.rng, lees, boats: this.boats, marks, markRange: this.tuning.ness.common.pistolRange };
     const events: CombatEvent[] = [...stepMelee(ctx, dt), ...stepPistols(ctx, dt)];
     for (const e of events) {
       if (e.type === 'pistolMark') {

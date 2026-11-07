@@ -115,7 +115,7 @@ describe('the body moves like a boat', () => {
 
   test('after circling it runs in, rises through shallow, and surfaces beside your hull without overlapping it', () => {
     const t = quiet(defaultTuning());
-    const { w, n } = setup(t);
+    const { w, n } = setup(t, []);
     const k = nessKind(t, 'ness');
     n.circleFor = 3;
     const bands = new Set<string>();
@@ -139,7 +139,7 @@ describe('the body moves like a boat', () => {
 
   test('it gets alongside on the side its neck faces, and holds station next to a moving boat', () => {
     const t = quiet(defaultTuning());
-    const { w, n } = setup(t);
+    const { w, n } = setup(t, []);
     n.circleFor = 2;
     let arrived = false;
     // The boat sails north on its own.

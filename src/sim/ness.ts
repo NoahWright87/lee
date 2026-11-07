@@ -118,6 +118,8 @@ export interface Ness {
   emergeAt: Vec | null;
   neck: Neck;
   hands: NessHand[];
+  /** World time it was last hurt (or spawned): the clock for its restlessness. */
+  hurtAt: number;
   /** World time it was last up in the shallows or on the surface (a shell that was in the air while it was still there can still hit it as it dives). */
   shallowAt: number;
   /** World time it died or got away, or null. */
@@ -182,6 +184,7 @@ export function createNess(id: number, spec: NessSpec, t: Tuning, pos: Vec, head
       letGoAt: null,
       readyAt: time + k.handFirst,
     })),
+    hurtAt: time,
     shallowAt: time,
     diedAt: null,
     swing: new Map(),
@@ -403,6 +406,7 @@ export class NessSystem {
     const k = nessKind(w.tuning, n.kind);
     const dmg = Math.min(n.hp, amount * Math.max(0, w.tuning.ness.common.damageTaken) * (part === 'head' ? Math.max(1, k.headMul) : 1));
     n.hp -= dmg;
+    if (dmg > 0) n.hurtAt = w.time;
     w.events.push({ type: 'nessHit', nessId: n.id, part, pos: at ?? { x: n.motion.x, y: n.motion.y }, damage: dmg });
     if (n.hp <= 1e-9) {
       n.hp = 0;
@@ -421,6 +425,7 @@ export class NessSystem {
     if (h.state === 'stowed' || amount <= 0) return 0;
     const dmg = Math.min(h.hp, amount);
     h.hp -= dmg;
+    if (dmg > 0) n.hurtAt = w.time;
     w.events.push({ type: 'nessHit', nessId: n.id, part: 'hand', pos: { ...h.pos }, damage: dmg });
     if (h.hp <= 1e-9) this.letGo(w, n, h, true);
     return dmg;
@@ -473,6 +478,11 @@ export class NessSystem {
     h.readyAt = w.time + Math.max(0, k.handCooldown) * (freed ? 1.5 : 1);
     h.hp = h.maxHp;
     if (was) w.events.push({ type: 'handFree', nessId: n.id, freed });
+  }
+
+  /** 0 → 1: how bold it is, growing the longer it goes without being hurt (it gets reckless in a stalemate). */
+  restless(w: World, n: Ness): number {
+    return clamp((w.time - n.hurtAt) / Math.max(5, w.tuning.ness.common.restlessTime), 0, 1);
   }
 
   /** Is a hand holding a hull? (It can't dive then.) */
@@ -554,7 +564,7 @@ export class NessSystem {
     stepMotion(n.motion, goal, params, dt);
     n.depthTarget = k.circleDepth;
     n.emergeAt = null;
-    if (!w.isSinking(w.player) && n.modeT >= n.circleFor && d < R + 40) this.setMode(w, n, 'approach');
+    if (!w.isSinking(w.player) && n.modeT >= n.circleFor * lerp(1, k.restCircle, this.restless(w, n)) && d < R + 40) this.setMode(w, n, 'approach');
   }
 
   /** The slot beside your hull this Ness runs for (its nose by your middle, the boat on its `neck.side`). */
@@ -578,7 +588,7 @@ export class NessSystem {
     const { spec, point } = this.slot(w, n, k);
     const base = this.params(w, n, 1);
     // The run in is quick: faster than its ordinary swimming, so it can catch a boat that is sailing.
-    const params = { ...base, cruiseSpeed: base.cruiseSpeed * Math.max(1, k.chargeMul) };
+    const params = { ...base, cruiseSpeed: base.cruiseSpeed * Math.max(1, k.chargeMul) * lerp(1, k.restChargeMul, this.restless(w, n)) };
     const cmd = alongsideCommand(n.motion, spec, params);
     stepMotion(n.motion, cmd.target, { ...params, throttle: Math.max(0.25, cmd.throttle) }, dt);
     const d = dist(n.motion, point);
@@ -616,7 +626,7 @@ export class NessSystem {
     n.alongT += dt;
     n.emergeAt = null;
     const idle = n.neck.state === 'rest' && !this.holding(n);
-    if (idle && (n.bites >= Math.max(1, Math.round(k.bitesPerPass)) || w.isSinking(w.player))) this.setMode(w, n, 'withdraw');
+    if (idle && (n.bites >= Math.max(1, Math.round(k.bitesPerPass + k.restBites * this.restless(w, n))) || w.isSinking(w.player))) this.setMode(w, n, 'withdraw');
   }
 
   /** Sink away and swim off a way before circling again. */
@@ -695,7 +705,8 @@ export class NessSystem {
   /** Where a spitter wants to be: `spitFar`..`spitNear` of its range from your boat, on the bearing it chose (from your bow). */
   private spitSlot(w: World, n: Ness, k: NessKindTuning): { spec: { other: MotionState; offset: number; side: number; along: number }; point: Vec } {
     const o = w.player.motion;
-    const D = Math.max(10, k.spitRange) * (k.spitNear + k.spitFar) * 0.5;
+    // A restless spitter creeps in from its cautious 70-90% of its range toward `restSpitRange`.
+    const D = Math.max(10, k.spitRange) * lerp((k.spitNear + k.spitFar) * 0.5, k.restSpitRange, this.restless(w, n));
     const along = Math.cos(n.spit.bearing) * D;
     const across = Math.sin(n.spit.bearing) * D;
     const fwd = { x: Math.cos(o.heading), y: Math.sin(o.heading) };
@@ -728,7 +739,7 @@ export class NessSystem {
     const STEPS = 24;
     for (let i = 0; i < STEPS; i++) {
       const b = wrapAngle(now + (i / STEPS) * Math.PI * 2);
-      const score = this.cover(w, k, b) * 10 + Math.abs(wrapAngle(b - now));
+      const score = this.cover(w, k, b) * 10 * lerp(1, k.restSpitCover, this.restless(w, n)) + Math.abs(wrapAngle(b - now));
       if (score < bestScore - 1e-9) {
         bestScore = score;
         best = b;
@@ -742,7 +753,7 @@ export class NessSystem {
     if (n.modeT < dt * 1.5) n.spit.bearing = this.weakBearing(w, n, k);
     const { spec, point } = this.spitSlot(w, n, k);
     const base = this.params(w, n, 1);
-    const params = { ...base, cruiseSpeed: base.cruiseSpeed * Math.max(1, k.chargeMul) };
+    const params = { ...base, cruiseSpeed: base.cruiseSpeed * Math.max(1, k.chargeMul) * lerp(1, k.restChargeMul, this.restless(w, n)) };
     const cmd = alongsideCommand(n.motion, spec, params);
     stepMotion(n.motion, cmd.target, { ...params, throttle: Math.max(0.25, cmd.throttle) }, dt);
     const d = dist(n.motion, point);
@@ -797,7 +808,7 @@ export class NessSystem {
       }
     }
     // Threatened: your hull is close, or it is hurt. It still takes its one shot first, then goes under.
-    const threatened = range <= R * Math.max(0, k.spitThreat) || n.hp <= n.maxHp * Math.max(0, k.spitDiveHp);
+    const threatened = range <= R * Math.max(0, k.spitThreat) * lerp(1, k.restSpitThreat, this.restless(w, n)) || n.hp <= n.maxHp * Math.max(0, k.spitDiveHp);
     if (neck.state === 'rest' && ((threatened && n.spit.shots >= 1) || (n.spit.shots === 0 && n.alongT > Math.max(2, k.spitMaxUp)))) {
       this.setMode(w, n, 'withdraw');
       return;
@@ -837,7 +848,7 @@ export class NessSystem {
     const aim = n.spit.aim ?? n.neck.target;
     if (!aim) return;
     n.spit.shots++;
-    n.spit.cool = Math.max(0.3, w.tuning.guns.reloadTime * Math.max(0.1, k.spitReload));
+    n.spit.cool = Math.max(0.3, w.tuning.guns.reloadTime * Math.max(0.1, k.spitReload) * lerp(1, k.restSpitReload, w.nesses.restless(w, n)));
     n.spit.aim = null;
     w.fireSpit(n, n.neck.head, aim, k);
   }
