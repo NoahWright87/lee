@@ -33,10 +33,18 @@ export interface RailState {
   item: string;
   kind: RailKind;
   facing: Facing;
-  /** Fences: HP left (others: unused). */
+  /** Fences and lowered planks: HP left (others: unused). */
   hp: number;
   maxHp: number;
   destroyed: boolean;
+  /** Planks: down onto the other hull (a bridge for Lees from either side). */
+  lowered: boolean;
+  /** World time it can be used again: a hook after its line is cut, a pole after a shove, a rope or plank after a crossing. */
+  readyAt: number;
+  /** Hooks: a throw is in the air or its line is out. */
+  out: boolean;
+  /** Ropes: crossings ordered but not yet made. */
+  pending: number;
 }
 
 export interface Tile {

@@ -6,7 +6,7 @@
 import Phaser from 'phaser';
 import { FACING_ANGLE } from '../config/slots';
 import { gunOnline, structureFraction, type Boat, type GunState } from '../sim/boat';
-import type { Tile } from '../sim/grid';
+import type { RailState, Tile } from '../sim/grid';
 import { clamp, lerp, pointInPolygon, polygonBounds, Rng, toWorld, type Vec } from '../sim/math';
 import type { World } from '../sim/world';
 import { CRACK_STAGES, crackTextureKey, partTextureKey, suppliedArt } from './textures';
@@ -148,14 +148,14 @@ export class BoatView {
       g.fillPoints(part.def.polygon.map(W), true);
     });
 
-    this.drawEquipment(g, W, alpha);
+    this.drawEquipment(g, W, alpha, world.time);
 
     // Guns: each type its own barrel, pointing the way its slot faces; recoil after a shot.
     boat.guns.forEach((c, i) => this.drawGun(world, g, W, c, i, heading, alpha));
   }
 
   /** Floors, plating, stations, rails and blown-out tiles. */
-  private drawEquipment(g: Phaser.GameObjects.Graphics, W: (p: Vec) => Vec, alpha: number): void {
+  private drawEquipment(g: Phaser.GameObjects.Graphics, W: (p: Vec) => Vec, alpha: number, time: number): void {
     const boat = this.boat;
     // Plating: a thick iron rim around its part.
     boat.parts.forEach((part) => {
@@ -192,7 +192,7 @@ export class BoatView {
         g.fillCircle(c.x + 0.3, c.y - 0.2, Math.min(tile.x1 - tile.x0, tile.y1 - tile.y0) * 0.22);
       }
       this.drawStation(g, W, tile, alpha);
-      for (const r of tile.rails) this.drawRail(g, W, tile, r.kind, r.facing, r.destroyed, alpha);
+      for (const r of tile.rails) this.drawRail(g, W, tile, r.kind, r.facing, r.destroyed, alpha, time, r);
     }
   }
 
@@ -255,7 +255,7 @@ export class BoatView {
   }
 
   /** A rail item along the outer edge of its tile. */
-  private drawRail(g: Phaser.GameObjects.Graphics, W: (p: Vec) => Vec, tile: Tile, kind: string, facing: keyof typeof FACING_ANGLE, destroyed: boolean, alpha: number): void {
+  private drawRail(g: Phaser.GameObjects.Graphics, W: (p: Vec) => Vec, tile: Tile, kind: string, facing: keyof typeof FACING_ANGLE, destroyed: boolean, alpha: number, time: number, rail: RailState): void {
     // The edge segment: along the tile's side that faces `facing`.
     const a = FACING_ANGLE[facing];
     const nx = Math.round(Math.cos(a));
@@ -299,8 +299,63 @@ export class BoatView {
         W({ x: m.x + ax + nx * 1.8, y: m.y + ay + ny * 1.8 }),
         W({ x: m.x - ax + nx * 1.8, y: m.y - ay + ny * 1.8 }),
       ];
-      g.fillStyle(destroyed ? 0x5a5550 : 0xb08a58, alpha);
-      g.fillPoints(pts, true);
+      // Up, a stub along the rail; lowered, laid out across the gap.
+      const reach = rail.lowered ? 2.6 : 1.8;
+      const down = [pts[0], pts[1], W({ x: m.x + ax + nx * reach, y: m.y + ay + ny * reach }), W({ x: m.x - ax + nx * reach, y: m.y - ay + ny * reach })];
+      g.fillStyle(destroyed ? 0x5a5550 : rail.lowered ? 0xc9a066 : 0xb08a58, alpha);
+      g.fillPoints(down, true);
+      if (rail.lowered && !destroyed) {
+        g.lineStyle(0.12, 0x6b4a22, alpha);
+        g.lineBetween(W({ x: m.x, y: m.y }).x, W({ x: m.x, y: m.y }).y, W({ x: m.x + nx * reach, y: m.y + ny * reach }).x, W({ x: m.x + nx * reach, y: m.y + ny * reach }).y);
+      }
+    } else if (kind === 'charge') {
+      if (destroyed) return;
+      const m = { x: (p0.x + p1.x) / 2, y: (p0.y + p1.y) / 2 };
+      const ready = rail.readyAt <= time;
+      const c = W({ x: m.x + nx * 0.4, y: m.y + ny * 0.4 });
+      // A barrel on the rail, with a band: dark and dim while it cools down.
+      g.fillStyle(ready ? 0x3b4650 : 0x2a3036, alpha);
+      g.fillCircle(c.x, c.y, 0.62);
+      g.lineStyle(0.16, ready ? 0xc9ced3 : 0x6a6e72, alpha);
+      g.strokeCircle(c.x, c.y, 0.62);
+      g.lineStyle(0.14, ready ? 0xffd24a : 0x6a6e72, alpha);
+      g.strokeCircle(c.x, c.y, 0.32);
+    } else if (kind === 'rope' || kind === 'hook' || kind === 'pole') {
+      if (destroyed) return;
+      const m = { x: (p0.x + p1.x) / 2, y: (p0.y + p1.y) / 2 };
+      const ready = rail.readyAt <= time && !rail.out;
+      const dim = ready ? 1 : 0.45;
+      const base = W({ x: m.x, y: m.y });
+      if (kind === 'rope') {
+        // A coil on a post, and a loop that waits to be sent (a dot per crossing ordered).
+        g.fillStyle(0x5a3a1a, alpha);
+        g.fillCircle(base.x, base.y, 0.38);
+        g.lineStyle(0.18, 0xd9c08a, alpha * dim);
+        g.strokeCircle(base.x, base.y, 0.62);
+        const tip = W({ x: m.x + nx * 1.4, y: m.y + ny * 1.4 });
+        g.lineBetween(base.x, base.y, tip.x, tip.y);
+        for (let i = 0; i < rail.pending; i++) {
+          const d = W({ x: m.x + nx * (0.7 + i * 0.45), y: m.y + ny * (0.7 + i * 0.45) });
+          g.fillStyle(0xffe08a, alpha);
+          g.fillCircle(d.x, d.y, 0.18);
+        }
+      } else if (kind === 'hook') {
+        // A grapnel on a short line: bright when ready, grey when it is out or cooling down.
+        const tip = W({ x: m.x + nx * 1.2, y: m.y + ny * 1.2 });
+        g.lineStyle(0.2, 0xd9c08a, alpha * dim);
+        g.lineBetween(base.x, base.y, tip.x, tip.y);
+        g.fillStyle(ready ? 0xc9ced3 : 0x6a6e72, alpha);
+        g.fillTriangle(tip.x, tip.y, W({ x: m.x + nx * 0.8 - ny * 0.4, y: m.y + ny * 0.8 + nx * 0.4 }).x, W({ x: m.x + nx * 0.8 - ny * 0.4, y: m.y + ny * 0.8 + nx * 0.4 }).y, W({ x: m.x + nx * 0.8 + ny * 0.4, y: m.y + ny * 0.8 - nx * 0.4 }).x, W({ x: m.x + nx * 0.8 + ny * 0.4, y: m.y + ny * 0.8 - nx * 0.4 }).y);
+        g.fillStyle(0x3a2412, alpha);
+        g.fillCircle(base.x, base.y, 0.3);
+      } else {
+        // Two poles leaning out over the side.
+        const ex = W({ x: m.x + nx * 1.7 - ny * 0.5, y: m.y + ny * 1.7 + nx * 0.5 });
+        const ey = W({ x: m.x + nx * 1.7 + ny * 0.5, y: m.y + ny * 1.7 - nx * 0.5 });
+        g.lineStyle(0.22, ready ? 0x8a6a3a : 0x5a4a30, alpha);
+        g.lineBetween(base.x, base.y, ex.x, ex.y);
+        g.lineBetween(base.x, base.y, ey.x, ey.y);
+      }
     }
   }
 

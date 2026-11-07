@@ -38,7 +38,7 @@ export interface BoatMods {
   gunRange: number;
   gunSpread: number;
   gunMinRange: number;
-  /** Boarding range (×) and swing time (×), from Swinging Ropes. */
+  /** Unused since Swinging Ropes became a rail item (kept at 1 so old saved builds still load). */
   boardRange: number;
   swing: number;
   /** Per part index: HP multiplier and armor layer. */
@@ -260,8 +260,8 @@ export function furnishGrid(b: BoatBuild, grid: Grid, layoutLabel: Parameters<ty
       tile.fixture = { slot: slotId, item, destroyed: false };
       tile.station = def.category === 'gun' ? 'gun' : def.station ?? null;
     } else if (slot.type === 'rail' && def.rail) {
-      const hp = def.rail === 'fence' ? Math.max(1, itemParam(t, item, 'hp')) : 1;
-      tile.rails.push({ slot: slotId, item, kind: def.rail, facing: slot.facing ?? tile.edges[0] ?? 'port', hp, maxHp: hp, destroyed: false });
+      const hp = def.rail === 'fence' ? Math.max(1, itemParam(t, item, 'hp')) : def.rail === 'planks' ? Math.max(1, t.lines.plankHp) : 1;
+      tile.rails.push({ slot: slotId, item, kind: def.rail, facing: slot.facing ?? tile.edges[0] ?? 'port', hp, maxHp: hp, destroyed: false, lowered: false, readyAt: 0, out: false, pending: 0 });
     } else if (slot.type === 'floor') {
       tile.floor = item;
     }

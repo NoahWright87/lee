@@ -4,8 +4,11 @@
 
 import type { Vec } from './math';
 
-/** 'shell' = a red X (scaled by `size` for big splashes); 'area' = a shaded disk of `size` meters (a burst of pellets). */
-export type TelegraphKind = 'shell' | 'area';
+/**
+ * 'shell' = a red X (scaled by `size` for big splashes); 'area' = a shaded disk of `size` meters (a burst of pellets);
+ * 'emerge' = a ring of `size` meters where a Ness is about to rise.
+ */
+export type TelegraphKind = 'shell' | 'area' | 'emerge';
 
 export interface Telegraph {
   id: number;

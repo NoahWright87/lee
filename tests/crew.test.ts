@@ -292,8 +292,76 @@ describe('jobs (Phase 5 §5)', () => {
     expect(jobSeats(w.player, 'sail', t)).toBe(3);
     expect(w.order('sail')).toBeNull();
     expect(w.drainEvents().some((e) => e.type === 'orderFull' && e.job === 'sail')).toBe(true);
-    // Fix has no seat limit.
+    // Fix has no seat limit, but every Lee was just moved: they're left alone until the grace is over.
+    expect(w.order('fix')).toBeNull();
+    for (let i = 0; i < (t.jobs.reassignGrace + 0.5) / FIXED_DT; i++) w.step(FIXED_DT);
     expect(w.order('fix')).not.toBeNull();
+  });
+
+  test('a Lee you just moved is not pulled off its new job by the next tap, so tapping around does not shuffle the same Lee', () => {
+    const t = quiet(defaultTuning());
+    const w = new World(t, 1, {
+      enemies: [emptySloop()],
+      player: {
+        build: defaultBuild('basic'),
+        crew: [
+          { type: 'basic', home: T.portCannon1 },
+          { type: 'basic', home: T.midDeck },
+          { type: 'basic', home: T.starCannon2 },
+        ],
+      },
+    });
+    w.start();
+    const first = w.order('fix')!;
+    expect(first.job).toBe('fix');
+    // Tapping sail, then fire, then sail again takes other Lees each time and never the one on repair.
+    const picked = [w.order('sail'), w.order('fire'), w.order('sail')].filter((l): l is NonNullable<typeof l> => l !== null);
+    expect(picked.map((l) => l.id)).not.toContain(first.id);
+    expect(first.job).toBe('fix');
+    // With everyone just moved, a further tap does nothing (the button shakes) instead of shuffling.
+    expect(w.order('fire')).toBeNull();
+    for (let i = 0; i < (t.jobs.reassignGrace + 0.5) / FIXED_DT; i++) w.step(FIXED_DT);
+    expect(w.order('fire')).not.toBeNull();
+  });
+});
+
+describe('repairs (Phase 7 playtest)', () => {
+  /** Your Basic Ship with these Lees, parts at these HP shares, an enemy far away and not coming. */
+  function damaged(crew: { type: string; home: number; job?: 'fix' | 'fire' | 'sail' | 'board' }[], shares: number[]) {
+    const t = quiet(defaultTuning());
+    t.spoils.midSurrender = 0;
+    const w = new World(t, 3, { enemies: [emptySloop()], player: { build: defaultBuild('basic'), crew } });
+    w.start();
+    w.player.parts.forEach((p, i) => {
+      const st = p.layers[p.layers.length - 1];
+      st.hp = st.maxHp * shares[i % shares.length];
+    });
+    return { t, w };
+  }
+  const away = (w: World) => Object.assign(w.enemies[0].motion, { x: 800, y: -800, vx: 0, vy: 0 });
+  const run = (w: World, s: number) => {
+    for (let i = 0; i < s / FIXED_DT; i++) {
+      away(w);
+      w.step(FIXED_DT);
+    }
+  };
+
+  test('a retreat can mend the boat: parts go well past the old 60% patch line, and wrecked ones come back', () => {
+    const { t, w } = damaged([{ type: 'handy', home: T.midDeck, job: 'fix' }, { type: 'basic', home: T.sails, job: 'fix' }, { type: 'basic', home: T.portOars, job: 'fix' }], [0, 0.3, 0.7]);
+    run(w, 240);
+    for (const p of w.player.parts) expect(structureFraction(p)).toBeGreaterThanOrEqual(t.crew.repairCeiling - 0.02);
+    expect(t.crew.repairCeiling).toBeGreaterThan(0.7);
+  });
+
+  test('Lees with nothing to do in their own job pitch in on repairs and bailing, even in another job', () => {
+    // A gunner and a rower with nothing to shoot and nothing to row (stopped): only a ⏩ Lee and a 🔫 Lee, no fixers.
+    const { w } = damaged([{ type: 'basic', home: T.portCannon1, job: 'fire' }, { type: 'basic', home: T.starCannon2, job: 'fire' }, { type: 'basic', home: T.midDeck, job: 'sail' }], [0.3, 0.3, 0.3, 0.3]);
+    const before = w.player.parts.map((p) => structureFraction(p));
+    run(w, 30);
+    const after = w.player.parts.map((p) => structureFraction(p));
+    expect(after.reduce((a, b) => a + b, 0)).toBeGreaterThan(before.reduce((a, b) => a + b, 0) + 0.3);
+    const gunners = w.player.crew.lees.filter((l) => l.job === 'fire');
+    expect(gunners.some((l) => l.stats.hpRepaired > 0)).toBe(true);
   });
 });
 

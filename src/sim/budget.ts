@@ -19,7 +19,9 @@ import { SHIP_ORDER, SHIPS } from '../config/ships';
 import type { SlotType } from '../config/slots';
 import type { Tag } from '../config/tags';
 import type { Tuning } from '../config/tuning';
-import { pickWeighted, Rng } from './math';
+import { NESS_ORDER } from '../config/ness';
+import { clamp, hashString, pickWeighted, Rng } from './math';
+import type { NessSpec } from './ness';
 
 /** What the generator may put on an enemy: everything a shop sells (no rare items). */
 function buildable(d: ItemDef): boolean {
@@ -186,6 +188,66 @@ function freeSlots(ship: string, loadout: Record<string, string>): { id: string;
 export function generateEnemies(budget: number, seed: number, t: Tuning, opts: { chassis?: string } = {}): EnemySpec[] {
   const rng = new Rng(seed >>> 0);
   return splitBudget(Math.max(1, budget), rng, t).map((b, i) => buildShip(b, rng, t, i === 0 ? opts.chassis : undefined));
+}
+
+/** Points one Ness costs in a stop's budget: its kind's cost, plus a share of it for each level above 1. */
+export function nessCost(kind: string, level: number, t: Tuning): number {
+  const k = t.ness.kinds[kind] ?? t.ness.kinds.weak;
+  return k.cost * (1 + Math.max(0, t.ness.common.levelCost) * (Math.max(1, level) - 1));
+}
+
+/** Points in a Ness spec. */
+export function nessValue(spec: NessSpec, t: Tuning): number {
+  return nessCost(spec.kind, spec.level ?? 1, t);
+}
+
+/**
+ * Sea monsters built from a budget: kinds picked by weight among those it can still afford, each at a level that fits;
+ * a pack of small ones when there is room for more, a single bigger one when there isn't.
+ */
+export function generateNesses(budget: number, rng: Rng, t: Tuning): NessSpec[] {
+  const out: NessSpec[] = [];
+  let left = budget;
+  const max = Math.max(1, Math.round(t.ness.common.maxPerFight));
+  const cheapest = Math.min(...NESS_ORDER.map((id) => nessCost(id, 1, t)));
+  while (out.length < max && left >= cheapest - 1e-9) {
+    const pool = NESS_ORDER.filter((id) => nessCost(id, 1, t) <= left + 1e-9).map((id) => [id, Math.max(0, t.ness.kinds[id].weight)] as const);
+    const kind = pickWeighted(rng, pool);
+    if (!kind) break;
+    let level = 1;
+    // Room for another of this size? Then stay small. Otherwise grow it while it is affordable.
+    const room = out.length + 1 < max && left - nessCost(kind, 1, t) >= cheapest * 1.5;
+    if (!room) while (nessCost(kind, level + 1, t) <= left + 1e-9 && level < 8) level++;
+    else if (rng.next() < 0.3 && nessCost(kind, 2, t) <= left * 0.6) level = 2;
+    const cost = nessCost(kind, level, t);
+    out.push({ kind, level, budget: Math.round(cost) });
+    left -= cost;
+  }
+  if (!out.length) out.push({ kind: NESS_ORDER[0], level: 1, budget: Math.round(nessCost(NESS_ORDER[0], 1, t)) });
+  return out;
+}
+
+/**
+ * A whole fight from a budget: ships and Nesses. `nessShare` of the points go to Nesses (all of them in a lair; none, and the
+ * same ships as ever, at 0). Too little left for a ship, or for a Ness, and the other side takes it all.
+ */
+export function generateEncounter(budget: number, seed: number, t: Tuning, opts: { nessShare?: number; chassis?: string } = {}): { enemies: EnemySpec[]; nesses: NessSpec[] } {
+  const share = clamp(opts.nessShare ?? 0, 0, 1);
+  if (share <= 0) return { enemies: generateEnemies(budget, seed, t, { chassis: opts.chassis }), nesses: [] };
+  const cheapest = Math.min(...NESS_ORDER.map((id) => nessCost(id, 1, t)));
+  let nessBudget = budget * share;
+  if (nessBudget < cheapest) nessBudget = 0;
+  let shipBudget = budget - nessBudget;
+  if (shipBudget < Math.max(1, t.budget.minShip) * 0.6) {
+    nessBudget = budget;
+    shipBudget = 0;
+  }
+  if (nessBudget <= 0) return { enemies: generateEnemies(budget, seed, t, { chassis: opts.chassis }), nesses: [] };
+  const rng = new Rng((seed ^ hashString('nesses')) >>> 0);
+  return {
+    enemies: shipBudget > 0 ? generateEnemies(shipBudget, seed, t, { chassis: opts.chassis }) : [],
+    nesses: generateNesses(nessBudget, rng, t),
+  };
 }
 
 /** Points in an enemy spec (what it's worth). */

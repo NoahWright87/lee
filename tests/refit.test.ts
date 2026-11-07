@@ -50,7 +50,7 @@ describe('the stack', () => {
     const floor = addItem(run, 'grippy');
     applyMove(run, { from: 'cargo', uid: floor.uid }, { spot: tile(2, 2) });
     expect(stackAt(run, tile(2, 2))).toEqual(['lee', 'station', 'floor']);
-    expect(stackAt(run, { kind: 'edge', col: 2, row: 2, facing: 'starboard' })).toEqual([]);
+    expect(stackAt(run, { kind: 'edge', col: 1, row: 2, facing: 'starboard' })).toEqual([]);
   });
 
   test('moving a manned cannon brings its Lee (and its attachment); the gun that was there swaps back', () => {
@@ -102,7 +102,7 @@ describe('the stack', () => {
     const plate = addItem(run, 'ironPlating');
     const spikes = addItem(run, 'spikes');
     const a: Spot = { kind: 'edge', col: 4, row: 1, facing: 'bow' };
-    const b: Spot = { kind: 'edge', col: 2, row: 0, facing: 'port' };
+    const b: Spot = { kind: 'edge', col: 1, row: 0, facing: 'port' };
     applyMove(run, { from: 'cargo', uid: plate.uid }, { spot: a });
     applyMove(run, { from: 'cargo', uid: spikes.uid }, { spot: a });
     expect(stackAt(run, a)).toEqual(['rail', 'hull']);

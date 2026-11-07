@@ -114,7 +114,7 @@ export function boatBars(b: Boat, t: Tuning): BoatBars {
     }
   }
   let rails = 0;
-  for (const tile of b.grid.tiles) for (const r of tile.rails) rails += r.kind === 'spikes' ? 0.6 : r.kind === 'planks' ? 0.4 : 0;
+  for (const tile of b.grid.tiles) for (const r of tile.rails) rails += r.kind === 'spikes' ? 0.6 : r.kind === 'planks' || r.kind === 'rope' || r.kind === 'hook' ? 0.4 : 0;
   return {
     firepower: c.hullDpm + c.crewDpm * 0.5,
     toughness: c.hullHp,
