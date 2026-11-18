@@ -4,7 +4,7 @@
 import { describe, expect, test } from 'vitest';
 import { defaultTuning } from '../src/config/tuning';
 import { isStopped } from '../src/sim/crew';
-import { boardOrRam, hullAngle, steer } from '../src/sim/helm';
+import { boardOrRam, hullAngle, pointThrottle, steer } from '../src/sim/helm';
 import { defaultBuild } from '../src/sim/loadout';
 import { DEG, dist } from '../src/sim/math';
 import { FIXED_DT } from '../src/sim/steering';
@@ -181,5 +181,46 @@ describe('chasing a gun ship', () => {
     // Dead astern (not clearly on either side): keep the side you picked.
     Object.assign(w.player.motion, { x: -20, y: 0 });
     expect(steer(w.player, { kind: 'board', boatId: e.id, side: 1 }, hw).helm).toEqual({ kind: 'board', boatId: e.id, side: 1 });
+  });
+});
+
+describe('tapping near the boat', () => {
+  // The boat is at the origin heading north (-y); +x is to starboard.
+  test('a tap just off the beam is a real turn, taken slowly; there is no dead zone', () => {
+    for (const p of [{ x: 6, y: 0 }, { x: -6, y: 0 }, { x: 5, y: 10 }, { x: 0, y: 12 }]) {
+      const { w, freezeEnemy } = world();
+      w.setHelm({ kind: 'point', p });
+      const throttle = pointThrottle(w.player, p, w.tuning);
+      expect(throttle, JSON.stringify(p)).toBeLessThan(0.7);
+      const h0 = w.player.motion.heading;
+      run(w, 4, freezeEnemy);
+      // It turned toward it, not on.
+      expect(Math.abs(w.player.motion.heading - h0), JSON.stringify(p)).toBeGreaterThan(0.5);
+      expect(w.helm.kind === 'point' || w.helm.kind === 'heading').toBe(true);
+    }
+  });
+
+  test('a point far off the beam is taken at speed, and a far point ahead at full speed', () => {
+    const { w } = world();
+    expect(pointThrottle(w.player, { x: 500, y: 0 }, w.tuning)).toBeGreaterThan(0.9);
+    expect(pointThrottle(w.player, { x: 0, y: -300 }, w.tuning)).toBe(1);
+    expect(pointThrottle(w.player, { x: 5, y: -10 }, w.tuning)).toBeLessThan(0.6);
+  });
+
+  test('the nearer the point, the slower the turn', () => {
+    const { w } = world();
+    const near = pointThrottle(w.player, { x: 10, y: 0 }, w.tuning);
+    const mid = pointThrottle(w.player, { x: 60, y: 0 }, w.tuning);
+    const far = pointThrottle(w.player, { x: 400, y: 0 }, w.tuning);
+    expect(near).toBeLessThan(mid);
+    expect(mid).toBeLessThanOrEqual(far);
+  });
+
+  test('a point behind, close by, is reached (it turns round, and does not circle forever)', () => {
+    const { w, freezeEnemy } = world();
+    const p = { x: 0, y: 25 };
+    w.setHelm({ kind: 'point', p });
+    run(w, 25, freezeEnemy);
+    expect(w.helm.kind).toBe('heading');
   });
 });

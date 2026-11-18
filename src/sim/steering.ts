@@ -135,6 +135,8 @@ export interface AlongsideSpec {
   /** Half-beam of the other boat plus half-beam of this one plus the gap, m. */
   offset: number;
   side: number;
+  /** Shift the slot this far forward along the other boat's heading (negative = back), m. Default 0: level with its middle. */
+  along?: number;
 }
 
 /**
@@ -149,7 +151,8 @@ export function alongsideCommand(self: MotionState, spec: AlongsideSpec, p: Moti
   // Local +y (starboard) in world terms.
   const lx = -fy;
   const ly = fx;
-  const slot = { x: o.x + lx * spec.offset * spec.side, y: o.y + ly * spec.offset * spec.side };
+  const ahead = spec.along ?? 0;
+  const slot = { x: o.x + lx * spec.offset * spec.side + fx * ahead, y: o.y + ly * spec.offset * spec.side + fy * ahead };
   const tx = slot.x - self.x;
   const ty = slot.y - self.y;
   const d = Math.hypot(tx, ty);

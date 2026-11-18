@@ -9,10 +9,12 @@
 // buys what it can afford that fits an empty spot (Auto-equip), and sails to
 // the first destination; at sea it follows the map's guaranteed route (the
 // fights on the way are the fights it gets). In a fight the captain plays each
-// ship's style: the Friend Ship targets the enemy (the BOARD/RAM autopilot)
-// and sends most of its crew to ⚔️ as it closes, the Long Distance Relation
-// Ship orbits at long-gun range, the rest orbit at cannon range. It never
-// dodges, kites or retreats, so a person does better: read the numbers as
+// ship's style: the Friend Ship targets the enemy (the BOARD/RAM autopilot),
+// sends most of its crew to ⚔️ as it closes (BOARD then throws its hooks,
+// lowers its planks and sends Lees over its ropes by itself); the Long Distance Relation Ship orbits
+// at long-gun range, the rest orbit at cannon range. Every other ship cuts any
+// line that holds it and mashes ⏩ to get its oars manned (it never kites or
+// dodges), so a person does better: read the numbers as
 // "how hard is this for someone not trying". A fight still going at 400 s
 // counts as a loss (usually a skirmisher it never catches); SWEEP_LOG=1 prints
 // every fight.
@@ -22,25 +24,58 @@ import { defaultTuning, type Tuning } from '../src/config/tuning';
 import { structureFraction } from '../src/sim/boat';
 import { rngFor } from '../src/sim/math';
 import { buy, buyHealAll, buyRepair, enterPort, makePlan } from '../src/sim/port';
-import { answerSurrender, applyFight, hullShare, autoEquipAll, cargo, discard, enemySetups, finishPost, newRun, setupFor, takeReward, type RunState } from '../src/sim/run';
+import { answerSurrender, applyFight, pickCapture, hullShare, autoEquipAll, cargo, discard, enemySetups, finishPost, newRun, setupFor, takeReward, type RunState } from '../src/sim/run';
 import { leavePort, playerValue, sailTo } from '../src/sim/seaMap';
 import { FIXED_DT } from '../src/sim/steering';
+import { isHeadOpen } from '../src/sim/ness';
 import { World } from '../src/sim/world';
 
 const SEEDS = Math.max(1, Number(process.env.SWEEP_SEEDS ?? 4));
 const JOURNEYS = Math.max(1, Number(process.env.SWEEP_JOURNEYS ?? 3));
 
+/** Close quarters for the scripted captain: the Friend Ship just presses BOARD (the crew hooks, planks and ropes itself); everyone else cuts lines and breaks away. */
+function quarters(w: World, ship: string): void {
+  const p = w.player;
+  if (ship === 'friend') return;
+  for (const line of w.lines.linesOf(p)) if (!w.orders.find(p, 'cutLine', { line })) w.tapLine(line, p);
+  if (w.lines.held(p) && w.orders.list.some((o) => o.boat === p && o.kind === 'cutLine')) w.order('sail');
+}
+
+/**
+ * Sea monsters for the scripted captain: step the Lees out of a bite's bubble, hit the head while it is on the boat, cut a hand
+ * that has the boat, man the guns (🔫) and keep somebody on the pumps (🛠️) while the hull is wet. It holds still against them.
+ */
+function monsters(w: World): void {
+  const p = w.player;
+  if (!w.nesses.alive().length) return;
+  const alive = p.crew.lees.filter((l) => l.alive);
+  if (alive.filter((l) => l.job === 'fire').length < Math.ceil(alive.length / 2)) w.order('fire');
+  const wet = p.parts.some((x) => x.capacity > 0 && x.water / x.capacity > 0.15);
+  if (wet && alive.filter((l) => l.job === 'fix').length < 2) w.order('fix');
+  for (const z of w.zones.pending(p)) if (z.tiles.length) w.tapZone(z, p);
+  for (const n of w.nesses.alive()) {
+    if (isHeadOpen(n) && !w.orders.list.some((o) => o.kind === 'stab')) w.tapHead(n, p);
+    for (const h of n.hands) if (h.state === 'holding' && !w.orders.list.some((o) => o.kind === 'cutHand' && o.hand === h)) w.tapHand(n, h, p);
+  }
+}
+
 /** Fight the set-up encounter with the scripted captain. */
 function fight(run: RunState, ship: string, seed: number, t: Tuning): { won: boolean; time: number; lost: number } {
-  const w = new World(t, seed * 977 + run.fight, { player: setupFor(run, t), enemies: enemySetups(run, t), assists: false, carry: { hp: run.hull, water: run.hull.map(() => 0) } });
+  const w = new World(t, seed * 977 + run.fight, { player: setupFor(run, t), enemies: enemySetups(run, t), nesses: run.encounter?.nesses, assists: false, carry: { hp: run.hull, water: run.hull.map(() => 0) } });
   w.start();
   let nextOrder = 0;
+  let nextQuarters = 0;
   while (w.phase !== 'over' && w.time < 400) {
     const e = w.liveEnemies()[0] ?? w.enemies[0];
     const p = w.player.motion;
-    const bearing = Math.atan2(e.motion.y - p.y, e.motion.x - p.x);
-    const d = Math.hypot(e.motion.x - p.x, e.motion.y - p.y);
-    if (ship === 'friend') {
+    const bearing = e ? Math.atan2(e.motion.y - p.y, e.motion.x - p.x) : 0;
+    const d = e ? Math.hypot(e.motion.x - p.x, e.motion.y - p.y) : 0;
+    if (!e || w.isOut(e)) {
+      // Only sea monsters left: hold position and play the deck, but turn broadside on a spitter that keeps its distance.
+      const spitter = w.nesses.alive().find((n) => n.def.style === 'spitter' && (n.mode === 'spit' || n.mode === 'approach'));
+      if (spitter) w.setHelm({ kind: 'heading', h: Math.atan2(spitter.motion.y - p.y, spitter.motion.x - p.x) + Math.PI / 2 });
+      else if (w.helm.kind !== 'stop') w.setHelm({ kind: 'stop' });
+    } else if (ship === 'friend') {
       if (w.boardTargetId !== e.id || (w.helm.kind !== 'board' && w.helm.kind !== 'ram')) w.targetEnemy(e);
       const alive = w.player.crew.lees.filter((l) => l.alive);
       if (d < 90 && w.time >= nextOrder && alive.filter((l) => l.job === 'board').length < Math.round(alive.length * 0.7)) {
@@ -53,10 +88,18 @@ function fight(run: RunState, ship: string, seed: number, t: Tuning): { won: boo
       const h = bearing - off;
       w.player.target = { x: p.x + Math.cos(h) * 60, y: p.y + Math.sin(h) * 60 };
     }
+    if (w.time >= nextQuarters) {
+      quarters(w, ship);
+      monsters(w);
+      nextQuarters = w.time + 0.4;
+    }
     w.step(FIXED_DT);
+    if (process.env.SWEEP_TRACE && w.nesses.list.length && Math.floor(w.time * 60) % 180 === 0) {
+      console.log(`  t${w.time.toFixed(0)} water ${Math.round(w.player.parts.reduce((x, q) => x + q.water, 0))} alive ${w.player.crew.lees.filter((l) => l.alive).length} jobs ${w.player.crew.lees.map((l) => l.job[0]).join('')} shells ${w.stats.player.shellsFired}/${w.stats.player.shellsHit} ${w.nesses.list.map((n) => `${n.mode}:d${n.depth.toFixed(2)}:${Math.round(n.hp)}`).join(' ')}`);
+    }
   }
   const won = w.result?.winner === 'player';
-  applyFight(run, { won, lees: w.player.crew.lees, enemies: w.enemyOutcomes(), lastEnemy: w.lastEnemyStanding(), hull: w.player.parts.map((x) => structureFraction(x)) }, t);
+  applyFight(run, { won, lees: w.player.crew.lees, enemies: w.enemyOutcomes(), nesses: w.nessOutcomes(), lastEnemy: w.lastEnemyStanding(), joined: w.defectors(), hull: w.player.parts.map((x) => structureFraction(x)) }, t);
   return { won, time: w.time, lost: w.stats.player.leesLost };
 }
 
@@ -98,7 +141,7 @@ test('run sweep', () => {
         for (const stop of route) {
           if (!sailTo(run, stop, t)) break voyage;
           if (run.stage === 'refit') {
-            const before = `hull ${Math.round(hullShare(run, t) * 100)}% budget ${run.encounter?.budget} ${run.encounter?.type} vs ${Math.round(playerValue(run))} [${run.encounter?.enemies.map((e) => `${e.ship}/${e.ai}:${Object.values(e.fullLoadout ?? {}).join(",")}`).join(" + ")}]`;
+            const before = `hull ${Math.round(hullShare(run, t) * 100)}% budget ${run.encounter?.budget} ${run.encounter?.type} vs ${Math.round(playerValue(run))} [${run.encounter?.enemies.map((e) => `${e.ship}/${e.ai}:${Object.values(e.fullLoadout ?? {}).join(",")}`).join(" + ")}${(run.encounter?.nesses ?? []).map((n) => ` +${n.kind}${n.level}`).join("")}]`;
             const r = fight(run, ship, seed, t);
             if (process.env.SWEEP_LOG) console.log(`${ship} s${seed} j${run.journey} ${before} → ${r.won ? 'won' : 'LOST'} ${Math.round(r.time)}s`);
             fights++;
@@ -109,6 +152,7 @@ test('run sweep', () => {
           }
           if (run.stage === 'post') {
             const post = run.pending!;
+            post.captures.forEach((c, i) => c.options.length && pickCapture(run, i, c.options[0]));
             if (post.surrender) answerSurrender(run, run.crew.length < t.ships[run.ship].crewMax, t);
             if (post.reward.length) takeReward(run, 0, t);
             finishPost(run);

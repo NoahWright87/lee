@@ -9,7 +9,7 @@ import { ITEMS, type GunMode } from '../config/items';
 import { SHIPS, type ShipDef, type ShipStats } from '../config/ships';
 import type { Side, Tuning } from '../config/tuning';
 import type { CrewState } from './crew';
-import { buildGrid, type Grid } from './grid';
+import { buildGrid, type Grid, type RailState } from './grid';
 import { attachmentMods, cleanBuild, computeMods, furnishGrid, gunFacing, muzzleLocal, slotById, type BoatBuild, type BoatMods } from './loadout';
 import { clamp, DEG, distToPolygon, polygonCentroid, toLocal, type Vec } from './math';
 import type { MotionParams, MotionState } from './steering';
@@ -62,6 +62,10 @@ export interface GunState {
   lastFired: number;
   /** What the gunner is aiming at for the next shot (rolled when loaded, cleared on firing). */
   aim: AimPlan | null;
+  /** World time before which this gun holds fire (an ally is near where the shot would land). */
+  holdUntil: number;
+  /** Harpoon guns: the line's end on this gun (a stand-in rail: out while a harpoon is in flight or its line holds, then cooling down). */
+  harpoon?: RailState;
 }
 
 /** A gunner's aim for one shot: which boat, which part, where on it, and how well it leads. */
@@ -184,6 +188,7 @@ export function createBoat(id: number, side: Side, build: BoatBuild, t: Tuning, 
       load: 0.15 + 0.25 * (guns.length % 4),
       lastFired: -99,
       aim: null,
+      holdUntil: 0,
     });
   }
 
@@ -216,7 +221,7 @@ export function createBoat(id: number, side: Side, build: BoatBuild, t: Tuning, 
     sinkingSince: null,
     waterTaken: 0,
     grid,
-    crew: { lees: [], needs: [], thinkIn: 0 },
+    crew: { lees: [], needs: [], thinkIn: 0, focus: null, departed: 0 },
     mobility: { speed: 1, turn: 1 },
     fx: { accuracy: 1, reload: 1, fix: 1, aim: 1 },
   };
@@ -501,5 +506,5 @@ export function bowTipLocal(boat: Boat): Vec {
 
 /** A boat whose crew is all dead: it can't fire, row or bail, but it floats (and floods). */
 export function isDerelict(boat: Boat): boolean {
-  return boat.crew.lees.length > 0 && !boat.crew.lees.some((l) => l.alive);
+  return (boat.crew.lees.length > 0 || boat.crew.departed > 0) && !boat.crew.lees.some((l) => l.alive);
 }

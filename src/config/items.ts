@@ -43,9 +43,9 @@ export interface EffectDef {
 }
 
 export type StationKind = 'gun' | 'oars' | 'sails' | 'lookout' | 'pump' | 'powder';
-export type RailKind = 'spikes' | 'fence' | 'planks';
+export type RailKind = 'spikes' | 'fence' | 'planks' | 'rope' | 'hook' | 'pole';
 /** How a gun's shot travels and is telegraphed. */
-export type GunMode = 'shell' | 'lob' | 'stream' | 'burst';
+export type GunMode = 'shell' | 'lob' | 'stream' | 'burst' | 'harpoon' | 'depth';
 
 export interface ItemDef {
   id: string;
@@ -164,6 +164,36 @@ const list: ItemDef[] = [
     effects: [],
     gun: { mode: 'lob', targets: 'hull' },
     rewardWeight: 1.5,
+  },
+  {
+    id: 'harpoon',
+    name: 'Harpoon Gun',
+    icon: '🔱',
+    description: 'A barbed harpoon on a line. What it hits, it holds: a ship is reeled toward you, a Ness is kept up and dragged alongside.',
+    tradeoff: 'Barely hurts. One harpoon out at a time; the line can be cut, and a Ness strains against it.',
+    category: 'gun',
+    fits: ['edge'],
+    tags: ['board'],
+    // pull: × the hook line's pull; hp: × a line's HP (a harpoon line is stronger than a hook's).
+    params: { ...gunParams({ arc: 50, damage: 0.3, crewDamage: 0.2, reload: 1.6, shellSpeed: 1.2, range: 0.85, minRange: 0.5, spread: 0.8 }), pull: 2, hp: 1.6 },
+    effects: [],
+    gun: { mode: 'harpoon', targets: 'hull' },
+    rewardWeight: 1,
+  },
+  {
+    id: 'depthCharge',
+    name: 'Depth Charge',
+    icon: '🛢️',
+    description: 'A crewed gun that lobs a charge just beyond the rail. It sinks, and goes off after a few seconds, or the moment a Ness swims into it. Only hurts what is under the water.',
+    tradeoff: 'Short range. Lead your target: the charge has to be waiting in its path.',
+    category: 'gun',
+    fits: ['edge'],
+    tags: ['barrage'],
+    // fuse: s until it goes off; sink: s to reach its deepest; blast: radius, m; trigger: how close a Ness sets it off, m; lead: s ahead of the Ness it aims.
+    params: { ...gunParams({ arc: 120, damage: 3, crewDamage: 0, reload: 1.1, shellSpeed: 2.2, range: 0.35, minRange: 0.1, spread: 0.7 }), fuse: 4, sink: 3, blast: 11, trigger: 3, lead: 1.5 },
+    effects: [],
+    gun: { mode: 'depth', targets: 'hull' },
+    rewardWeight: 1.2,
   },
   {
     id: 'gatling',
@@ -316,8 +346,8 @@ const list: ItemDef[] = [
     id: 'planks',
     name: 'Boarding Planks',
     icon: '🪵',
-    description: 'Boarders leaving here swing faster and shoot harder.',
-    tradeoff: 'Shootable mid-swing.',
+    description: 'Tap to lower onto a hull within 2 m: Lees walk across, faster than swinging, and shoot harder.',
+    tradeoff: 'Shootable mid-crossing. An enemy plank on your rail can be destroyed.',
     category: 'rail',
     fits: ['rail'],
     tags: ['board'],
@@ -325,6 +355,49 @@ const list: ItemDef[] = [
     effects: [],
     rail: 'planks',
     rewardWeight: 1.5,
+  },
+
+  {
+    id: 'hooks',
+    name: 'Boarding Hooks',
+    icon: '🪝',
+    description: 'Tap to throw a hook at your ⚔️ target. A hook that lands is a line that slowly pulls the boats together.',
+    tradeoff: 'The throw is telegraphed (steer off to dodge it) and the line can be cut. Cooldown after a cut.',
+    category: 'rail',
+    fits: ['rail'],
+    tags: ['board'],
+    params: { range: 1, pull: 1, hp: 1 },
+    effects: [],
+    rail: 'hook',
+    rewardWeight: 1.3,
+  },
+  {
+    id: 'ropes',
+    name: 'Swinging Ropes',
+    icon: '🪢',
+    description: 'Tap to send ⚔️ Lees across one at a time, from 50% farther away and 30% faster than planks.',
+    tradeoff: 'One Lee per rope at a time. Cut a rope and the Lee swinging on it falls short.',
+    category: 'rail',
+    fits: ['rail'],
+    tags: ['board'],
+    params: { reach: 1.5, swing: 0.7 },
+    effects: [],
+    rail: 'rope',
+    rewardWeight: 1.3,
+  },
+  {
+    id: 'poles',
+    name: 'Push Poles',
+    icon: '🦯',
+    description: 'Tap to shove the boats apart. Cut the lines first, or it only strains against them.',
+    tradeoff: 'Short shove, then a cooldown.',
+    category: 'rail',
+    fits: ['rail'],
+    tags: ['bulwark'],
+    params: { push: 1 },
+    effects: [],
+    rail: 'pole',
+    rewardWeight: 1,
   },
 
   // ------------------------------------------------------------ hull modules
@@ -505,19 +578,6 @@ const list: ItemDef[] = [
     rewardWeight: 1,
   },
 
-  {
-    id: 'ropes',
-    name: 'Swinging Ropes',
-    icon: '🪢',
-    description: 'Boarders swing from 50% farther, 30% faster.',
-    tradeoff: '',
-    category: 'treasure',
-    fits: ['treasure'],
-    tags: ['board'],
-    params: { reach: 1.5, swing: 0.7 },
-    effects: [fx('boat', 'boardRange', 'mul', 'reach'), fx('boat', 'swing', 'mul')],
-    rewardWeight: 1,
-  },
   // Between-fight treasures: they do nothing in a fight (the run reads them).
   {
     id: 'ledger',

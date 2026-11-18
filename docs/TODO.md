@@ -1,6 +1,44 @@
-# TODO: where Phase 6 left off
+# TODO: where Phase 8 left off
 
-Phase 6 ("Ports & the Sea Map", [`PRD_PHASE6.md`](PRD_PHASE6.md)) is built: gold, budget-built enemies, sink/capture/surrender spoils, ports (shops, specialties, rerolls, tavern, shipwright, shipyard, bank), the cargo limit, paid and free repair and healing, the sea map (guaranteed route, travel radius, stop types, Fog, intel levels, the Crow's Nest, map styles), endless escalation by depth, Easy/Normal/Hard and the Custom start. This file lists what's still open, so the next PR can start from here.
+Phase 7 ("Close Quarters", [`PRD_PHASE7.md`](PRD_PHASE7.md)) is built in its five slices: the speed blend, accuracy pass and holding fire; hooks, lines, ropes, planks and push poles as the only way to connect and cross; deck taps with best-fit answering; breaking away, capture picks and mid-fight surrender; crew bars. It sits on top of Phase 6 (ports, gold, the sea map; its leftovers are in sections 0–5). This file lists what's still open, so the next PR can start from here.
+
+Phase 8 ("Nesses", [`PRD_PHASE8.md`](PRD_PHASE8.md)) is built on top of Phase 7: one plain Ness (oval body, neck and head, hands, depth with shadows, the Depth Charge gun, the run). The list below is what to decide or watch when playing it.
+
+## Phase 8 open questions and things to watch in playtest
+
+The first Ness design (six kinds, surprise rings, trophies, Hydrophone) was dropped for one plain **Ness** that behaves like a boat; see the README's Nesses section. To check when playing it:
+
+- [ ] **Does it feel fair?** Circle, charge, rise beside you, bite with a visible rectangle and ⚠️, stay on the boat, retreat. If it still feels chaotic, the levers are `biteWarn`, `biteHold`, `circleMin/Max` and `chargeMul`.
+- [ ] **Balance.** The sweep's scripted captain wins ~75 s Ness-only fights every time on the default numbers; real players are slower. HP 300, head ×2, flee at 50%.
+- [ ] **Can it be outrun?** It is 1.15× your cruise speed and the chase is gentle; a boat at full sail can pull away slowly.
+- [ ] **Hands.** One per flank, cut by tapping or shooting. Do reeled hulls feel stuck rather than annoyed? (`handReel`, `handClose`, `handHp`.)
+- [ ] **Depth Charge gun.** Close range, aimed like a cannon, blows when the fuse ends or a submerged Ness touches it. Check lead (`lead`) and `trigger`/`blast` sizes.
+- [ ] **Shyness balance.** 45 HP, a spit every ~3.75 s while up (cannon: 3 s), 8 water a hit, stays at 70-90% of 100 m, dives when you close inside 35% of its range or it is below 70% HP (after one shot). It is up about 85% of the time when left alone. The sweep's scripted captain (which turns broadside) wins about 3 in 4 of the Shyness fights inside its 400 s limit; holding still it can't win them, because the Shyness picks the side where no manned gun points. Check it feels fair to a person: how long it is up, how fast it re-picks a side (5 s), whether the water is bailable, and `spitWater`/`spitDamage`.
+- [ ] **Restlessness and pot shots.** `pistolRange` 55 m, `restlessTime` 30 s and each kind's `rest*` numbers are first guesses. Watch for fights that now end too quickly (the sweep's Shyness fights dropped from ~150-400 s to ~50-150 s), and whether pistol chip damage on a shallow hump feels right.
+- [ ] **Roster later.** Special slots (feet, tail, spikes) and special attacks plug into `NESS_SLOTS` and `defaultNessKind`; trophies, ink, rain and the Hydrophone were removed and can come back with their own kinds.
+- [ ] **Ships and Nesses together.** Ships don't hold fire near a surfaced Ness and Nesses only attack your deck.
+- [ ] **Harpoon on a Ness.** Not supported (it only works on ships now).
+
+## Phase 7 open questions (PRD §16) and things to watch in playtest
+
+- [ ] **Auto-boarding scope.** BOARD hooks, lowers planks and sends ropes for you, but never cuts a line or destroys a plank (those are the taps). It also stays on after the boats part if you only stopped; check it doesn't re-hook something you meant to let go.
+- [ ] **Melee is slow by numbers.** A sword does 4 × 0.6/s (2.4 dps) against 70 HP, so a duel takes ~30 s and even a 2v1 ~15 s. Crowding no longer wastes the numbers, but if big boarding fights should be quicker, `melee.damage` / `melee.rate` are the levers.
+- [ ] **Locked-in rules.** Equal numbers can leave (so a lone wounded Lee in a 1v1 can walk away, and the enemy follows). Check that feels right; "outnumbered" could also mean "not more than".
+- [ ] **Firing line and pistol hits.** Pistols scatter with distance (`pistol.spreadPerMeter`), so a shot across the gap hits a minority of the time. If FIRE across the gap should matter more, tune that.
+- [ ] **Who cuts lines?** Built as ⚔️ or 🛠️, whichever is closer and free, with any Lee after `lines.answerFallback` (1.5 s). Is that right, or should it be whoever is nearest?
+- [ ] **Ropes** are now only a rail item (the treasure is gone). An old save with the treasure equipped just carries an inert item.
+- [ ] **No rope or plank = can't board.** There's no slow climb across once the hulls touch.
+- [ ] **How much should a heavy resist boarding?** Today: fast line cutting, plank destroying and rope cutting (`ai.heavy.cutDelay`), plus its mass (2.2). More mass, more hooks, or both?
+- [ ] **Where the role icons and bars sit.** Left of the ocean, resting on the seam (enemy on the right). They cover part of the ocean and never the deck view; check thumb reach on a real phone.
+- [ ] **A cut rope drops the Lee on its own deck** (hurt) rather than in the water (no overboard yet).
+- [ ] **Stranded boarders** keep fighting until the boats are back within reach of a rope or plank; does a ship count as captured if you've sailed away? (Today: only when its crew is dead.)
+- [ ] **Pull and cooldown numbers** are first guesses (`lines.*`, `ships.<id>.mass`): a boarder should take several seconds to haul you in after the first hook lands (a test checks > 3 s) and a cut buys ~12 s.
+- [ ] **Boarder pacing.** A boarder eases in to hook range and lets its lines close the gap (`thinkBoarder`). If it's too passive, shorten the standoff; if hooks never land on a fast target, widen `lines.hookCatch`.
+- [ ] **Sweep.** `npm run sweep` (4 seeds, 3 journeys) is within a hair of Phase 6 for Basic and Hard (1.8 journeys) and the Friend Ship (2.8, but it now loses ~6 Lees a run, up from ~4: boarding costs more); the Long Distance Relation Ship got worse (0.8 against 1.3: its long shells scatter with distance now). The captain taps hooks, planks and ropes with the Friend Ship and cuts lines with everything else.
+- [ ] **Tap targets are tuned by eye** (`radius` in `sim/targets.ts`, the finger width in `BattleScene.tapDeck`). Debug shows them.
+- [ ] **Crew bars** have no armor shading or damage-over-time band yet (PRD §12.3, later). Buff/debuff chevrons only cover wet feet, wounds with enemies about, the pit-stop bonus, planks and tile occupant bonuses.
+- [x] **Danger zones on the deck** (PRD §17.3): built in Phase 8 (`sim/zones.ts`).
+- [ ] **Hooks vs. a moving target.** A hook lands where the hull will be if it holds course, then slides to the hull point nearest its rail. A target turning hard drags lines taut and across the deck: worth watching.
 
 ## 0. Decide in playtest (Phase 6 open questions, PRD §16)
 
@@ -63,4 +101,4 @@ Each one is a default that can change (tunable or data).
 
 ## 6. The next phase
 
-Still later (PRD_PHASE6 §15): the PUNishers, wages and upkeep, special "-cy" seas, text events, merchant ships and distress calls, Ness and bosses, a victory condition, meta-progression, tag synergies, active abilities, fire and other tile layers, recoil, the Lee Creator, the lore pass (port and item names), owning more than one ship, a landscape layout. **Before Ness:** Phase 3 §14 asked for close-combat links that a latching Ness could reuse, but Phase 5 replaced the link system with `src/sim/contact.ts`, which only knows boats, so it needs generalizing first.
+Still later (PRD_PHASE6 §15): the PUNishers, wages and upkeep, special "-cy" seas, text events, merchant ships and distress calls, Ness and bosses, a victory condition, meta-progression, tag synergies, active abilities, fire and other tile layers, recoil, the Lee Creator, the lore pass (port and item names), owning more than one ship, a landscape layout. **Before Ness:** Phase 7 built `src/sim/lines.ts` (hooks, lines, pulling by mass, tap targets as data, pushes), but it's still written against `Boat`; a Ness that latches or a harpoon that hits one needs the ends generalized (anything with a motion state, a hull and a mass).

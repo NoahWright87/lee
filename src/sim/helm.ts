@@ -99,6 +99,24 @@ export interface HelmWorld {
 }
 
 /**
+ * How fast to sail toward a tapped point: full speed when it's far or ahead, slower the tighter the turn it needs.
+ * A boat turning at `omega` rad/s at speed `v` circles at `v / omega`; to get to a point it has to fit inside a circle that
+ * touches the bow line and passes through it, so a point 5 m off the beam means crawling round hard, a point 500 m off means
+ * turning at speed. It also eases off over the last stretch so it settles on the point instead of overshooting and looping.
+ */
+export function pointThrottle(self: Boat, p: Vec, t: Tuning): number {
+  const params = motionParams(self, t);
+  const cruise = Math.max(0.1, params.cruiseSpeed);
+  const l = toLocal(p, self.motion, self.motion.heading);
+  const d = Math.hypot(l.x, l.y);
+  // Radius of the circle tangent to the heading that passes through the point (huge when it's dead ahead); behind us, fit a U-turn in `d`.
+  const radius = l.x > 0 ? (l.x * l.x + l.y * l.y) / (2 * Math.max(0.01, Math.abs(l.y))) : d / 2;
+  const turn = (params.turnRate * radius * 0.9) / cruise;
+  const arrive = (0.8 * d) / cruise;
+  return clamp(Math.min(turn, arrive), 0.2, 1);
+}
+
+/**
  * Turn a helm into this step's steering. Returns the command and the helm to
  * keep (a point becomes a heading on arrival; a maneuver whose target is gone
  * becomes the heading you're on).
@@ -115,11 +133,9 @@ export function steer(self: Boat, helm: Helm, w: HelmWorld): { cmd: HelmCommand;
     case 'heading':
       return hold(helm);
     case 'point': {
-      const d = dist(m, helm.p);
-      const toward = (helm.p.x - m.x) * m.vx + (helm.p.y - m.y) * m.vy;
-      // Arrived (or it's slipped behind us close by): keep going the way we're pointed.
-      if (d <= Math.max(1, t.input.arriveRadius) || (toward < 0 && d < 3 * t.input.arriveRadius)) return hold();
-      return { cmd: { target: helm.p, throttle: 1, orbit: false, stopped: false }, helm };
+      // Arrived: keep going the way we're pointed. (A small radius: a tap close to the boat is a real turn, not "already there".)
+      if (dist(m, helm.p) <= Math.max(1, t.input.arriveRadius)) return hold();
+      return { cmd: { target: helm.p, throttle: pointThrottle(self, helm.p, t), orbit: false, stopped: false }, helm };
     }
     case 'orbit': {
       const b = w.live(helm.boatId);
