@@ -11,7 +11,7 @@
 //
 // The same costs value your own ship, so a stop's danger is relative to you.
 
-import { CHASSIS_COST, chassisCost, itemCost, leeCost } from '../config/economy';
+import { chassisCost, itemCost, leeCost } from '../config/economy';
 import type { CrewEntry, EnemySpec } from '../config/encounters';
 import { ITEMS, type ItemDef } from '../config/items';
 import { LEE_DEFS } from '../config/lees';
@@ -196,11 +196,6 @@ export function nessCost(kind: string, level: number, t: Tuning): number {
   return k.cost * (1 + Math.max(0, t.ness.common.levelCost) * (Math.max(1, level) - 1));
 }
 
-/** Points in a Ness spec. */
-export function nessValue(spec: NessSpec, t: Tuning): number {
-  return nessCost(spec.kind, spec.level ?? 1, t);
-}
-
 /**
  * Sea monsters built from a budget: kinds picked by weight among those it can still afford, each at a level that fits;
  * a pack of small ones when there is room for more, a single bigger one when there isn't.
@@ -272,5 +267,3 @@ export function dangerSkulls(budget: number, playerValue: number, t: Tuning): nu
   const ratio = budget / Math.max(1, playerValue);
   return Math.max(1, Math.min(5, Math.round(ratio / Math.max(0.01, t.budget.dangerPerSkull))));
 }
-
-export const CHASSIS_IDS = Object.keys(CHASSIS_COST);

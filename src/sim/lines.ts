@@ -29,11 +29,6 @@ export interface RailRef {
   rail: RailState;
 }
 
-export function railTileOf(boat: Boat, rail: RailState): Tile | null {
-  for (const tile of boat.grid.tiles) if (tile.rails.includes(rail)) return tile;
-  return null;
-}
-
 /** Every intact rail item of a kind on a boat (its tile not blown out). */
 export function railsOf(boat: Boat, kind: RailState['kind']): RailRef[] {
   const out: RailRef[] = [];
