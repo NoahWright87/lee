@@ -174,6 +174,9 @@ src/
     stack.ts       refit as stacks: what's on each spot, where a pick can go, one move (carry, swap, cargo)
     combat.ts      Lee vs Lee: engagement, swords, pistols
     telegraph.ts   general "something lands here in N seconds" system (X's and area markers)
+    zones.ts       deck danger zones: tiles of a deck that will be hit in N seconds (the bite's rectangle)
+    ness.ts        Nesses (Phase 8): body, depth, neck and head, hands, the circle/charge/bite/flee life
+    framing.ts     which boats and Nesses the two "Fit" cameras frame (data, tested without Phaser)
     world.ts       the one world: boats from setups, enemy brains, guns by mode, shells, tiles,
                    explosions, spikes, sinking, stats
     setup.ts       boat setups (build + crew), Auto-arrange, enemies built from encounter data
@@ -191,13 +194,16 @@ src/
     BoatView.ts    draws a boat: parts, cracks, water, every gun type, stations, rails, plating
     CrewView.ts    draws every shown deck's crew and stations (type shirts, team rings)
     QuartersView.ts lines, hooks in the air, tap markers and (debug) tap targets
+    NessView.ts    draws a Ness: shadow at depth, body, neck and head, hands, the surfacing ⚠️
+    Bubble.ts      the standard "tap this" bubble (icon, pulse, closing timing ring)
     textures.ts    placeholder art + trimming crack art to each part's outline
     Controller.ts  screens and the run/sandbox, the world, saving, live tuning, speed/debug/pause
   ui/              DOM: HUD, role icons and crew bars (actionBar.ts), ⚙️ menu and run screens
                    (screens.ts), refit (refit.ts), the port (port.ts), the sea map (seaMap.ts), cards,
                    ship previews, crew debug, result screen, tuning panel, code-drawn crew art
 tests/             steering, damage, world rules, crew and jobs, close combat, helm, equipment,
-                   refit stacks, the run, the voyage (budgets, ports, the sea map, difficulty)
+                   refit stacks, the run, the voyage (budgets, ports, the sea map, difficulty),
+                   Nesses and the Shyness, camera framing
 tools/sweep.test.ts  the quick run simulation (npm run sweep)
 ```
 
