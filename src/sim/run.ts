@@ -9,7 +9,7 @@
 import { difficulty } from '../config/difficulty';
 import type { EnemySpec } from '../config/encounters';
 import { ITEMS, type ItemDef } from '../config/items';
-import { LEE_DEFS, STAT_LABELS } from '../config/lees';
+import { LEE_DEFS } from '../config/lees';
 import { NESS } from '../config/ness';
 import { SHIPS } from '../config/ships';
 import type { Facing, SlotType } from '../config/slots';
@@ -17,7 +17,7 @@ import type { Tuning } from '../config/tuning';
 import type { Lee } from './crew';
 import type { NessSpec } from './ness';
 import { allSlots, fits, presetBuild, slotById, trinketMods, type BoatBuild } from './loadout';
-import { autoBonuses, bonusLabel, bonusMods, bonusOffers, combineMods, xpToNext, type BonusKey } from './levels';
+import { autoBonuses, bonusMods, bonusOffers, combineMods, xpToNext, type BonusKey } from './levels';
 import { drawDistinct, Rng, rngFor as seededRng } from './math';
 import { buildShip } from './budget';
 import { autoArrange, enemySetup, fitFor, postsFor, type BoatSetup, type CrewSpec } from './setup';
@@ -873,11 +873,6 @@ export function autoPickAll(run: RunState): void {
   }
 }
 
-/** Items a ship of this run can use somewhere. */
-export function usableItem(run: RunState, d: ItemDef): boolean {
-  return usable(run.ship, d);
-}
-
 /**
  * A special reward (hard fights): something rarer. A rare trinket or
  * treasure, a Lee a level above your best, and parts.
@@ -945,11 +940,6 @@ export function finishPost(run: RunState): void {
   if (run.stage === 'over') return;
   run.pending = null;
   run.stage = run.map ? 'map' : run.port ? 'port' : 'refit';
-}
-
-/** "+8% Load speed". */
-export function bonusText(b: BonusKey, t: Tuning): string {
-  return bonusLabel(b, t, STAT_LABELS);
 }
 
 // ------------------------------------------------------------ save

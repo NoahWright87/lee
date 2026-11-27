@@ -34,7 +34,6 @@
 import type { StationKind } from '../config/items';
 import {
   jobSkill,
-  LEE_STAT_KEYS,
   meleeFocused,
   STAT_LABELS,
   WORK_STAT,
@@ -42,7 +41,6 @@ import {
   type Job,
   type LeeDef,
   type LeeStatKey,
-  type LeeStats,
   type WorkKind,
 } from '../config/lees';
 import { shipName } from '../config/ships';
@@ -390,12 +388,6 @@ export function createLee(id: number, number: number, def: LeeDef, side: Side, b
   };
 }
 
-/** Role a tile gives the Lee placed on it. */
-export function roleName(boat: Boat, tile: number): string {
-  const s = boat.grid.tiles[tile]?.station;
-  return s ? ROLE_NAMES[STATION_WORK[s]] : ROLE_NAMES.damage;
-}
-
 export function workKind(boat: Boat, task: Task): WorkKind | null {
   switch (task.type) {
     case 'station': {
@@ -425,9 +417,6 @@ export function activity(lee: Lee, _boat?: Boat): ActivityKind {
   if (!lee.working) return lee.path.length || dist(lee.pos, deck.grid.tiles[lee.dest]?.center ?? lee.pos) > 0.05 ? 'walk' : 'idle';
   return workKind(deck, lee.task) ?? 'idle';
 }
-
-/** Is this Lee standing on an enemy deck (boarding)? */
-export const isAboardEnemy = (lee: Lee): boolean => lee.deck !== lee.boat;
 
 // ------------------------------------------------------------ stats
 
@@ -465,10 +454,6 @@ export function leeStat(lee: Lee, key: LeeStatKey, _boat: Boat, t: Tuning): numb
   return v;
 }
 
-export function leeStats(lee: Lee, boat: Boat, t: Tuning): LeeStats {
-  return Object.fromEntries(LEE_STAT_KEYS.map((k) => [k, leeStat(lee, k, boat, t)])) as LeeStats;
-}
-
 /** How good this Lee is at a job (type × its own mods: levels, trinkets). */
 export function leeJobSkill(lee: Lee, job: Job, t: Tuning): number {
   return jobSkill(job, (k) => baseStat(lee.def, k, t, lee.mods));
@@ -504,11 +489,6 @@ export function workerAt(boat: Boat, tile: number): Lee | null {
     if (l.alive && l.working && !l.engaged && l.deck === boat && l.task.type === 'station' && l.task.target === tile) return l;
   }
   return null;
-}
-
-/** Living Lees standing (not swinging) on a deck, either side. */
-export function leesOn(deck: Boat, lees: Lee[]): Lee[] {
-  return lees.filter((l) => l.alive && !l.swing && l.deck === deck);
 }
 
 /** Living Lees of `side`'s opponents standing on a deck. */

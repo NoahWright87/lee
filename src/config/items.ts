@@ -728,10 +728,6 @@ export const CATEGORY_NAMES: Record<ItemCategory, string> = {
   trinket: 'Trinket',
 };
 
-export function itemDef(id: string): ItemDef | undefined {
-  return ITEMS[id];
-}
-
 /** Default item numbers (tuning.items is built from this). */
 export function defaultItemParams(): Record<string, Record<string, number>> {
   return Object.fromEntries(list.map((d) => [d.id, { ...d.params }]));
