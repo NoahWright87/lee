@@ -10,6 +10,7 @@ import { LEE_DEFS } from '../config/lees';
 import { NESS } from '../config/ness';
 import { MAP_STYLES, MODIFIERS, STOP_TYPES } from '../config/sea';
 import { SHIPS } from '../config/ships';
+import { COPY } from '../content/copy';
 import type { Controller } from '../game/Controller';
 import { cargo, cargoLimit, cargoOver, hullShare, type RunState } from '../sim/run';
 import { cantSail, danger, hidden, inReach, intel, type SeaMap, type Stop } from '../sim/seaMap';
@@ -109,7 +110,7 @@ export class MapScreen {
 
     // The selected stop's card.
     if (this.sel !== null && map.stops[this.sel]) body.append(this.stopCard(run, map.stops[this.sel], reach.has(this.sel)));
-    else body.append(el('div', 'map-hint', 'Tap a stop to see it. Stops inside the circle are one hop away.'));
+    else body.append(el('div', 'map-hint', COPY.seaMap.hint.text));
 
     const scroll = sea.scrollTop;
     this.root.replaceChildren(body);
