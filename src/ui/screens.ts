@@ -13,6 +13,7 @@ import { countTags, tagName } from '../config/tags';
 import { DECK_ZOOMS, OCEAN_ZOOMS, type Controller, type ZoomChoice, type ZoomKind } from '../game/Controller';
 import { bonusLabel } from '../sim/levels';
 import { DIFFICULTIES, DIFFICULTY_ORDER } from '../config/difficulty';
+import { COPY } from '../content/copy';
 import { STOP_TYPES } from '../config/sea';
 import { buildFor, cargo, cargoLimit, crewMax, hullShare, itemOf, SAVE_VERSION, type RunState } from '../sim/run';
 import { depthNow } from '../sim/seaMap';
@@ -75,13 +76,13 @@ export class Screens {
       row.append(group);
       view.append(row);
     };
-    pick('ocean', 'Ocean view (top)', OCEAN_ZOOMS);
-    pick('deck', 'Deck view (bottom)', DECK_ZOOMS);
+    pick('ocean', COPY.systemMenu.oceanView.text, OCEAN_ZOOMS);
+    pick('deck', COPY.systemMenu.deckView.text, DECK_ZOOMS);
     buttons.append(view);
     if (this.ctl.mode === 'run') {
       buttons.append(
-        button('Restart Run', 'big-btn', () => {
-          if (!confirmAction('Abandon this run and choose a new ship? It can’t be undone.')) return;
+        button(COPY.systemMenu.restartRun.text, 'big-btn', () => {
+          if (!confirmAction(COPY.systemMenu.restartRunConfirm.text)) return;
           this.closeMenu();
           this.ctl.restartRun();
         }),
@@ -89,15 +90,15 @@ export class Screens {
     }
     if (this.ctl.screen !== 'menu') {
       buttons.append(
-        button('Main menu', 'big-btn', () => {
+        button(COPY.systemMenu.mainMenu.text, 'big-btn', () => {
           this.closeMenu();
           this.ctl.toMenu();
         }),
       );
     }
     buttons.append(
-      button('Reset All Saved Data', 'big-btn danger', () => {
-        if (!confirmAction('Wipe the saved run, the sandbox and your current tuning? (Named tuning presets are kept.) This can’t be undone.')) return;
+      button(COPY.systemMenu.resetAll.text, 'big-btn danger', () => {
+        if (!confirmAction(COPY.systemMenu.resetAllConfirm.text)) return;
         this.closeMenu();
         this.ctl.resetAll();
       }),
@@ -160,9 +161,9 @@ export class Screens {
   private renderMenu(body: HTMLElement): void {
     const ctl = this.ctl;
     body.classList.add('menu');
-    body.append(el('h1', 'title', 'Lee'), el('div', 'subtitle', 'Choose a ship, crew it with Lees, and see how far you get.'));
+    body.append(el('h1', 'title', COPY.mainMenu.title.text), el('div', 'subtitle', COPY.mainMenu.subtitle.text));
     const buttons = el('div', 'menu-buttons');
-    buttons.append(button('New Run', 'big-btn primary', () => ctl.newRun()));
+    buttons.append(button(COPY.mainMenu.newRun.text, 'big-btn primary', () => ctl.newRun()));
     if (ctl.canContinue() && ctl.saved.ok) {
       const r = ctl.saved.run;
       const b = button('Continue', 'big-btn', () => ctl.continueRun());
@@ -175,12 +176,12 @@ export class Screens {
     if (!ctl.saved.ok && ctl.saved.reason !== 'none' && !this.saveErrorDismissed) {
       const box = el('div', 'save-error');
       box.append(
-        el('div', '', ctl.saved.reason === 'version' ? 'This saved run is from an older version and can’t be continued.' : 'The saved run couldn’t be read, so it can’t be continued.'),
+        el('div', '', ctl.saved.reason === 'version' ? COPY.mainMenu.saveTooOld.text : COPY.mainMenu.saveUnreadable.text),
       );
       const row = el('div', 'row');
       row.append(
-        button('Reset saved data', 'hud-btn', () => {
-          if (confirmAction('Reset all saved data? (Named tuning presets are kept.)')) ctl.resetAll();
+        button(COPY.mainMenu.resetSavedData.text, 'hud-btn', () => {
+          if (confirmAction(COPY.mainMenu.resetSavedDataConfirm.text)) ctl.resetAll();
         }),
         button('Cancel', 'hud-btn', () => {
           this.saveErrorDismissed = true;
@@ -195,7 +196,7 @@ export class Screens {
   private renderChooseShip(body: HTMLElement): void {
     const ctl = this.ctl;
     const t = ctl.tuning;
-    body.append(el('h2', '', 'Choose a ship'), el('div', 'subtitle', 'Each comes crewed and fitted. You start in port.'));
+    body.append(el('h2', '', COPY.chooseShip.heading.text), el('div', 'subtitle', COPY.chooseShip.subtitle.text));
     // Difficulty: one row of three.
     const diffs = el('div', 'row seg center');
     for (const id of DIFFICULTY_ORDER) {
@@ -229,7 +230,7 @@ export class Screens {
     const custom = button('', 'card ship-card pick custom', () => ctl.customStart(this.diff));
     const head = el('div', 'card-row');
     head.append(el('div', 'card-title', 'Custom'), el('div', 'card-sub', `No ship · 🪙 ${Math.round(t.economy.customGold * DIFFICULTIES[this.diff].gold)}`));
-    custom.append(head, el('div', 'card-text', 'Start in a port with every service and a wide stock. Buy a hull, hire a crew, fit it out, then sail.'));
+    custom.append(head, el('div', 'card-text', COPY.chooseShip.customText.text));
     list.append(custom);
     body.append(list);
   }
